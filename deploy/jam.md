@@ -14,7 +14,11 @@ No aplicativo, abra Configurações → JAM e informe o mesmo endereço HTTPS no
 
 ## Mesma rede local
 
-Execute o servidor em um dos computadores com Node 24, escutando em `0.0.0.0`, libere a porta 8789 somente para a rede privada no firewall e configure nos dois aplicativos `http://IP-LOCAL-DO-SERVIDOR:8789`. HTTP só é aceito para endereços privados ou loopback. Para usar de redes diferentes é necessário HTTPS público; não abra a porta do computador para a internet.
+Em Configurações → JAM com amigos, informe seu nome e clique em **Criar na rede local**. O próprio aplicativo inicia o coordenador; não é necessário instalar Node.js. Copie o convite e envie para quem estiver na mesma rede. O convidado cola o convite no campo de entrada. Se o Windows solicitar acesso à rede, permita apenas na rede privada utilizada por vocês. O aplicativo não altera o firewall.
+
+O coordenador permanece ativo enquanto o aplicativo anfitrião estiver aberto. Redes com isolamento entre dispositivos podem impedir a conexão. HTTP só é aceito para endereços privados ou loopback. Para usar de redes diferentes é necessário HTTPS público; não abra a porta do computador para a internet.
+
+Também é possível executar o servidor Node descrito acima na rede local e configurar o endereço privado nos clientes.
 
 ## Funcionamento e limites
 
