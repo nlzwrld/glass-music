@@ -1,0 +1,43 @@
+name: Build and publish Glass Music
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**/*.md']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: glass-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Prepare release version and channel
+        run: node scripts/prepare-release.mjs
+      - name: Validate
+        run: pnpm test
+      - name: Build signed Windows update
+        run: pnpm dist
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - name: Publish installer and update manifest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/update-manifest.mjs
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          gh release create "v$version" $setup.FullName "$($setup.FullName).sig" latest.json --title "Glass Music $version" --generate-notes --latest

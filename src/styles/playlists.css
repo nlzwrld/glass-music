@@ -1,0 +1,24 @@
+.playlist-page{border-radius:22px;padding:22px;background:linear-gradient(155deg,#101923b8,#10192385);border:1px solid #ffffff21;box-shadow:0 10px 32px #00000012;color:#f5f8fc}
+.playlist-page .page-heading h1{font-weight:750;letter-spacing:-.6px;text-shadow:0 2px 14px #0008}
+.playlist-page .page-heading p,.playlist-page .track-text>small,.playlist-page .track-row>time,.playlist-page .track-table-heading,.playlist-page .drag-handle,.playlist-page .library-search{color:#d0dce7;opacity:1}
+.playlist-page .track-text>strong{font-size:14px;font-weight:650;color:#fff;text-shadow:0 1px 5px #0008}
+.playlist-page .track-row:hover,.playlist-page .track-row:focus-within{background:#ffffff14}
+.playlist-page .track-row.current{background:#ffffff20;border-color:#ffffff40}
+.playlist-page .icon-button{color:#f8fbff;opacity:1}
+.playlist-page .row-actions{opacity:1}
+.playlist-page .row-actions .icon-button{width:32px;height:32px}
+.playlist-page .row-actions .icon-button svg{width:17px;height:17px}
+.playlist-play{display:inline-flex;align-items:center;justify-content:center;gap:12px;min-width:144px;height:60px;padding:0 25px;background:#fff;color:#101822;border-radius:99px;box-shadow:0 5px 22px #0003;font-size:16px;font-weight:700;transition:transform .18s,box-shadow .18s}
+.playlist-play:hover{transform:translateY(-2px);box-shadow:0 8px 26px #0004}.playlist-play:active{transform:scale(.97)}.playlist-play:disabled{opacity:.45}
+.playlist-page .library-search{background:#10192380;border:1px solid #ffffff30;border-radius:12px;padding:10px 12px}.playlist-page .library-search input{color:#fff;min-width:0}
+.playlist-page .drag-handle{display:grid;place-items:center;min-height:36px;cursor:grab}.playlist-page .drag-handle:active{cursor:grabbing}
+.track-row.drop-target{outline:2px solid #fff;outline-offset:-3px;background:#ffffff23}
+.optical-root .glass-context-menu{background:linear-gradient(150deg,#263440fa,#14212cf5);color:#f8fbff;border:1px solid #ffffff38;box-shadow:0 14px 48px #0007;max-height:calc(100vh - 24px);max-width:calc(100vw - 24px);overflow-y:auto;min-width:245px;padding:7px}
+.glass-context-menu button{min-height:38px;white-space:normal}.glass-context-menu button:focus-visible,.glass-context-menu button:hover{background:#ffffff18;outline:none}.glass-context-menu button.danger{color:#ffb4b4}.glass-context-menu button:disabled{opacity:.4}.glass-context-menu svg{flex:none}
+[data-theme=light] .playlist-page{background:linear-gradient(155deg,#ffffffe8,#e9f0f4cc);color:#162430;border-color:#ffffff80}
+[data-theme=light] .playlist-page :is(.page-heading h1,.track-text>strong){color:#14222f;text-shadow:none}
+[data-theme=light] .playlist-page :is(.page-heading p,.track-text>small,.track-row>time,.track-table-heading,.drag-handle,.library-search,.icon-button){color:#344b5c}
+[data-theme=light] .playlist-page .library-search{background:#ffffffa0;border-color:#233c5030}[data-theme=light] .playlist-page .library-search input{color:#14222f}
+[data-theme=light] .optical-root .glass-context-menu{background:linear-gradient(150deg,#fffffff9,#e9f0f6fa);color:#152636;border-color:#ffffffc0}
+[data-theme=light] .glass-context-menu button:focus-visible,[data-theme=light] .glass-context-menu button:hover{background:#17314b13}[data-theme=light] .glass-context-menu button.danger{color:#a62336}
+@media(max-width:1000px){.playlist-page{padding:15px}.playlist-play{height:56px;min-width:120px;padding:0 20px}.playlist-page .library-search input{width:95px}.playlist-page .row-actions .icon-button{width:27px;height:30px}}

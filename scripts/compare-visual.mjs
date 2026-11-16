@@ -1,0 +1,14 @@
+import pixelmatch from 'pixelmatch';
+import { PNG } from 'pngjs';
+import { readFileSync, writeFileSync } from 'node:fs';
+const [reference,candidate,destination,maskPath]=process.argv.slice(2);
+if(!reference||!candidate||!destination)throw new Error('Usage: node scripts/compare-visual.mjs reference.png candidate.png diff.png [excluded-mask.png]');
+const a=PNG.sync.read(readFileSync(reference)),b=PNG.sync.read(readFileSync(candidate));
+if(a.width!==b.width||a.height!==b.height)throw new Error('Viewport dimensions must match.');
+const out=new PNG({width:a.width,height:a.height});
+const mask=maskPath?PNG.sync.read(readFileSync(maskPath)):undefined;
+const ignoreMask=mask?Uint8Array.from({length:a.width*a.height},(_,i)=>mask.data[i*4]):undefined;
+const different=pixelmatch(a.data,b.data,out.data,a.width,a.height,{threshold:.1,includeAA:false,ignoreMask});
+const compared=ignoreMask?ignoreMask.reduce((n,v)=>n+Number(!v),0):a.width*a.height;
+writeFileSync(destination,PNG.sync.write(out));
+console.log(JSON.stringify({different,compared,differencePercent:Math.round(different/compared*10000)/100,threshold:.1,ignoreAntialias:true}));

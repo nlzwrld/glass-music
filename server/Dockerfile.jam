@@ -1,0 +1,8 @@
+FROM node:24-alpine
+WORKDIR /app
+ENV NODE_ENV=production JAM_HOST=0.0.0.0 PORT=8789
+COPY --chown=node:node server/jam.ts ./server/
+COPY --chown=node:node shared/jam.ts shared/types.ts ./shared/
+USER node
+EXPOSE 8789
+CMD ["node", "--experimental-strip-types", "server/jam.ts"]

@@ -1,0 +1,5 @@
+{
+  "youtube": { "clientId": "", "clientSecret": "" },
+  "spotify": { "clientId": "" },
+  "soundcloud": { "clientId": "", "clientSecret": "" }
+}

@@ -1,0 +1,47 @@
+services:
+  catalog:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    env_file: .env
+    environment:
+      CATALOG_HOST: 0.0.0.0
+      PORT: 8788
+      CATALOG_TRUSTED_PROXY_IPS: 172.30.0.2
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    mem_limit: 384m
+    cpus: 1
+    networks:
+      catalog:
+        ipv4_address: 172.30.0.3
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8788/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  gateway:
+    image: caddy:2-alpine
+    environment:
+      CATALOG_DOMAIN: ${CATALOG_DOMAIN:?Defina CATALOG_DOMAIN no arquivo .env}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+    depends_on:
+      catalog:
+        condition: service_healthy
+    networks:
+      catalog:
+        ipv4_address: 172.30.0.2
+networks:
+  catalog:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+volumes:
+  caddy_data:
+  caddy_config:

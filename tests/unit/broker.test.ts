@@ -1,0 +1,8 @@
+import { it,expect,vi } from 'vitest';
+import { createBroker } from '../../server/broker';
+it('authenticates desktop clients, keeps secrets server-side and reuses OAuth tokens',async()=>{
+  const api=vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({access_token:'platform-secret',refresh_token:'refresh-secret',expires_in:3600}))).mockImplementation(async()=>new Response(JSON.stringify({collection:[{id:123,urn:'soundcloud:tracks:123',title:'Public song',duration:1000,user:{username:'Artist'},permalink_url:'https://soundcloud.com/artist/public-song',access:'playable'}]})));
+  const secret='test-personal-broker-token-123';const server=createBroker({BROKER_ACCESS_TOKEN:secret,SOUNDCLOUD_CLIENT_ID:'client-id',SOUNDCLOUD_CLIENT_SECRET:'client-secret'},api as typeof fetch);
+  await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));const port=(server.address() as {port:number}).port;
+  try { const url=`http://127.0.0.1:${port}/search?q=test&kind=track`;expect((await fetch(url)).status).toBe(401); const r=await fetch(url,{headers:{Authorization:`Bearer ${secret}`}});const raw=await r.text();expect(r.status).toBe(200);expect(raw).toContain('Public song');expect(raw).not.toContain('platform-secret');expect(raw).not.toContain('client-secret');await fetch(url,{headers:{Authorization:`Bearer ${secret}`}});expect(api.mock.calls.filter(c=>String(c[0]).includes('/oauth/token'))).toHaveLength(1);expect((api.mock.calls[0][1] as RequestInit).headers).toHaveProperty('Authorization','Basic '+Buffer.from('client-id:client-secret').toString('base64')); } finally { await new Promise<void>(resolve=>server.close(()=>resolve())); }
+});

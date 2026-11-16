@@ -1,0 +1,96 @@
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type HTMLAttributes, type InputHTMLAttributes, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
+import { AnimatePresence, motion } from 'motion/react';
+
+import { MoreHorizontal } from 'lucide-react';
+import { useApp } from '../../stores/app';
+import { Button } from '../ui/button';
+import type { GlassVariant } from './GlassOptics';
+import SVGPlane from './v3/SVGPlane';
+import { useOptics } from './v3/OpticalEngine';
+import { crystals, materialPresets, type MaterialName, type GlassMethod } from './v3/model';
+
+
+export interface GlassMaterialProps extends HTMLAttributes<HTMLElement> {
+  as?: 'div' | 'aside' | 'section' | 'footer' | 'label' | 'article';
+  variant?: GlassVariant;
+  material?:MaterialName; ior?:number; fresnel?:number; thickness?:number; radius?:number; shadow?:string; cursorResponse?:number;
+  opacity?: number;
+  blur?: number;
+  refraction?: number;
+  specularIntensity?: number;
+  borderIllumination?: number;
+  saturation?: number;
+  depth?: number;
+  tint?: string;
+  /** Advanced refraction is reserved for persistent surfaces, not every list item. */
+  refractive?: boolean;
+  method?: GlassMethod;
+  style?: CSSProperties & Partial<Record<`--glass-${'opacity' | 'blur' | 'specular' | 'edge' | 'saturation' | 'depth' | 'tint' | 'light'}`, string | number>>;
+}
+export function GlassMaterial({ as: Tag = 'div', variant = 'regular', className = '', children, style, material, ior, fresnel, thickness, radius, shadow, cursorResponse, opacity, blur, refraction, specularIntensity, borderIllumination, saturation, depth, tint, refractive = true, method='auto', ...props }: GlassMaterialProps) {
+  const {settings,lab}=useOptics();
+  const materialStyle: GlassMaterialProps['style'] = { ...style };
+  if (opacity !== undefined) materialStyle['--glass-opacity'] = Math.max(0, Math.min(1, opacity));
+  if (blur !== undefined) materialStyle['--glass-blur'] = `${Math.max(0, blur)}px`;
+  if (specularIntensity !== undefined) materialStyle['--glass-specular'] = Math.max(0, specularIntensity);
+  if (borderIllumination !== undefined) materialStyle['--glass-edge'] = Math.max(0, borderIllumination);
+  if (saturation !== undefined) materialStyle['--glass-saturation'] = `${Math.max(0, saturation)}%`;
+  if (depth !== undefined) materialStyle['--glass-depth'] = Math.max(0, Math.min(1, depth));
+  if (tint) materialStyle['--glass-tint'] = tint;
+  const name=lab?(material||(variant==='thick'?'floating':variant==='thin'?'clear':'frosted')):settings.material;
+  const preset=materialPresets[name],crystal=preset.crystal;
+  materialStyle.borderRadius=radius??undefined;materialStyle.boxShadow=shadow;
+  Object.assign(materialStyle,{'--material-radius':`${preset.radius}px`,'--material-shadow':preset.shadow});
+  materialStyle['--glass-blur']=`${blur??settings.blur*crystals[crystal].blur}px`;
+  materialStyle['--glass-opacity']=opacity??(lab?settings.opacity*crystals[crystal].opacity:'var(--appearance-opacity)');
+  materialStyle['--glass-tint']=tint??(lab?settings.tint:'var(--appearance-tint)');
+  materialStyle['--glass-specular']=specularIntensity??settings.specular;
+  materialStyle['--glass-saturation']=`${saturation??settings.saturation*100}%`;
+  const selectedMethod=refractive?method:'css';
+  return <Tag {...props} style={materialStyle} data-material={name} data-optical-ior={ior} data-optical-fresnel={fresnel} data-optical-thickness={thickness} data-optical-edge={borderIllumination} data-optical-cursor={cursorResponse} data-glass={variant} data-crystal={crystal} data-optic={selectedMethod} data-optical-blur={blur} data-optical-refraction={refraction} data-optical-specular={specularIntensity} data-optical-saturation={saturation} data-optical-opacity={opacity} data-optical-tint={tint} className={`glass-material ${className}`}>{selectedMethod==='svg'&&<SVGPlane variant={crystal}/ >}{children}</Tag>;
+}
+
+export function GlassWindow({ children, className = '' }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={`app glass-window ${className}`}>{children}</div>;
+}
+export function GlassSidebar({ className = '', ...props }: HTMLAttributes<HTMLElement>) { return <GlassMaterial as="aside" variant="regular" {...props} className={`sidebar ${className}`} />; }
+export function GlassPanel({ className = '', ...props }: HTMLAttributes<HTMLElement>) { return <GlassMaterial as="section" variant="thick" {...props} className={`glass-panel ${className}`} />; }
+export function GlassCard({ className = '', ...props }: HTMLAttributes<HTMLElement>) { return <article {...props} className={`music-card ${className}`} />; }
+export function GlassButton({ className = '', ...props }: ButtonHTMLAttributes<HTMLButtonElement>) { return <Button {...props} data-glass="thin" className={`glass-button ${className}`} />; }
+export function GlassSlider({ className = '', ...props }: InputHTMLAttributes<HTMLInputElement>) { return <input {...props} type="range" className={`glass-slider ${className}`} />; }
+
+// Small optical surfaces avoid applying SVG displacement to whole scrolling panels.
+export function LiquidLens({ radius = 99 }: { radius?: number }) { return <span className="lens-fallback" style={{borderRadius:radius}} aria-hidden="true" />; }
+
+export interface GlassMenuItem { label: string; icon?: ReactNode; action(): void; disabled?: boolean; danger?: boolean }
+export function GlassContextMenu({ label, items, disabled = false }: { label: string; items: GlassMenuItem[]; disabled?: boolean }) {
+  const {reduced}=useOptics();
+  const [point,setPoint]=useState<{x:number;y:number}|null>(null);
+  const [open, setOpen] = useState(false), [position, setPosition] = useState({ left: 0, top: 0 });
+  const trigger = useRef<HTMLButtonElement>(null), menu = useRef<HTMLDivElement>(null); const id = useId();
+  useEffect(()=>{
+    const scope=trigger.current?.closest<HTMLElement>('[data-track-item],.playlist-row');if(!scope)return;
+    const show=(e:MouseEvent)=>{if(disabled)return;e.preventDefault();e.stopPropagation();setPoint({x:e.clientX,y:e.clientY});setOpen(true);};
+    const key=(e:KeyboardEvent)=>{if(e.key==='ContextMenu'||(e.shiftKey&&e.key==='F10')){e.preventDefault();setPoint(null);setOpen(true);}};
+    scope.addEventListener('contextmenu',show);scope.addEventListener('keydown',key);return()=>{scope.removeEventListener('contextmenu',show);scope.removeEventListener('keydown',key);};
+  },[disabled]);
+  useLayoutEffect(() => {
+    if (!open || !trigger.current || !menu.current) return;
+    const r = trigger.current.getBoundingClientRect(), box = menu.current.getBoundingClientRect();
+    setPosition(point?{left:Math.max(12,Math.min(innerWidth-box.width-12,point.x)),top:Math.max(12,Math.min(innerHeight-box.height-12,point.y))}:{ left: Math.max(12, Math.min(innerWidth - box.width - 12, r.right - box.width)), top: r.bottom + box.height + 10 < innerHeight ? r.bottom + 8 : Math.max(12, r.top - box.height - 8) });
+    menu.current.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+  }, [open,point]);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: Event) => { if (!menu.current?.contains(e.target as Node) && !trigger.current?.contains(e.target as Node)) setOpen(false); };
+    const resize = () => setOpen(false);
+    document.addEventListener('pointerdown', close); window.addEventListener('resize', resize);const scroll=(e:Event)=>{if(!menu.current?.contains(e.target as Node))setOpen(false);};document.addEventListener('scroll',scroll,true);
+    return () => { document.removeEventListener('pointerdown', close); window.removeEventListener('resize', resize);document.removeEventListener('scroll',scroll,true); };
+  }, [open]);
+  return <><button ref={trigger} className="icon-button menu-trigger" aria-label={label} title={label} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined} disabled={disabled} onClick={() => {setPoint(null);setOpen(!open);}}><MoreHorizontal size={22} /></button>{createPortal(<AnimatePresence>{open && <motion.div ref={menu} id={id} role="menu" aria-label={label} className="glass-context-menu" style={position} initial={reduced?false:{ opacity: 0, y: 6, scale:.985 }} animate={{ opacity: 1, y: 0, scale:1 }} exit={{ opacity: 0, y: reduced?0:3 }} transition={{ duration: reduced?0:.2, ease:[.22,1,.36,1] }} onKeyDown={e => {
+    const nodes = Array.from(menu.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') || []); const index = nodes.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === 'Escape' || e.key === 'Tab') { setOpen(false); if (e.key === 'Escape') { e.preventDefault(); trigger.current?.focus(); } }
+    if (['ArrowDown','ArrowUp','Home','End'].includes(e.key)) { e.preventDefault(); nodes[e.key === 'Home' ? 0 : e.key === 'End' ? nodes.length - 1 : (index + (e.key === 'ArrowDown' ? 1 : -1) + nodes.length) % nodes.length]?.focus(); }
+  }}>{items.map(item => <button key={item.label} role="menuitem" disabled={item.disabled} className={item.danger ? 'danger' : ''} onClick={() => { setOpen(false); trigger.current?.focus(); item.action(); }}>{item.icon}{item.label}</button>)}</motion.div>}</AnimatePresence>, document.querySelector('.optical-root')||document.body)}</>;
+}

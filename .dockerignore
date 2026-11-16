@@ -1,0 +1,7 @@
+**
+!server/
+!server/catalog.ts
+!server/catalog-platforms.ts
+!server/Dockerfile
+!shared/
+!shared/types.ts

@@ -1,0 +1,54 @@
+[package]
+name = "glass-music"
+version = "2.2.0"
+description = "Glass Music para Windows"
+authors = ["Glass Music"]
+edition = "2021"
+license = "MIT"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.42", features = ["bundled"] }
+reqwest = { version = "0.13", features = ["json", "query", "form", "blocking", "rustls"], default-features = false }
+tokio = { version = "1", features = ["sync", "macros", "time", "process", "io-util"] }
+tokio-util = "0.7"
+tiny_http = "0.12"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+lofty = "0.25"
+rfd = "0.15"
+windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Graphics_Dwm", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_Controls", "Win32_UI_HiDpi"] }
+
+base64 = "0.22"
+windows = { version = "0.62", features = ["Foundation", "System", "UI_Composition", "UI_Composition_Desktop", "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_WinRT", "Win32_System_WinRT_Composition"] }
+windows-numerics = "0.3"
+tauri-plugin-updater = "2"
+
+[profile.release]
+codegen-units = 16
+lto = "thin"
+opt-level = "s"
+strip = true
+panic = "abort"
+
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0
+

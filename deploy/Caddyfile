@@ -1,0 +1,10 @@
+{$CATALOG_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy catalog:8788 {
+        header_up X-Glass-Client-IP {remote_host}
+    }
+    header {
+        X-Content-Type-Options nosniff
+        -Server
+    }
+}

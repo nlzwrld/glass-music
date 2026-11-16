@@ -1,0 +1,82 @@
+use crate::db::{now, s, Result};
+use serde_json::Value;
+use std::{collections::HashMap,sync::Mutex,time::{Duration,Instant},sync::OnceLock};
+use tiny_http::{Header,Request,Response,StatusCode};
+
+#[derive(Clone)]
+pub struct Stream { url:String, agent:String, mime:String, expires:i64 }
+pub struct AudioStreams { entries:Mutex<HashMap<String,Stream>>, cache:Mutex<HashMap<String,(Instant,String,f64)>> }
+impl AudioStreams {
+    pub fn new()->Self {Self{entries:Mutex::new(HashMap::new()),cache:Mutex::new(HashMap::new())}}
+    pub fn cached(&self,id:&str)->Option<(String,f64)>{
+        let hit=self.cache.lock().unwrap().get(id).filter(|(at,_,_)|at.elapsed()<Duration::from_secs(1200)).cloned();
+        hit.and_then(|(_,ticket,duration)|self.entries.lock().unwrap().get(&ticket).filter(|stream|stream.expires>now()+60_000).map(|_|(ticket,duration)))
+    }
+    pub fn clear(&self){self.cache.lock().unwrap().clear();self.entries.lock().unwrap().clear();}
+    pub fn register(&self,id:&str,data:&Value)->Result<(String,f64)>{
+        let url=s(data,"url");
+        if !valid_cdn(url) || s(data,"vcodec")!="none" || s(data,"acodec")=="none" || s(data,"protocol")!="https" {
+            return Err("A plataforma não disponibilizou um fluxo de áudio compatível.".into());
+        }
+        let duration=data["duration"].as_f64().filter(|v|v.is_finite()&&*v>0.0&&*v<=604800.0).unwrap_or(0.0);
+        let parsed=url::Url::parse(url).unwrap();
+        let expires=parsed.query_pairs().find(|(k,_)|k=="expire").and_then(|(_,v)|v.parse::<i64>().ok()).map(|n|n.saturating_mul(1000)).unwrap_or(now()+3_600_000).min(now()+21_600_000);
+        if expires<now()+60_000{return Err("O endereço do áudio expirou. Tente reproduzir novamente.".into());}
+        let agent=s(&data["http_headers"],"User-Agent");
+        let agent=if agent.len()<=512 && agent.is_ascii() && !agent.contains(['\r','\n']) {agent.to_string()}else{String::new()};
+        let ticket=uuid::Uuid::new_v4().simple().to_string();
+        let stream=Stream{url:url.to_string(),agent,mime:if s(data,"ext")=="m4a"{"audio/mp4"}else{"audio/webm"}.into(),expires};
+        let mut entries=self.entries.lock().unwrap();entries.retain(|_,v|v.expires>now());
+        // Only current/recent track references are kept in memory, never audio files.
+        if entries.len()>=40{entries.clear();self.cache.lock().unwrap().clear();}
+        entries.insert(ticket.clone(),stream);drop(entries);
+        self.cache.lock().unwrap().insert(id.into(),(Instant::now(),ticket.clone(),duration));
+        Ok((ticket,duration))
+    }
+    pub fn respond(&self,req:Request,token:&str,allowed:bool){
+        let fail=|req:Request,code:u16|{let _=req.respond(Response::from_string("Áudio indisponível").with_status_code(code));};
+        if !allowed{fail(req,403);return;}
+        let stream=self.entries.lock().unwrap().get(token).filter(|v|v.expires>now()).cloned();
+        let Some(stream)=stream else{fail(req,404);return;};
+        let range=req.headers().iter().find(|h|h.field.equiv("Range")).map(|h|h.value.as_str().to_string());
+        if range.as_deref().is_some_and(|v|!valid_range(v)){fail(req,416);return;}
+        static CLIENT:OnceLock<reqwest::blocking::Client>=OnceLock::new();
+        let client=CLIENT.get_or_init(||reqwest::blocking::Client::builder().connect_timeout(Duration::from_secs(8)).timeout(Duration::from_secs(90)).pool_idle_timeout(Duration::from_secs(90)).redirect(reqwest::redirect::Policy::none()).build().expect("audio HTTP client"));
+        let mut request=if req.method().as_str()=="HEAD"{client.head(&stream.url)}else{client.get(&stream.url)};
+        if !stream.agent.is_empty(){request=request.header("User-Agent",&stream.agent);}
+        if let Some(range)=range{request=request.header("Range",range);}
+        let Ok(upstream)=request.send() else{fail(req,502);return;};
+        let status=upstream.status().as_u16();
+        if ![200,206].contains(&status){fail(req,if status==416{416}else{502});return;}
+        if upstream.content_length().unwrap_or(0)>2_000_000_000{fail(req,502);return;}
+        let h=|k:&str,v:&str|Header::from_bytes(k,v).unwrap();
+        let mut headers=vec![h("Content-Type",&stream.mime),h("Access-Control-Allow-Origin","https://tauri.localhost"),
+            h("Cross-Origin-Resource-Policy","cross-origin"),h("Accept-Ranges","bytes"),h("Cache-Control","no-store"),h("X-Content-Type-Options","nosniff")];
+        if let Some(value)=upstream.headers().get("Content-Range").and_then(|v|v.to_str().ok()){if value.len()<100{headers.push(h("Content-Range",value));}}
+        let len=upstream.content_length().and_then(|v|usize::try_from(v).ok());
+        let _=req.respond(Response::new(StatusCode(status),headers,upstream,len,None));
+    }
+}
+pub fn valid_cdn(raw:&str)->bool{
+    url::Url::parse(raw).is_ok_and(|u|u.scheme()=="https" && u.username().is_empty() && u.password().is_none() && u.port().is_none()
+        && u.host_str().is_some_and(|host|host.ends_with(".googlevideo.com")) && u.path()=="/videoplayback" && raw.len()<16000)
+}
+fn valid_range(raw:&str)->bool{
+    let Some(range)=raw.strip_prefix("bytes=")else{return false;};
+    let Some((start,end))=range.split_once('-')else{return false;};
+    raw.len()<80 && (!start.is_empty()||!end.is_empty()) && start.bytes().all(|b|b.is_ascii_digit()) && end.bytes().all(|b|b.is_ascii_digit())
+}
+#[cfg(test)]
+mod tests{
+    use super::*;
+    #[test]fn stream_destinations_cannot_be_supplied_arbitrarily(){
+        assert!(valid_cdn("https://rr2---test.googlevideo.com/videoplayback?expire=1"));
+        for u in ["https://googlevideo.com.attacker.test/videoplayback","https://127.0.0.1/videoplayback","http://x.googlevideo.com/videoplayback","https://x.googlevideo.com:444/videoplayback","https://user@x.googlevideo.com/videoplayback","https://x.googlevideo.com/other"]{assert!(!valid_cdn(u),"{u}");}
+        for r in ["bytes=0-","bytes=10-500","bytes=-100"]{assert!(valid_range(r));}
+        for r in ["bytes=0-10,20-30","bytes=0-10\r\nHost: evil","bytes=-","other=1-2"]{assert!(!valid_range(r));}
+    }
+    #[test]fn video_streams_are_rejected_even_on_the_media_cdn(){
+        let streams=AudioStreams::new();
+        assert!(streams.register("test",&serde_json::json!({"url":"https://x.googlevideo.com/videoplayback","vcodec":"h264","acodec":"aac","protocol":"https"})).is_err());
+    }
+}

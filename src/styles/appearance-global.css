@@ -1,0 +1,92 @@
+/* The native region is the only outer clip. The WebView paints to every edge. */
+.optical-root{--appearance-tint:#192b35;--appearance-highlight:255 255 255}
+.glass-material.optical-window-material{position:absolute;inset:0;z-index:-1;pointer-events:none;border-radius:24px!important;--material-shadow:none;--glass-opacity:var(--appearance-opacity);--glass-tint:var(--appearance-tint);--glass-blur:calc(var(--appearance-blur)*var(--appearance-blur-scale));--glass-saturation:var(--appearance-saturation);--glass-specular:var(--appearance-specular)}
+html[data-theme=light] .optical-root{--appearance-tint:#edf4f7;--appearance-highlight:255 255 255}
+.optical-root :is(.modal,.queue-panel,.expanded-player,.glass-context-menu,.toast,.welcome-screen){
+  background:color-mix(in srgb,var(--appearance-tint) calc(var(--appearance-opacity)*100%),transparent);
+  backdrop-filter:blur(calc(var(--appearance-blur)*var(--appearance-blur-scale))) saturate(var(--appearance-saturation));
+  box-shadow:inset 0 1px 0 rgb(var(--appearance-highlight) / calc(var(--appearance-specular)*.35)),0 8px 28px #00000014;
+  color:var(--text);
+}
+.optical-root :is(.modal,.queue-panel,.expanded-player,.glass-context-menu,.toast,.welcome-screen){
+  background-image:radial-gradient(ellipse at 20% 0%,rgb(var(--appearance-highlight) / calc(var(--appearance-specular)*.14)),transparent 65%);
+}
+.optical-root .glass-material{box-shadow:var(--material-shadow,0 8px 28px #00000014),inset 0 1px 0 rgb(var(--appearance-highlight) / calc(var(--appearance-specular)*.35))}
+/* One diffuse global bevel. WebGL paints it itself; CSS uses the same four sides. */
+.optical-root .glass-material.optical-window-material{border:0;box-shadow:inset 0 0 8px rgb(var(--appearance-highlight) / calc(var(--appearance-specular)*.18))}
+html[data-optical-engine=webgl] .optical-root .glass-material.optical-window-material{box-shadow:none}
+.optical-root .main-shell.glass-material{border:0;box-shadow:none;--material-shadow:none}
+.optical-root .modal{--muted:inherit}
+.optical-root .glass-context-menu{--glass-blur:var(--appearance-blur)}
+.optical-root .settings-section{background:transparent;backdrop-filter:none;box-shadow:none}
+.optical-root .svg-plane{background:transparent;backdrop-filter:blur(calc(var(--appearance-blur)*var(--appearance-blur-scale))) saturate(var(--appearance-saturation))}
+html[data-performance=true] .optical-root :is(.modal,.queue-panel,.expanded-player,.glass-context-menu,.toast,.welcome-screen){backdrop-filter:none}
+/* Native Acrylic is the environment in desktop mode; the same tint covers it. */
+.app:has(.optical-root[data-background=desktop]){background:transparent}
+.optical-root[data-background=desktop]{background:color-mix(in srgb,var(--appearance-tint) calc(var(--appearance-opacity)*100%),transparent)}
+
+.app{clip-path:inset(0 round 24px)}
+.welcome-smooth .welcome-content,.welcome-smooth .welcome-emblem,.welcome-smooth .welcome-emblem svg path{animation:none;transition:none}
+.welcome-smooth h1{font-weight:400;letter-spacing:-1.4px}
+.welcome-smooth time{letter-spacing:1px}
+.optical-root .glass-material.optical-window-material{box-shadow:inset 0 0 14px rgb(var(--appearance-highlight) / calc(var(--appearance-specular)*.12))}
+
+.playlist-hero-art{width:76px;height:76px;border-radius:18px;flex:none;overflow:hidden}
+.playlist-thumbnail{background:linear-gradient(145deg,#4b7588,#233d4c)}
+.lyrics-panel{position:absolute;top:54px;bottom:128px;right:14px;width:min(580px,calc(100% - 28px));z-index:26;padding:24px;display:flex;flex-direction:column;overflow:hidden;background:color-mix(in srgb,var(--appearance-tint) 85%,transparent);backdrop-filter:blur(28px)}
+.lyrics-panel header{display:flex;justify-content:space-between;align-items:center;flex:none}.lyrics-panel header>div{display:flex;gap:8px}.lyrics-panel h2{font-size:20px;font-weight:500}
+.lyrics-scroll{min-height:0;overflow:auto;flex:1;overscroll-behavior:contain;padding:24px 4px;scrollbar-width:thin;mask-image:linear-gradient(transparent,#000 6%,#000 94%,transparent)}
+.lyrics-lines{display:flex;flex-direction:column;gap:22px;padding:32% 0}
+.lyrics-lines button{text-align:left;line-height:1.45;font-size:clamp(20px,2vw,30px);font-weight:600;color:var(--muted);opacity:.38;transform-origin:left center;transition:opacity .45s ease,color .45s ease,transform .5s cubic-bezier(.22,1,.36,1);padding:3px 8px}
+.lyrics-lines button.active{color:var(--text);opacity:1;transform:scale(1.015)}.lyrics-lines button.past{opacity:.22}.lyrics-lines button:hover{opacity:.85}
+.lyrics-state{height:100%;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:14px;text-align:center}.lyrics-plain{white-space:pre-line;line-height:1.9;font-size:19px;padding:20px 8px}
+.lyrics-offset{display:flex;align-items:center;gap:14px;font-size:11px;color:var(--muted);padding-top:12px}.lyrics-offset input{flex:1;min-width:0}.lyrics-offset output{font-variant-numeric:tabular-nums;width:44px;text-align:right}.lyrics-credit{font-size:10px;color:var(--muted);align-self:flex-end;opacity:.6;margin-top:10px}
+@media(max-width:700px){.lyrics-panel{padding:18px;bottom:138px}.lyrics-lines button{font-size:23px}}
+
+.playlist-hero-art+div{margin-left:18px;margin-right:auto}
+
+.optical-root .glass-material.lyrics-panel{background:color-mix(in srgb,var(--appearance-tint) 82%,transparent);backdrop-filter:blur(24px) saturate(120%)}
+
+/* A restrained motion language: quick feedback, soft arrival, no elastic jumps. */
+:root{--motion-press:160ms;--motion-hover:220ms;--motion-page:300ms;--motion-panel:340ms;--ease-glass:cubic-bezier(.22,1,.36,1)}
+button{transition-timing-function:var(--ease-glass)}
+.nav-item,.recent-track,.track-row,.playlist-row,.queue-item{transition:background var(--motion-hover) var(--ease-glass),border-color var(--motion-hover) var(--ease-glass),color var(--motion-hover) var(--ease-glass)}
+.nav-item:active:not(:disabled),.recent-track:active:not(:disabled),.queue-track:active:not(:disabled),.titlebar button:active:not(:disabled){transform:none}
+.card-play{transition:opacity 220ms var(--ease-glass),transform 280ms var(--ease-glass),background 220ms var(--ease-glass)}
+.card-add,.row-actions,.playlist-row .menu-trigger{transition:opacity 180ms var(--ease-glass)}
+.background-option{transition:border-color 220ms var(--ease-glass),background 220ms var(--ease-glass),box-shadow 220ms var(--ease-glass)}
+.toggle span{transition:transform 240ms var(--ease-glass)}
+.modal-backdrop{animation:glass-overlay-in 180ms ease-out both}
+.modal{animation:glass-panel-in 320ms var(--ease-glass) both}
+.toast{animation:glass-panel-in 280ms var(--ease-glass) both}
+.lyrics-panel{animation:glass-panel-in 340ms var(--ease-glass) both}
+@keyframes glass-panel-in{from{opacity:0;transform:translateY(10px) scale(.992)}to{opacity:1;transform:none}}
+@keyframes glass-overlay-in{from{opacity:0}to{opacity:1}}
+
+/* Recent items never widen the sidebar. Only the vertical collection scrolls. */
+.sidebar-playlists{overflow-x:hidden;overflow-y:auto;scrollbar-gutter:stable;overscroll-behavior:contain}
+.sidebar-recents{display:flex;flex-direction:column;gap:3px;min-width:0;padding-right:2px}
+.recent-heading{padding-bottom:12px;flex-shrink:0}
+.recent-track{display:flex;align-items:center;gap:10px;width:100%;flex:none;min-width:0;border:1px solid transparent;border-radius:12px;padding:7px 6px;text-align:left;color:var(--text)}
+.recent-track:hover,.recent-track:focus-visible{background:var(--hover)}
+.recent-art{position:relative;display:block;width:34px;height:34px;flex:none;border-radius:8px;overflow:hidden;background:var(--hover)}
+.recent-art .cover,.recent-art img,.recent-art .cover-fallback{width:100%;height:100%;object-fit:cover}
+.recent-art>span{position:absolute;inset:0;display:grid;place-items:center;background:#0006;color:white;opacity:0;transition:opacity 180ms var(--ease-glass)}
+.recent-track:hover .recent-art>span,.recent-track:focus-visible .recent-art>span{opacity:1}
+.recent-caption{display:flex;flex-direction:column;gap:4px;min-width:0;flex:1}
+.recent-caption strong,.recent-caption small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.recent-caption strong{font-size:12px;font-weight:550}.recent-caption small{font-size:10px;color:var(--muted)}
+.recent-empty{padding:8px 8px 15px;font-size:11px;line-height:1.6;color:var(--muted)}
+.sidebar-collapsed .recent-caption,.sidebar-collapsed .recent-heading,.sidebar-collapsed .recent-empty{display:none}
+.sidebar-collapsed .recent-track{justify-content:center;padding-inline:0}.sidebar-collapsed .sidebar-recents{margin-top:18px;padding:0;scrollbar-gutter:auto;scrollbar-width:none}
+.playlist-row .nav-item{width:auto;flex:1;min-width:0}.playlist-row .nav-item>span:last-child{min-width:0;flex:1}
+
+/* Blur changes diffusion only. The desktop glass has an achromatic tint and
+   does not stack the blue/green saturation boosts used by colored scenes. */
+.optical-root[data-background=desktop]{--appearance-tint:#202020;--appearance-saturation:100%;background:color-mix(in srgb,#202020 calc(var(--appearance-opacity)*100%),transparent)}
+html[data-theme=light] .optical-root[data-background=desktop]{--appearance-tint:#f4f4f4;background:color-mix(in srgb,#f4f4f4 calc(var(--appearance-opacity)*100%),transparent)}
+.optical-root[data-background=desktop] .glass-material[data-optic=auto],.optical-root[data-background=desktop] .glass-material[data-optic=css]{backdrop-filter:blur(var(--glass-blur,0px)) grayscale(1);--glass-saturation:100%}
+.optical-root[data-background=desktop] :is(.modal,.queue-panel,.expanded-player,.glass-context-menu,.toast,.welcome-screen,.svg-plane){backdrop-filter:blur(calc(var(--appearance-blur)*var(--appearance-blur-scale))) grayscale(1)}
+
+html[data-motion=reduced] *,html[data-motion=reduced] *::before,html[data-motion=reduced] *::after,html[data-performance=true] *,html[data-performance=true] *::before,html[data-performance=true] *::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important;scroll-behavior:auto!important}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
