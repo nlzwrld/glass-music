@@ -33,7 +33,7 @@ export function PlayerEngine() {
   useEffect(()=>{if(!consent)invalidatePlayback();},[consent]);
   useEffect(()=>{
     const generation=++activeGeneration.current,all=elements();clearTimeout(retire.current);
-    const former=all[activeDeck.current],hadPrevious=former.hasAttribute('src'),canContinue=!!track&&playbackAllowed&&track.source!=='soundcloud'&&hadPrevious&&!former.paused;
+    const former=all[activeDeck.current],hadPrevious=former.hasAttribute('src'),canContinue=!!track&&playbackAllowed&&preferences.transition==='crossfade'&&track.source!=='soundcloud'&&hadPrevious&&!former.paused;
     const outgoing=canContinue?former:undefined;
     const selected=canContinue?1-activeDeck.current:activeDeck.current;activeDeck.current=selected;
     const el=all[selected],frame=iframe.current!;let cancelled=false,recorded=false,advanced=false,started=false,pausedDuringPreparation=false,frameOrigin='',resolvedTrack=track;

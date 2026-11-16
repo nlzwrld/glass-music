@@ -44,7 +44,7 @@ impl AudioStreams {
         let client=CLIENT.get_or_init(||reqwest::blocking::Client::builder().connect_timeout(Duration::from_secs(8)).timeout(Duration::from_secs(90)).pool_idle_timeout(Duration::from_secs(90)).redirect(reqwest::redirect::Policy::none()).build().expect("audio HTTP client"));
         let mut request=if req.method().as_str()=="HEAD"{client.head(&stream.url)}else{client.get(&stream.url)};
         if !stream.agent.is_empty(){request=request.header("User-Agent",&stream.agent);}
-        if let Some(range)=range{request=request.header("Range",range);}
+        request=request.header("Range",bounded_range(range.as_deref()));
         let Ok(upstream)=request.send() else{fail(req,502);return;};
         let status=upstream.status().as_u16();
         if ![200,206].contains(&status){fail(req,if status==416{416}else{502});return;}
@@ -61,6 +61,10 @@ pub fn valid_cdn(raw:&str)->bool{
     url::Url::parse(raw).is_ok_and(|u|u.scheme()=="https" && u.username().is_empty() && u.password().is_none() && u.port().is_none()
         && u.host_str().is_some_and(|host|host.ends_with(".googlevideo.com")) && u.path()=="/videoplayback" && raw.len()<16000)
 }
+fn bounded_range(raw:Option<&str>)->String{
+ let value=raw.unwrap_or("bytes=0-");let Some((start,end))=value.strip_prefix("bytes=").and_then(|v|v.split_once('-'))else{return "bytes=0-1048575".into();};
+ if start.is_empty(){return value.into();}let first=start.parse::<u64>().unwrap_or(0);let last=first.saturating_add(1_048_575);let end=end.parse::<u64>().map(|n|n.min(last)).unwrap_or(last);format!("bytes={first}-{end}")
+}
 fn valid_range(raw:&str)->bool{
     let Some(range)=raw.strip_prefix("bytes=")else{return false;};
     let Some((start,end))=range.split_once('-')else{return false;};
@@ -75,6 +79,7 @@ mod tests{
         for r in ["bytes=0-","bytes=10-500","bytes=-100"]{assert!(valid_range(r));}
         for r in ["bytes=0-10,20-30","bytes=0-10\r\nHost: evil","bytes=-","other=1-2"]{assert!(!valid_range(r));}
     }
+    #[test]fn open_ended_streams_use_small_direct_ranges(){assert_eq!(bounded_range(None),"bytes=0-1048575");assert_eq!(bounded_range(Some("bytes=1048576-")),"bytes=1048576-2097151");assert_eq!(bounded_range(Some("bytes=2-20")),"bytes=2-20");assert_eq!(bounded_range(Some("bytes=-100")),"bytes=-100");}
     #[test]fn video_streams_are_rejected_even_on_the_media_cdn(){
         let streams=AudioStreams::new();
         assert!(streams.register("test",&serde_json::json!({"url":"https://x.googlevideo.com/videoplayback","vcodec":"h264","acodec":"aac","protocol":"https"})).is_err());
