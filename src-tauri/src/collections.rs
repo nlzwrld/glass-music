@@ -45,7 +45,7 @@ pub async fn read(mut response:reqwest::Response)->Result<Value>{
  serde_json::from_slice(&bytes).map_err(|_|"Lista inválida.".into())
 }
 pub fn playlist_url(raw:&str)->Result<(String,String,String)>{
- if !crate::links::public_url(raw){return Err("Use um link público HTTPS de playlist.".into());}
+ if !crate::links::public_url(raw){return Err("Use um link público HTTPS de playlist ou álbum.".into());}
  let u=url::Url::parse(raw).unwrap();let host=u.host_str().unwrap_or("");let parts:Vec<_>=u.path_segments().into_iter().flatten().filter(|p|!p.is_empty()).collect();
  if ["www.youtube.com","youtube.com","music.youtube.com","youtu.be"].contains(&host){
   let id=u.query_pairs().find(|(k,_)|k=="list").map(|(_,v)|v.into_owned()).ok_or("Use um link de playlist com list=.")?;
@@ -53,9 +53,26 @@ pub fn playlist_url(raw:&str)->Result<(String,String,String)>{
   return Ok(("youtube".into(),id.clone(),format!("https://www.youtube.com/playlist?list={id}")));
  }
  if ["soundcloud.com","www.soundcloud.com"].contains(&host)&&parts.len()==3&&parts[1]=="sets"{return Ok(("soundcloud".into(),parts.join("/"),format!("https://soundcloud.com/{}",parts.join("/"))));}
- if host=="open.spotify.com"{if let Some(i)=parts.iter().position(|v|*v=="playlist"){if let Some(id)=parts.get(i+1){if id.len()==22&&id.bytes().all(|b|b.is_ascii_alphanumeric()){return Ok(("spotify".into(),id.to_string(),format!("https://open.spotify.com/playlist/{id}")));}}}}
- if ["deezer.com","www.deezer.com"].contains(&host){if let Some(i)=parts.iter().position(|v|*v=="playlist"){if let Some(id)=parts.get(i+1){if id.len()<=25&&!id.is_empty()&&id.bytes().all(|b|b.is_ascii_digit()){return Ok(("deezer".into(),id.to_string(),format!("https://www.deezer.com/playlist/{id}")));}}}}
- Err("Use o link completo de uma playlist YouTube, SoundCloud, Spotify ou Deezer.".into())
+ if host=="open.spotify.com"{
+  for kind in ["playlist","album","artist"]{
+   if let Some(i)=parts.iter().position(|v|*v==kind){if let Some(id)=parts.get(i+1){if id.len()==22&&id.bytes().all(|b|b.is_ascii_alphanumeric()){return Ok((format!("spotify:{kind}"),id.to_string(),format!("https://open.spotify.com/{kind}/{id}")));}}}
+  }
+ }
+ if ["deezer.com","www.deezer.com"].contains(&host){
+  for kind in ["playlist","album","artist"]{
+   if let Some(i)=parts.iter().position(|v|*v==kind){if let Some(id)=parts.get(i+1){if id.len()<=25&&!id.is_empty()&&id.bytes().all(|b|b.is_ascii_digit()){return Ok((format!("deezer:{kind}"),id.to_string(),format!("https://www.deezer.com/{kind}/{id}")));}}}
+  }
+ }
+ if ["music.apple.com","itunes.apple.com"].contains(&host){
+  if let Ok((cc,kind,id))=crate::platforms::parse_apple_url(&u){
+   if ["album","artist"].contains(&kind){return Ok((format!("apple:{kind}"),id.clone(),format!("https://music.apple.com/{cc}/{kind}/{id}")));}
+  }
+ }
+ if crate::platforms::is_bandcamp(host)&&parts.len()==2&&parts[0]=="album"{
+  let mut clean=u.clone();clean.set_query(None);clean.set_fragment(None);
+  return Ok(("bandcamp:album".into(),parts[1].to_string(),clean.to_string()));
+ }
+ Err("Use o link completo de uma playlist ou álbum do Spotify, Deezer, Apple Music, Bandcamp, YouTube ou SoundCloud.".into())
 }
 pub fn is_playlist(raw:&str)->bool{playlist_url(raw).is_ok()}
 pub async fn fetch(raw:&str,direct:&crate::direct_catalog::DirectCatalog)->Result<Collection>{
@@ -66,21 +83,53 @@ pub async fn fetch(raw:&str,direct:&crate::direct_catalog::DirectCatalog)->Resul
    if entries.len()>1000{warning="Primeiras 1000 faixas importadas; esta lista excede o limite por importação.".into();}
    for row in entries.iter().take(1000){let t=if provider=="youtube"{youtube_track(row)}else{soundcloud_track(row)};if let Some(t)=t{tracks.push(t);}else{skipped+=1;}}
   },
-  "spotify"=>{
-   let meta=crate::links::spotify_entity("playlist",&id).await?;cover=artwork(&meta);name=s(&meta,"name").to_string();
-   let rows=meta["trackList"].as_array().ok_or("Esta playlist não está disponível publicamente. Conecte a conta para acessar listas privadas.")?;
-   for row in rows.iter().take(1000){if let Some(t)=spotify_track(row){tracks.push(t);}else{skipped+=1;}}
-   warning="Importadas as faixas que o Spotify disponibilizou publicamente. O embed pode limitar a lista; conecte a conta para sincronizar o conteúdo acessível completo.".into();
+  "spotify:playlist"|"spotify:album"|"spotify:artist"=>{
+   let kind=provider.strip_prefix("spotify:").unwrap();
+   let meta=crate::links::spotify_entity(kind,&id).await?;cover=artwork(&meta);name=meta["name"].as_str().or(meta["title"].as_str()).unwrap_or("Spotify").to_string();
+   let default_artist=meta["artists"].as_array().and_then(|a|a.first()).and_then(|a|a["name"].as_str()).unwrap_or(if kind=="artist"{&name}else{""}).to_string();
+   let rows=meta["trackList"].as_array().ok_or("Esta lista não está disponível publicamente. Conecte a conta para acessar listas privadas.")?;
+   for row in rows.iter().take(1000){
+    let mut patched=row.clone();
+    if s(&patched,"subtitle").is_empty()&&!default_artist.is_empty(){patched["subtitle"]=json!(default_artist);}
+    if let Some(mut t)=spotify_track(&patched){if !cover.is_empty()&&s(&t,"artwork").is_empty(){t["artwork"]=json!(cover);}if kind=="album"&&!name.is_empty(){t["album"]=json!(name);}tracks.push(t);}else{skipped+=1;}
+   }
+   if kind=="playlist"{warning="Importadas as faixas que o Spotify disponibilizou publicamente. O embed pode limitar a lista; conecte a conta para sincronizar o conteúdo acessível completo.".into();}
+  },
+  "apple:album"|"apple:artist"=>{
+   let u=url::Url::parse(&url).map_err(|_|"Link Apple Music inválido.")?;
+   return crate::platforms::apple_collection(&u).await;
+  },
+  "bandcamp:album"=>{
+   let u=url::Url::parse(&url).map_err(|_|"Link Bandcamp inválido.")?;
+   return crate::platforms::bandcamp_collection(&u).await;
+  },
+  "deezer:album"=>{
+   let meta=get(&format!("https://api.deezer.com/album/{id}")).await?;if meta.get("error").is_some(){return Err("Álbum Deezer indisponível.".into());}
+   cover=meta["cover_big"].as_str().or(meta["cover_medium"].as_str()).filter(|u|db::artwork_url(u)).unwrap_or("").to_string();
+   name=s(&meta,"title").to_string();let fallback_artist=meta["artist"]["name"].as_str().unwrap_or("Deezer");
+   let rows=meta.pointer("/tracks/data").and_then(Value::as_array).ok_or("Álbum Deezer vazio.")?;
+   for row in rows.iter().take(1000){
+    let mut r=row.clone();if r["artist"]["name"].is_null(){r["artist"]=json!({"name":fallback_artist});}if r["album"].is_null(){r["album"]=json!({"title":name,"cover_big":cover});}
+    if let Some(t)=crate::platforms::deezer_item(&r,"track"){tracks.push(t);}else{skipped+=1;}
+   }
+  },
+  "deezer:artist"=>{
+   let meta=get(&format!("https://api.deezer.com/artist/{id}")).await?;if meta.get("error").is_some(){return Err("Artista Deezer indisponível.".into());}
+   cover=meta["picture_big"].as_str().or(meta["picture_medium"].as_str()).filter(|u|db::artwork_url(u)).unwrap_or("").to_string();
+   name=s(&meta,"name").to_string();
+   let top=get(&format!("https://api.deezer.com/artist/{id}/top?limit=50")).await?;
+   let rows=top["data"].as_array().ok_or("Faixas do artista indisponíveis.")?;
+   for row in rows{if let Some(t)=crate::platforms::deezer_item(row,"track"){tracks.push(t);}else{skipped+=1;}}
   },
   _=>{
    let meta=get(&format!("https://api.deezer.com/playlist/{id}")).await?;if meta.get("error").is_some(){return Err("Playlist Deezer indisponível.".into());}cover=artwork(&meta);name=s(&meta,"title").to_string();
    for index in (0..1000).step_by(100){let page=get(&format!("https://api.deezer.com/playlist/{id}/tracks?limit=100&index={index}")).await?;let rows=page["data"].as_array().ok_or("Lista Deezer inválida.")?;
-    for row in rows{let tid=row["id"].as_u64().ok_or("Faixa Deezer inválida.")?;let link=format!("https://www.deezer.com/track/{tid}");let hash=format!("{:x}",Sha256::digest(link.as_bytes()))[..32].to_string();let mut t=json!({"id":format!("link:{hash}"),"source":"link","sourceId":hash,"kind":"track","title":row["title"],"artist":row["artist"]["name"],"duration":row["duration"],"url":link,"addedAt":now()});if let Some(art)=row.pointer("/album/cover_medium").and_then(Value::as_str){if db::artwork_url(art){t["artwork"]=json!(art);}}if db::validate_track(&t).is_ok(){tracks.push(t);}else{skipped+=1;}}
+    for row in rows{if let Some(t)=crate::platforms::deezer_item(row,"track"){tracks.push(t);}else{skipped+=1;}}
     if rows.len()<100||page["next"].is_null(){break;}if index==900{warning="Primeiras 1000 faixas importadas; esta lista excede o limite por importação.".into();}
    }
   }
  }
- let mut seen=HashSet::new();tracks.retain(|t|seen.insert(s(t,"id").to_string()));if tracks.is_empty(){return Err("Nenhuma faixa pública disponível nesta playlist.".into());}
+ let mut seen=HashSet::new();tracks.retain(|t|seen.insert(s(t,"id").to_string()));if tracks.is_empty(){return Err("Nenhuma faixa pública disponível nesta lista.".into());}
  if cover.is_empty(){cover=tracks.iter().map(|t|s(t,"artwork")).find(|u|!u.is_empty()).unwrap_or("").to_string();}
  Ok(Collection{artwork:cover,key:url,name,tracks,warning,skipped})
 }

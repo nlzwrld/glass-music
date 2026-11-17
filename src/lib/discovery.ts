@@ -11,7 +11,7 @@ export function cachedDiscoveries():CatalogResult|undefined{
   const entry=JSON.parse(raw);
   if(typeof entry.at!=='number'||entry.at>Date.now()+60_000||Date.now()-entry.at>keepFor||!Array.isArray(entry.value?.sections))return;
   const sections=entry.value.sections;
-  if(sections.length>6||sections.some((s:{source:string;items:unknown[]})=>!['youtube','soundcloud'].includes(s.source)||!Array.isArray(s.items)||s.items.length>60))return;
+  if(sections.length>6||sections.some((s:{source:string;items:unknown[]})=>!['youtube','soundcloud','deezer'].includes(s.source)||!Array.isArray(s.items)||s.items.length>60))return;
   cached={at:entry.at,value:{sections,notices:[]}};return cached.value;
  }catch{return;}
 }

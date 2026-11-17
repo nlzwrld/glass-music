@@ -1,16 +1,209 @@
 use crate::db::{self, now, s, Result};
 use serde_json::{json, Value};
-use std::{collections::HashSet, path::PathBuf, process::Stdio, time::Duration};
-use tokio::{io::{AsyncRead, AsyncReadExt}, process::Command, sync::Semaphore};
+use std::{
+    collections::HashSet,
+    path::PathBuf,
+    process::Stdio,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
+};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    process::Command,
+    sync::Semaphore,
+};
 
 const PAGE: usize = 20;
 const MAX_OFFSET: usize = 180;
 const PLUGIN: &str = "plugins/glass/yt_dlp_plugins/extractor/glass_soundcloud.py";
+const VISIONOS_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
+
+static VISITOR_CACHE: OnceLock<Mutex<Option<(Instant, String)>>> = OnceLock::new();
+
+pub fn warm_visitor() {
+    tokio::spawn(async {
+        let _ = visitor_data(false).await;
+    });
+}
+
+async fn visitor_data(force_refresh: bool) -> String {
+    let slot = VISITOR_CACHE.get_or_init(|| Mutex::new(None));
+    if !force_refresh {
+        if let Some((at, value)) = slot.lock().unwrap().clone() {
+            if at.elapsed() < Duration::from_secs(1800) && !value.is_empty() {
+                return value;
+            }
+        }
+    }
+    let response = crate::providers::client()
+        .get("https://www.youtube.com/sw.js_data")
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+        )
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await;
+    if let Ok(mut res) = response {
+        if res.status().is_success() {
+            let mut bytes = Vec::new();
+            while let Ok(Some(chunk)) = res.chunk().await {
+                if bytes.len() + chunk.len() > 256_000 {
+                    break;
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            if let Ok(text) = String::from_utf8(bytes) {
+                if let Some(found) = extract_visitor_token(&text) {
+                    *slot.lock().unwrap() = Some((Instant::now(), found.clone()));
+                    return found;
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+fn extract_visitor_token(text: &str) -> Option<String> {
+    let mut rest = text;
+    while let Some(idx) = rest.find("\"Cg") {
+        let after = &rest[idx + 1..];
+        if let Some(end) = after.find('"') {
+            let candidate = &after[..end];
+            if (12..=600).contains(&candidate.len())
+                && candidate
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"%_-=".contains(&b))
+            {
+                return Some(candidate.to_string());
+            }
+        }
+        rest = &after[2.min(after.len())..];
+    }
+    None
+}
+
+async fn innertube_player(id: &str, visitor: &str) -> Result<Value> {
+    let mut req = crate::providers::client()
+        .post("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
+        .header("Content-Type", "application/json")
+        .header("Origin", "https://www.youtube.com")
+        .header("User-Agent", VISIONOS_UA)
+        .timeout(Duration::from_secs(6));
+    if !visitor.is_empty() {
+        req = req.header("X-Goog-Visitor-Id", visitor);
+    }
+    let body = json!({
+        "videoId": id,
+        "contentCheckOk": true,
+        "racyCheckOk": true,
+        "context": {
+            "client": {
+                "clientName": "VISIONOS",
+                "clientVersion": "0.1",
+                "deviceMake": "Apple",
+                "deviceModel": "RealityDevice14,1",
+                "osName": "visionOS",
+                "osVersion": "1.3.21O771",
+                "hl": "en",
+                "timeZone": "UTC",
+                "utcOffsetMinutes": 0,
+                "visitorData": visitor
+            }
+        }
+    });
+    let mut res = req
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "Falha na consulta direta de áudio.")?;
+    if !res.status().is_success() {
+        return Err("Resposta indisponível do player.".into());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = res.chunk().await.map_err(|_| "Resposta incompleta.")? {
+        if bytes.len() + chunk.len() > 2_000_000 {
+            return Err("Resposta de áudio muito grande.".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let data: Value = serde_json::from_slice(&bytes).map_err(|_| "JSON de áudio inválido.")?;
+    if s(&data["playabilityStatus"], "status") != "OK" {
+        return Err("Stream direto requer renovação.".into());
+    }
+    let duration = data
+        .pointer("/videoDetails/lengthSeconds")
+        .and_then(Value::as_str)
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    let formats = data
+        .pointer("/streamingData/adaptiveFormats")
+        .and_then(Value::as_array)
+        .ok_or("Formatos adaptativos ausentes.")?;
+    let best = formats
+        .iter()
+        .filter(|f| {
+            let mime = s(f, "mimeType");
+            (mime.starts_with("audio/mp4") || mime.starts_with("audio/webm"))
+                && crate::audio::valid_cdn(s(f, "url"))
+        })
+        .max_by_key(|f| {
+            let itag = f["itag"].as_i64().unwrap_or(0);
+            let mp4_bonus = if s(f, "mimeType").starts_with("audio/mp4") {
+                500_000
+            } else {
+                0
+            };
+            let itag140_bonus = if itag == 140 { 250_000 } else { 0 };
+            let br = f["averageBitrate"]
+                .as_i64()
+                .or_else(|| f["bitrate"].as_i64())
+                .unwrap_or(0);
+            mp4_bonus + itag140_bonus + br
+        })
+        .ok_or("Nenhum fluxo de áudio direto compatível.")?;
+    let mime = s(best, "mimeType");
+    let ext = if mime.starts_with("audio/mp4") {
+        "m4a"
+    } else {
+        "webm"
+    };
+    let filesize = best["contentLength"]
+        .as_str()
+        .and_then(|v| v.parse::<u64>().ok());
+    let mut out = json!({
+        "url": s(best, "url"),
+        "vcodec": "none",
+        "acodec": if ext == "m4a" { "mp4a.40.2" } else { "opus" },
+        "protocol": "https",
+        "ext": ext,
+        "duration": duration,
+        "http_headers": { "User-Agent": VISIONOS_UA }
+    });
+    if let Some(len) = filesize {
+        out["filesize"] = json!(len);
+    }
+    Ok(out)
+}
+
+async fn innertube_audio(id: &str) -> Result<Value> {
+    let visitor = visitor_data(false).await;
+    if let Ok(stream) = innertube_player(id, &visitor).await {
+        return Ok(stream);
+    }
+    let refreshed = visitor_data(true).await;
+    if !refreshed.is_empty() && refreshed != visitor {
+        if let Ok(stream) = innertube_player(id, &refreshed).await {
+            return Ok(stream);
+        }
+    }
+    Err("Fallback para extrator auxiliar.".into())
+}
 
 pub struct DirectCatalog { root: PathBuf, slots: Semaphore, audio_slots: Semaphore, disabled: bool }
 impl DirectCatalog {
     pub fn new(resources: PathBuf) -> Self {
-        Self { root: resources.join("catalog"), slots: Semaphore::new(2), audio_slots: Semaphore::new(2),
+        Self { root: resources.join("catalog"), slots: Semaphore::new(3), audio_slots: Semaphore::new(4),
             disabled: std::env::var_os("GLASS_TEST_DATA").is_some()
                 && std::env::var("GLASS_TEST_DISABLE_DIRECT").as_deref() == Ok("1") }
     }
@@ -68,6 +261,11 @@ impl DirectCatalog {
     }
     pub async fn audio(&self, id: &str) -> Result<Value> {
         if id.len()!=11 || !id.bytes().all(|b|b.is_ascii_alphanumeric()||b"_-".contains(&b)) {return Err("Referência de música inválida.".into());}
+        if !self.disabled {
+            if let Ok(fast) = innertube_audio(id).await {
+                return Ok(fast);
+            }
+        }
         if !self.available(){return Err("O componente de áudio está ausente. Reinstale esta edição.".into());}
         let _permit=tokio::time::timeout(Duration::from_secs(15),self.audio_slots.acquire()).await.map_err(|_|"Há outra música sendo preparada.")?.map_err(|_|"Áudio indisponível.")?;
         let mut cmd=Command::new(self.root.join("yt-dlp/yt-dlp.exe"));
@@ -89,20 +287,35 @@ impl DirectCatalog {
     pub async fn discover(&self) -> Result<Value> {
         let yt = json!({"query":"música brasileira lançamentos", "kind":"track"});
         let sc = json!({"query":"electronic music", "kind":"track"});
-        let (youtube, soundcloud) = tokio::join!(self.search("youtube", &yt), async {
-            tokio::time::timeout(Duration::from_secs(3),self.search("soundcloud", &sc)).await
-                .unwrap_or_else(|_|Err("A seleção demorou para responder. Tente novamente para atualizá-la.".into()))
-        });
-        let mut sections = vec![]; let mut notices = vec![];
-        for (source, title, result) in [
-            ("youtube", "Descobertas no YouTube", youtube),
-            ("soundcloud", "Eletrônica no SoundCloud", soundcloud),
-        ] {
-            match result {
-                Ok(value) => sections.push(json!({"id":format!("direct-{source}"),"source":source,"title":title,
-                    "items":value["items"].as_array().unwrap().iter().take(10).collect::<Vec<_>>()})),
-                Err(e) => notices.push(format!("{}: {e}", if source == "youtube" { "YouTube" } else { "SoundCloud" })),
+        let (youtube, deezer, soundcloud) = tokio::join!(
+            self.search("youtube", &yt),
+            async {
+                tokio::time::timeout(Duration::from_secs(5), crate::platforms::discover_deezer())
+                    .await
+                    .unwrap_or_else(|_| Err("A seleção do Deezer demorou para responder.".into()))
+            },
+            async {
+                tokio::time::timeout(Duration::from_secs(4), self.search("soundcloud", &sc))
+                    .await
+                    .unwrap_or_else(|_| Err("A seleção demorou para responder. Tente novamente para atualizá-la.".into()))
             }
+        );
+        let mut sections = vec![];
+        let mut notices = vec![];
+        match youtube {
+            Ok(value) => sections.push(json!({"id":"direct-youtube","source":"youtube","title":"Descobertas no YouTube",
+                "items":value["items"].as_array().unwrap().iter().take(10).collect::<Vec<_>>()})),
+            Err(e) => notices.push(format!("YouTube: {e}")),
+        }
+        match deezer {
+            Ok(items) => sections.push(json!({"id":"direct-deezer","source":"deezer","title":"Em alta no Deezer",
+                "items":items})),
+            Err(e) => notices.push(format!("Deezer: {e}")),
+        }
+        match soundcloud {
+            Ok(value) => sections.push(json!({"id":"direct-soundcloud","source":"soundcloud","title":"Eletrônica no SoundCloud",
+                "items":value["items"].as_array().unwrap().iter().take(10).collect::<Vec<_>>()})),
+            Err(e) => notices.push(format!("SoundCloud: {e}")),
         }
         Ok(json!({"sections":sections,"notices":notices}))
     }
@@ -123,6 +336,8 @@ impl DirectCatalog {
 }
 
 async fn youtube_search(query:&str)->Result<Value>{
+    if query.trim().is_empty() || query.len() > 800 { return Err("Pesquisa inválida.".into()); }
+    if let Ok(fast) = innertube_search(query).await { return Ok(fast); }
     let input=search_input("youtube","track",query,0)?;
     let mut response=crate::providers::client().get(input)
         .header("Accept-Language","pt-BR,pt;q=0.9,en;q=0.7")
@@ -135,6 +350,31 @@ async fn youtube_search(query:&str)->Result<Value>{
     let data=parse_initial_data(&text)?;
     let mut rows=vec![];youtube_videos(&data,0,&mut rows);
     if rows.is_empty(){return Err("Formato da busca indisponível.".into());}
+    normalize(&json!({"entries":rows.into_iter().take(PAGE+1).collect::<Vec<_>>()}),"youtube","track",0)
+}
+async fn innertube_search(query:&str)->Result<Value>{
+    let body=json!({
+        "query": query,
+        "params": "EgIQAfABAQ==",
+        "context": { "client": { "clientName": "WEB", "clientVersion": "2.20250101.00.00", "hl": "pt-BR", "gl": "BR" } }
+    });
+    let mut response=crate::providers::client()
+        .post("https://www.youtube.com/youtubei/v1/search?prettyPrint=false")
+        .json(&body)
+        .timeout(Duration::from_secs(6))
+        .send().await.map_err(|_|"Busca rápida indisponível.")?;
+    if !response.status().is_success(){return Err("Busca rápida indisponível.".into());}
+    let mut bytes=Vec::new();while let Some(chunk)=response.chunk().await.map_err(|_|"Busca incompleta.")?{
+        if bytes.len()+chunk.len()>3_000_000{return Err("Busca muito grande.".into());}bytes.extend_from_slice(&chunk);
+    }
+    let data:Value=serde_json::from_slice(&bytes).map_err(|_|"Busca inválida.")?;
+    if let Some(vis) = data.pointer("/responseContext/visitorData").and_then(Value::as_str) {
+        if (12..=600).contains(&vis.len()) && vis.bytes().all(|b| b.is_ascii_alphanumeric() || b"%_-=".contains(&b)) {
+            *VISITOR_CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some((Instant::now(), vis.to_string()));
+        }
+    }
+    let mut rows=vec![];youtube_videos(&data,0,&mut rows);
+    if rows.is_empty(){return Err("Sem vídeos na busca rápida.".into());}
     normalize(&json!({"entries":rows.into_iter().take(PAGE+1).collect::<Vec<_>>()}),"youtube","track",0)
 }
 fn parse_initial_data(text:&str)->Result<Value>{

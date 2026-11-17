@@ -35,6 +35,7 @@ pub fn official_url(raw: &str) -> bool {
                 Some(
                     "youtube.com"
                         | "www.youtube.com"
+                        | "music.youtube.com"
                         | "youtu.be"
                         | "soundcloud.com"
                         | "www.soundcloud.com"
@@ -67,7 +68,27 @@ pub fn artwork_url(raw: &str) -> bool {
             && u.port().is_none()
             && matches!(
                 u.host_str(),
-                Some("i.ytimg.com" | "i1.sndcdn.com" | "i2.sndcdn.com" | "i.scdn.co" | "mosaic.scdn.co" | "image-cdn-fa.spotifycdn.com" | "image-cdn-ak.spotifycdn.com" | "cdn-images.dzcdn.net")
+                Some(
+                    "i.ytimg.com"
+                        | "i9.ytimg.com"
+                        | "lh3.googleusercontent.com"
+                        | "i1.sndcdn.com"
+                        | "i2.sndcdn.com"
+                        | "i.scdn.co"
+                        | "mosaic.scdn.co"
+                        | "image-cdn-fa.spotifycdn.com"
+                        | "image-cdn-ak.spotifycdn.com"
+                        | "cdn-images.dzcdn.net"
+                        | "e-cdns-images.dzcdn.net"
+                        | "cdns-images.dzcdn.net"
+                        | "is1-ssl.mzstatic.com"
+                        | "is2-ssl.mzstatic.com"
+                        | "is3-ssl.mzstatic.com"
+                        | "is4-ssl.mzstatic.com"
+                        | "is5-ssl.mzstatic.com"
+                        | "f4.bcbits.com"
+                        | "resources.tidal.com"
+                )
             )
     })
 }

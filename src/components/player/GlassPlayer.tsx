@@ -51,7 +51,7 @@ export function SidePlayer() {
     <div className="side-player-header"><IconButton label="Fechar painel lateral" className="side-close" onClick={() => useApp.setState({ sideOpen: false })}><X size={20} /></IconButton><IconButton label="Expandir música" disabled={!active} onClick={() => useApp.setState({ expanded: true })}><Maximize2 size={23} /></IconButton></div>
     <div className="side-art"><AnimatePresence mode="wait"><motion.div className="side-cover" key={track?.id || 'empty'} initial={{ opacity: 0, scale: .98 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: .98 }} transition={{ duration: .25 }}><Cover track={track} /></motion.div></AnimatePresence></div>
     <div className="side-info"><div><h2>{track?.title || 'Nada tocando'}</h2><p>{track ? `${track.artist}${track.album ? ` · ${track.album}` : ''}` : ''}</p></div><Favorite label="Curtir no player lateral" track={track} /><TrackMenu label="Opções no player lateral" track={track} /></div>
-    <div className="side-badges">{track && <SourceBadge source={track.source} />}</div><Seekbar /><PlaybackControls large localSurface />
+    <div className="side-badges">{track && <SourceBadge source={track.source} url={track.url} />}</div><Seekbar /><PlaybackControls large localSurface />
     <div className="side-tools"><AuxiliaryControls /><VolumeControl /></div>
   </GlassPanel>;
 }

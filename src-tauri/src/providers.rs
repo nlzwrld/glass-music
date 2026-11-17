@@ -59,7 +59,7 @@ pub async fn resolve(raw: &str) -> Result<Value> {
     let mut u = url::Url::parse(raw).map_err(|_| "Link inválido")?;
     let host = u.host_str().unwrap_or("").to_string();
     let c = client();
-    if ["youtube.com", "www.youtube.com", "youtu.be"].contains(&host.as_str()) {
+    if ["youtube.com", "www.youtube.com", "music.youtube.com", "youtu.be"].contains(&host.as_str()) {
         let id = if host == "youtu.be" {
             u.path().trim_matches('/').to_string()
         } else if u.path() == "/watch" {
@@ -115,7 +115,7 @@ pub fn validate_search(r: &Value) -> Result<()> {
     if s(r, "query").trim().is_empty()
         || s(r, "query").len() > 800
         || !db::valid_id(s(r, "requestId"))
-        || !["all", "local", "youtube", "soundcloud"].contains(&s(r, "source"))
+        || !["all", "local", "youtube", "soundcloud", "deezer", "apple"].contains(&s(r, "source"))
         || !["all", "track", "artist", "playlist", "album"].contains(&s(r, "kind"))
         || r.to_string().len() > 6000
     {
@@ -138,23 +138,42 @@ pub async fn search(r: &Value, local: Vec<Value>, consent: bool, catalog: &str, 
                     .contains(&query)
         }));
     }
-    let (yt, sc) = tokio::join!(
+    let (yt, dz, ap, sc) = tokio::join!(
         async {
-            if consent && ["all", "youtube"].contains(&source) {
+            if consent && ["all", "youtube"].contains(&source) && kind != "album" {
                 Some(if !catalog.is_empty() { crate::catalog::search(catalog, "youtube", r).await } else { direct.search("youtube", r).await })
             } else {
                 None
             }
         },
         async {
-            if consent && ["all", "soundcloud"].contains(&source) {
+            if consent && ["all", "deezer"].contains(&source) {
+                Some(crate::platforms::search_deezer(r).await)
+            } else {
+                None
+            }
+        },
+        async {
+            if consent && ["apple"].contains(&source) || (consent && source == "all" && kind == "album") {
+                Some(crate::platforms::search_apple(r).await)
+            } else {
+                None
+            }
+        },
+        async {
+            if consent && ["all", "soundcloud"].contains(&source) && kind != "album" {
                 Some(if !catalog.is_empty() { crate::catalog::search(catalog, "soundcloud", r).await } else { direct.search("soundcloud", r).await })
             } else {
                 None
             }
         }
     );
-    for (key, result) in [("youtube", yt), ("soundcloud", sc)] {
+    for (key, label, result) in [
+        ("youtube", "YouTube", yt),
+        ("deezer", "Deezer", dz),
+        ("apple", "Apple Music", ap),
+        ("soundcloud", "SoundCloud", sc),
+    ] {
         if let Some(result) = result {
             match result {
                 Ok(v) => {
@@ -165,15 +184,17 @@ pub async fn search(r: &Value, local: Vec<Value>, consent: bool, catalog: &str, 
                         next[key] = v["next"].clone();
                     }
                 }
-                Err(e) => { let notice = format!("{}: {}", if key == "youtube" { "YouTube" } else { "SoundCloud" }, e); if !notices.contains(&notice) { notices.push(notice); } },
+                Err(e) => {
+                    let notice = format!("{label}: {e}");
+                    if !notices.contains(&notice) {
+                        notices.push(notice);
+                    }
+                }
             }
         }
     }
     if !consent && source != "local" {
         notices.push("Ative as integrações em Configurações para pesquisar online.".into());
-    }
-    if kind == "album" {
-        notices.push("Álbuns: exibidos somente quando identificados nos arquivos locais.".into());
     }
     Ok(json!({"items":items,"next":next,"notices":notices}))
 }

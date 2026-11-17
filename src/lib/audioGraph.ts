@@ -34,10 +34,15 @@ export class AudioGraph{
   if(this.decks.has(element))return;
   const gain=this.context.createGain();this.context.createMediaElementSource(element).connect(gain);gain.connect(this.filters[0]);this.decks.set(element,gain);
  }
- level(element:HTMLAudioElement,value:number,seconds=0){
+ level(element:HTMLAudioElement,value:number,seconds=0,equalPower=false){
   const gain=this.decks.get(element)?.gain;if(!gain)return;
-  const time=this.context.currentTime;gain.cancelAndHoldAtTime(time);
-  if(seconds>0)gain.linearRampToValueAtTime(value,time+seconds);else gain.setValueAtTime(value,time);
+  const time=this.context.currentTime;const current=gain.value;gain.cancelAndHoldAtTime(time);
+  if(seconds>0){
+   if(equalPower&&((current<=.15&&value>=.9)||(current>=.85&&value<=.1))){
+    gain.linearRampToValueAtTime(.707,time+seconds*.5);
+    gain.linearRampToValueAtTime(value,time+seconds);
+   }else gain.linearRampToValueAtTime(value,time+seconds);
+  }else gain.setValueAtTime(value,time);
  }
  async configure(p:Preferences){
   const time=this.context.currentTime;

@@ -25,8 +25,10 @@ export const defaults: Preferences = {
 };
 export interface Snapshot { tracks: Track[]; playlists: Playlist[]; likes: string[]; history: { id: string; playedAt: number }[]; preferences: Preferences }
 export type SearchKind = 'all' | 'track' | 'artist' | 'playlist' | 'album';
-export interface SearchRequest { query: string; kind: SearchKind; source: 'all' | Source; cursor?: Record<string, string>; requestId: string }
+export type SearchSource = 'all' | Source | 'deezer' | 'apple';
+export interface SearchRequest { query: string; kind: SearchKind; source: SearchSource; cursor?: Record<string, string>; requestId: string }
 export interface SearchResult { items: Track[]; next: Record<string, string>; notices: string[] }
+export interface CollectionPreview { name: string; artwork: string; url: string; tracks: Track[]; warning: string; skipped: number }
 export interface ProviderCapabilities { search: Kind[]; playback: 'official-embed' | 'local'; equalizer: boolean; background: boolean; downloads: boolean }
 export interface MusicProvider {
   id: Source; capabilities: ProviderCapabilities;
@@ -36,7 +38,7 @@ export interface MusicProvider {
   playback(track: Track): { type: 'local' | 'youtube' | 'soundcloud' | 'link'; reference: string };
 }
 export interface IntegrationStatus { youtube: boolean; soundcloud: boolean; catalogConfigured: boolean; catalogMode?: 'direct' | 'hosted' | 'unavailable'; encrypted: boolean; brokerUrl: string; version: string; gpu: boolean; shortcuts: boolean }
-export interface CatalogResult { sections: { id: string; source: 'youtube' | 'soundcloud'; title: string; items: Track[] }[]; notices: string[] }
+export interface CatalogResult { sections: { id: string; source: 'youtube' | 'soundcloud' | 'deezer'; title: string; items: Track[] }[]; notices: string[] }
 export type LibraryCommand =
   | { action: 'like'; track: Track }
   | { action: 'save'; track: Track }
@@ -56,6 +58,7 @@ export interface LinkImport {snapshot:Snapshot;track?:Track;playlistId?:string;c
 export interface LyricsResult {id:number;title:string;artist:string;syncedLyrics?:string|null;plainLyrics?:string|null;instrumental:boolean;provider:string}
 export interface GlassAPI {
   importLink(url:string,playlist?:boolean):Promise<LinkImport>;
+  previewCollection(url:string):Promise<CollectionPreview>;
   accounts():Promise<AccountStatus[]>;
   configureAccounts():Promise<AccountStatus[]>;
   connectAccount(provider:string):Promise<AccountStatus[]>;

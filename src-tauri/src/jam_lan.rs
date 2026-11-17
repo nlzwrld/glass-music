@@ -12,7 +12,9 @@ fn track(v:&Value)->Result<Value>{
  if v.is_null(){return Ok(Value::Null);}db::validate_track(v)?;
  if s(v,"kind")!="track"||!["youtube","link","soundcloud"].contains(&s(v,"source")){return Err("A JAM aceita músicas online. Arquivos locais ficam no seu dispositivo.".into());}
  let url=url::Url::parse(s(v,"url")).map_err(|_|"Link público inválido.")?;
- if url.scheme()!="https"||!url.username().is_empty()||url.password().is_some()||url.port().is_some()||!["www.youtube.com","youtube.com","youtu.be","open.spotify.com","www.deezer.com","deezer.com","soundcloud.com","www.soundcloud.com"].contains(&url.host_str().unwrap_or("")){return Err("Link público da música inválido.".into());}
+ let host=url.host_str().unwrap_or("");
+ let allowed_host=["www.youtube.com","youtube.com","music.youtube.com","youtu.be","open.spotify.com","www.deezer.com","deezer.com","soundcloud.com","www.soundcloud.com","music.apple.com","itunes.apple.com","tidal.com","www.tidal.com","listen.tidal.com"].contains(&host)||crate::platforms::is_bandcamp(host);
+ if url.scheme()!="https"||!url.username().is_empty()||url.password().is_some()||url.port().is_some()||!allowed_host{return Err("Link público da música inválido.".into());}
  let mut value=json!({"id":v["id"],"source":v["source"],"sourceId":v["sourceId"],"kind":"track","title":v["title"],"artist":v["artist"],"duration":v["duration"],"url":url.as_str(),"addedAt":0});
  if db::artwork_url(s(v,"artwork")){value["artwork"]=v["artwork"].clone();}let playback=s(v,"playbackId");if playback.len()==11&&playback.bytes().all(|b|b.is_ascii_alphanumeric()||b"_-".contains(&b)){value["playbackId"]=json!(playback);}Ok(value)
 }

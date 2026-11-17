@@ -39,7 +39,10 @@ pub async fn resolve(raw:&str)->Result<Value> {
     if !public_url(raw){return Err("Use um link público HTTPS de música.".into());}
     let mut u=url::Url::parse(raw).unwrap();u.set_fragment(None);
     let host=u.host_str().unwrap_or("").to_string();
-    if ["youtube.com","www.youtube.com","youtu.be","soundcloud.com","www.soundcloud.com"].contains(&host.as_str()) {return crate::providers::resolve(raw).await;}
+    if ["youtube.com","www.youtube.com","music.youtube.com","youtu.be","soundcloud.com","www.soundcloud.com"].contains(&host.as_str()) {return crate::providers::resolve(raw).await;}
+    if ["music.apple.com","itunes.apple.com"].contains(&host.as_str()) {return crate::platforms::resolve_apple(&u).await;}
+    if crate::platforms::is_bandcamp(&host) {return crate::platforms::resolve_bandcamp(&u).await;}
+    if ["tidal.com","www.tidal.com","listen.tidal.com"].contains(&host.as_str()) {return crate::platforms::resolve_tidal(&u).await;}
     let parts:Vec<_>=u.path_segments().into_iter().flatten().filter(|p|!p.is_empty()).map(str::to_string).collect();
     let mut title=parts.last().map(|v|v.replace('-'," ")).unwrap_or_else(||host.clone());
     let mut artist=host.trim_start_matches("www.").to_string();let mut artwork=String::new();let mut duration=0.0;let mut kind="track";
@@ -62,7 +65,7 @@ pub async fn resolve(raw:&str)->Result<Value> {
         if data.get("error").is_some(){return Err("Conteúdo do Deezer não encontrado.".into());}
         title=data["title"].as_str().or(data["name"].as_str()).unwrap_or("Deezer").to_string();
         artist=data["artist"]["name"].as_str().or(data["creator"]["name"].as_str()).unwrap_or("Deezer").to_string();
-        artwork=data["album"]["cover_medium"].as_str().or(data["cover_medium"].as_str()).or(data["picture_medium"].as_str()).unwrap_or("").to_string();
+        artwork=data["album"]["cover_big"].as_str().or(data["album"]["cover_medium"].as_str()).or(data["cover_big"].as_str()).or(data["cover_medium"].as_str()).or(data["picture_big"].as_str()).or(data["picture_medium"].as_str()).unwrap_or("").to_string();
         duration=data["duration"].as_f64().unwrap_or(0.0).min(604800.0);kind=match parts[index].as_str(){"playlist"=>"playlist","album"=>"album","artist"=>"artist",_=>"track"};u.set_query(None);
     }
     let canonical=u.to_string();let id=format!("{:x}",Sha256::digest(canonical.as_bytes()))[..32].to_string();
@@ -72,30 +75,42 @@ pub async fn resolve(raw:&str)->Result<Value> {
 }
 
 fn words(text:&str)->Vec<String>{
-    let normalized:String=text.to_lowercase().chars().map(|c|match c{'á'|'à'|'â'|'ã'|'ä'=>'a','é'|'è'|'ê'|'ë'=>'e','í'|'ì'|'î'|'ï'=>'i','ó'|'ò'|'ô'|'õ'|'ö'=>'o','ú'|'ù'|'û'|'ü'=>'u','ç'=>'c',c if c.is_alphanumeric()=>c,_=>' '}).collect();
-    normalized.split_whitespace().filter(|v|!matches!(*v,"official"|"audio"|"video"|"music"|"lyrics"|"lyric"|"hd"|"4k"|"remastered"|"remaster"|"oficial"|"clipe")).map(str::to_string).collect()
+    let clean=if let Some((head,_))=text.split_once(" (feat.").or_else(||text.split_once(" (ft.")).or_else(||text.split_once(" [feat.")) {head} else {text};
+    let normalized:String=clean.to_lowercase().chars().map(|c|match c{'á'|'à'|'â'|'ã'|'ä'=>'a','é'|'è'|'ê'|'ë'=>'e','í'|'ì'|'î'|'ï'=>'i','ó'|'ò'|'ô'|'õ'|'ö'=>'o','ú'|'ù'|'û'|'ü'=>'u','ç'=>'c',c if c.is_alphanumeric()=>c,_=>' '}).collect();
+    normalized.split_whitespace().filter(|v|!matches!(*v,"official"|"audio"|"video"|"music"|"lyrics"|"lyric"|"hd"|"4k"|"remastered"|"remaster"|"oficial"|"clipe"|"topic"|"vevo"|"visualizer"|"feat"|"ft")).map(str::to_string).collect()
+}
+fn primary_artist(raw:&str)->&str{
+    raw.split([',','&',';','/']).next().map(str::trim).filter(|s|!s.is_empty()).unwrap_or(raw)
 }
 fn coverage(wanted:&[String],found:&[String])->f64{if wanted.is_empty(){0.0}else{wanted.iter().filter(|w|found.contains(w)).count() as f64/wanted.len() as f64}}
 fn match_score(reference:&Value,candidate:&Value)->Option<f64>{
     if db::validate_track(candidate).is_err()||candidate["source"]!="youtube"||candidate["kind"]!="track"{return None;}
     let title=words(s(reference,"title"));let found=words(s(candidate,"title"));let mut all=found.clone();all.extend(words(s(candidate,"artist")));
-    let title_score=coverage(&title,&found);if title_score<0.8{return None;}
+    let title_score=coverage(&title,&all);if title_score<0.75{return None;}
     let mut original=title.clone();original.extend(words(s(reference,"artist")));
     for version in ["live","remix","cover","karaoke","instrumental","nightcore","sped","slowed","acoustic","acustico"]{if found.iter().any(|w|w==version)&&!original.iter().any(|w|w==version){return None;}}
-    let artist=s(reference,"artist");let artist_score=if ["Spotify","Deezer"].contains(&artist){0.5}else{let score=coverage(&words(artist),&all);if score<0.6{return None;}score};
+    let artist=s(reference,"artist");let artist_score=if ["Spotify","Deezer","Apple Music","Tidal","Bandcamp"].contains(&artist){0.5}else{
+        let full=coverage(&words(artist),&all);
+        let primary=coverage(&words(primary_artist(artist)),&all);
+        let score=full.max(primary*0.9);
+        if score<0.6{return None;}
+        score
+    };
     let duration=reference["duration"].as_f64().unwrap_or(0.0);let actual=candidate["duration"].as_f64().unwrap_or(0.0);
-    if duration>0.0&&(actual<=0.0||(duration-actual).abs()>12.0_f64.max(duration*0.12)){return None;}
-    Some(title_score*8.0+artist_score*5.0+(if duration>0.0{1.0}else{0.0})-found.len().saturating_sub(title.len()) as f64*0.015)
+    if duration>0.0&&(actual<=0.0||(duration-actual).abs()>14.0_f64.max(duration*0.14)){return None;}
+    let topic_bonus=if s(candidate,"artist").ends_with(" - Topic"){0.8}else{0.0};
+    Some(title_score*8.0+artist_score*5.0+topic_bonus+(if duration>0.0{1.0}else{0.0})-found.len().saturating_sub(title.len()) as f64*0.015)
 }
 pub async fn playback(mut track:Value,catalog:&str,direct:&crate::direct_catalog::DirectCatalog)->Result<Value>{
     db::validate_track(&track)?;if track["source"]!="link"||track["kind"]!="track"{return Err("Use o link de uma faixa para tocar no Glass.".into());}
     if track["playbackId"].is_string(){return Ok(track);}
     let host=url::Url::parse(s(&track,"url")).ok().and_then(|u|u.host_str().map(str::to_string)).unwrap_or_default();
-    if !["open.spotify.com","deezer.com","www.deezer.com"].contains(&host.as_str()){return Err("Este link ainda não tem áudio compatível. Use o link da faixa no YouTube ou SoundCloud.".into());}
-    if s(&track,"artist")=="Spotify"{if let Ok(fresh)=resolve(s(&track,"url")).await{track["artist"]=fresh["artist"].clone();track["duration"]=fresh["duration"].clone();}}
-    let query=format!("{} {}",s(&track,"title"),if ["Spotify","Deezer"].contains(&s(&track,"artist")){""}else{s(&track,"artist")});
+    if !crate::platforms::supported_link_host(&host){return Err("Este link ainda não tem áudio compatível. Use um link do Spotify, Deezer, Apple Music, Bandcamp, Tidal, YouTube ou SoundCloud.".into());}
+    if ["Spotify","Deezer","Apple Music","Tidal"].contains(&s(&track,"artist")){if let Ok(fresh)=resolve(s(&track,"url")).await{track["artist"]=fresh["artist"].clone();if track["duration"].as_f64().unwrap_or(0.0)<=0.0{track["duration"]=fresh["duration"].clone();}}}
+    let primary=primary_artist(s(&track,"artist"));
+    let query=format!("{} {}",s(&track,"title"),if ["Spotify","Deezer","Apple Music","Tidal","Bandcamp"].contains(&s(&track,"artist")){""}else{primary});
     if query.len()>800{return Err("O nome da faixa é muito longo para buscar uma versão.".into());}
-    let request=json!({"query":query,"kind":"track"});
+    let request=json!({"query":query.trim(),"kind":"track"});
     let result=if catalog.is_empty(){direct.search("youtube",&request).await}else{crate::catalog::search(catalog,"youtube",&request).await}?;
     let candidate=result["items"].as_array().into_iter().flatten().filter_map(|c|match_score(&track,c).map(|score|(score,c))).max_by(|a,b|a.0.total_cmp(&b.0)).map(|(_,c)|c)
         .ok_or("Não encontrei uma versão compatível desta música. Cole o link da faixa no YouTube ou SoundCloud.")?;

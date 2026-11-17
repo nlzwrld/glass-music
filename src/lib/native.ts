@@ -11,7 +11,7 @@ export const glass: GlassAPI = {
   library: payload => call('library',payload), preferences: payload => call('preferences',payload),
   search: payload => call('search',payload), cancelSearch: id => call('cancelSearch',id),
   discover: requestId => call('discover', { requestId }),
-  accounts:()=>call('accounts'), configureAccounts:()=>call('configureAccounts'),connectAccount:provider=>call('connectAccount',provider),disconnectAccount:provider=>call('disconnectAccount',provider),cancelAccount:()=>call('cancelAccount'),syncAccount:provider=>call('syncAccount',provider),importLink:(url,playlist=false)=>call('importLink',{url,playlist}),
+  accounts:()=>call('accounts'), configureAccounts:()=>call('configureAccounts'),connectAccount:provider=>call('connectAccount',provider),disconnectAccount:provider=>call('disconnectAccount',provider),cancelAccount:()=>call('cancelAccount'),syncAccount:provider=>call('syncAccount',provider),importLink:(url,playlist=false)=>call('importLink',{url,playlist}),previewCollection:url=>call('previewCollection',url),
   importAudio: () => call('importAudio'), resolveLink: url => call('resolveLink',url), linkPlayback: (track,requestId) => call('linkPlayback',{track,requestId}),
   exportLibrary: id => call('exportLibrary',id), importLibrary: () => call('importLibrary'),
   integrations: async () => { const data=await call<IntegrationStatus>('integrations');const canvas=document.createElement('canvas');const gl=canvas.getContext('webgl2') || canvas.getContext('webgl');data.gpu=!!gl;gl?.getExtension('WEBGL_lose_context')?.loseContext();return data; }, credentials: payload => call('credentials',payload),

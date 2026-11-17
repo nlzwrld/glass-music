@@ -20,12 +20,13 @@ function track(value: unknown): Track | null {
   if (v.source === 'youtube' && !/^[A-Za-z0-9_-]{11}$/.test(String(v.sourceId))) throw new JamError('Vídeo inválido.');
   let url: URL;
   try { url = new URL(String(v.url)); } catch { throw new JamError('Link público da música ausente.'); }
-  const hosts = ['www.youtube.com','youtube.com','youtu.be','open.spotify.com','www.deezer.com','deezer.com','soundcloud.com','www.soundcloud.com'];
-  if (url.protocol !== 'https:' || url.username || url.password || url.port || !hosts.includes(url.hostname) || url.href.length > 2048) throw new JamError('Link da música não permitido.');
+  const hosts = ['www.youtube.com','youtube.com','music.youtube.com','youtu.be','open.spotify.com','www.deezer.com','deezer.com','soundcloud.com','www.soundcloud.com','music.apple.com','itunes.apple.com','tidal.com','www.tidal.com','listen.tidal.com'];
+  const bandcamp = /^[a-z0-9-]+\.bandcamp\.com$/i.test(url.hostname);
+  if (url.protocol !== 'https:' || url.username || url.password || url.port || (!hosts.includes(url.hostname) && !bandcamp) || url.href.length > 2048) throw new JamError('Link da música não permitido.');
   const clean: Track = { id: String(v.id), source: v.source as Track['source'], sourceId: String(v.sourceId), kind: 'track', title: String(v.title), artist: String(v.artist), duration: Number(v.duration), url: url.href, addedAt: 0 };
   if (typeof v.playbackId === 'string' && /^[A-Za-z0-9_-]{11}$/.test(v.playbackId)) clean.playbackId = v.playbackId;
   if (typeof v.artwork === 'string' && v.artwork.length <= 2048) {
-    try { const art = new URL(v.artwork); if (art.protocol === 'https:' && !art.username && !art.password && !art.port && ['i.ytimg.com','i.scdn.co','i1.sndcdn.com','i2.sndcdn.com','cdn-images.dzcdn.net','mosaic.scdn.co','image-cdn-fa.spotifycdn.com','image-cdn-ak.spotifycdn.com'].includes(art.hostname)) clean.artwork = art.href; } catch {}
+    try { const art = new URL(v.artwork); if (art.protocol === 'https:' && !art.username && !art.password && !art.port && ['i.ytimg.com','i9.ytimg.com','lh3.googleusercontent.com','i.scdn.co','i1.sndcdn.com','i2.sndcdn.com','cdn-images.dzcdn.net','e-cdns-images.dzcdn.net','cdns-images.dzcdn.net','mosaic.scdn.co','image-cdn-fa.spotifycdn.com','image-cdn-ak.spotifycdn.com','is1-ssl.mzstatic.com','is2-ssl.mzstatic.com','is3-ssl.mzstatic.com','is4-ssl.mzstatic.com','is5-ssl.mzstatic.com','f4.bcbits.com','resources.tidal.com'].includes(art.hostname)) clean.artwork = art.href; } catch {}
   }
   return clean;
 }

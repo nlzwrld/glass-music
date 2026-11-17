@@ -148,16 +148,16 @@ pub fn serve(db: Arc<Mutex<Library>>, data: PathBuf, audio: Arc<crate::audio::Au
     let addr = server.server_addr().to_ip().ok_or("Porta indisponível")?;
     let token = uuid::Uuid::new_v4().simple().to_string();
     let base = format!("http://{addr}/{token}");
-    let (audio_tx,audio_rx)=sync_channel::<(Request,String,bool)>(16);
+    let (audio_tx,audio_rx)=sync_channel::<(Request,String,bool)>(32);
     let audio_rx=Arc::new(Mutex::new(audio_rx));
-    for _ in 0..4 {
+    for _ in 0..8 {
         let receiver=audio_rx.clone();let audio=audio.clone();
         std::thread::spawn(move||loop {
             let next=receiver.lock().unwrap().recv();
             match next {Ok((req,ticket,allowed))=>audio.respond(req,&ticket,allowed),Err(_)=>break}
         });
     }
-    for _ in 0..4 {
+    for _ in 0..8 {
         let server = server.clone();
         let db = db.clone();
         let data = data.clone();

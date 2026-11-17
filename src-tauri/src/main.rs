@@ -15,6 +15,7 @@ mod offline;
 mod updates;
 mod jam;
 mod accounts;
+mod platforms;
 use db::{s, Library, Result};
 use serde_json::{json, Value};
 use std::{
@@ -125,9 +126,9 @@ async fn call(
         return Err("Solicitação muito grande.".into());
     }
     match action.as_str(){
-    "bootstrap"=>{let mut data=st.db.lock().unwrap().snapshot()?;data["_resourceBase"]=json!(st.base);Ok(data)},
+    "bootstrap"=>{let data_snap={let db=st.db.lock().unwrap();let pref=db.pref();if pref["onlineConsent"]==true&&pref["onboardingDone"]==true{direct_catalog::warm_visitor();}db.snapshot()?};let mut data=data_snap;data["_resourceBase"]=json!(st.base);Ok(data)},
     "library"=>{let old=if p["action"]=="removeTrack"{st.db.lock().unwrap().offline_path(s(&p,"id"))}else{None};let v=st.db.lock().unwrap().command(&p)?;if let Some((path,_))=old{if offline::owned_path(&st.data,&path){let _=std::fs::remove_file(path);}}Ok(v)},
-    "preferences"=>{db::validate_prefs(&p)?;let old=st.db.lock().unwrap().pref();if old["startup"]!=p["startup"]{if p["startup"]==true{app.autolaunch().enable()}else{app.autolaunch().disable()}.map_err(|_|"Não foi possível alterar a inicialização do Windows.")?;}if old["globalShortcuts"]!=p["globalShortcuts"]{st.shortcuts.store(shortcuts(&app,p["globalShortcuts"]==true),Ordering::Relaxed);}if old["appearance"]["background"]!=p["appearance"]["background"]{native_environment(&window,&p);}st.db.lock().unwrap().set_pref(&p)?;if old["onlineConsent"]!=p["onlineConsent"]||old["catalogConsent"]!=p["catalogConsent"]||old["onboardingDone"]!=p["onboardingDone"]{let mut search=st.search.lock().unwrap();search.cache.clear();st.audio.clear();st.accounts.cancel();for token in search.requests.values(){token.cancel();}}Ok(p)},
+    "preferences"=>{db::validate_prefs(&p)?;let old=st.db.lock().unwrap().pref();if old["startup"]!=p["startup"]{if p["startup"]==true{app.autolaunch().enable()}else{app.autolaunch().disable()}.map_err(|_|"Não foi possível alterar a inicialização do Windows.")?;}if old["globalShortcuts"]!=p["globalShortcuts"]{st.shortcuts.store(shortcuts(&app,p["globalShortcuts"]==true),Ordering::Relaxed);}if old["appearance"]["background"]!=p["appearance"]["background"]{native_environment(&window,&p);}st.db.lock().unwrap().set_pref(&p)?;if old["onlineConsent"]!=p["onlineConsent"]||old["catalogConsent"]!=p["catalogConsent"]||old["onboardingDone"]!=p["onboardingDone"]{let mut search=st.search.lock().unwrap();search.cache.clear();st.audio.clear();st.accounts.cancel();for token in search.requests.values(){token.cancel();}if p["onlineConsent"]==true&&p["onboardingDone"]==true{direct_catalog::warm_visitor();}}Ok(p)},
     "integrations"=>Ok(status(&st)),
     "credentials"=>{let mut keys=st.secrets.lock().unwrap();let mut next=keys.clone();next.update(&p)?;next.save(&st.data.join("credentials.dpapi"))?;*keys=next;drop(keys);st.search.lock().unwrap().cache.clear();Ok(status(&st))},
     "search"=>{
@@ -158,13 +159,19 @@ async fn call(
       let mut count=0;let mut tracks=0;for(list,liked)in lists{if list.tracks.is_empty(){continue;}let pid=st.db.lock().unwrap().merge_collection(&list.key,&list.name,&list.tracks,liked)?;st.db.lock().unwrap().collection_artwork(&pid,&list.artwork)?;count+=1;tracks+=list.tracks.len();}
       st.accounts.synced(provider)?;let snapshot=st.db.lock().unwrap().snapshot()?;Ok(json!({"snapshot":snapshot,"playlists":count,"tracks":tracks,"accounts":st.accounts.status()}))
     },
+    "previewCollection"=>{
+      let pref=st.db.lock().unwrap().pref();if pref["onlineConsent"]!=true||pref["onboardingDone"]!=true{return Err("Ative o acesso online para abrir este álbum ou playlist.".into());}
+      let url=p.as_str().ok_or("Link inválido.")?;
+      let list=collections::fetch(url,&st.direct).await?;
+      Ok(json!({"name":list.name,"artwork":list.artwork,"url":list.key,"tracks":list.tracks,"warning":list.warning,"skipped":list.skipped}))
+    },
     "importLink"=>{
       let pref=st.db.lock().unwrap().pref();if pref["onlineConsent"]!=true||pref["onboardingDone"]!=true{return Err("Ative o acesso online após ler os termos.".into());}
       let url=s(&p,"url");if collections::is_playlist(url)||p["playlist"]==true{
        let list=collections::fetch(url,&st.direct).await?;let pref=st.db.lock().unwrap().pref();if pref["onlineConsent"]!=true{return Err("Importação cancelada: acesso online desativado.".into());}
        let id=st.db.lock().unwrap().merge_collection(&list.key,&list.name,&list.tracks,false)?;st.db.lock().unwrap().collection_artwork(&id,&list.artwork)?;let snapshot=st.db.lock().unwrap().snapshot()?;Ok(json!({"snapshot":snapshot,"playlistId":id,"count":list.tracks.len(),"warning":list.warning,"skipped":list.skipped}))
       }else{
-       let track=links::resolve(url).await?;let pref=st.db.lock().unwrap().pref();if pref["onlineConsent"]!=true||pref["onboardingDone"]!=true{return Err("Importação cancelada: acesso online desativado.".into());}if track["kind"]!="track"{return Err("Use o link de uma faixa ou playlist.".into());}st.db.lock().unwrap().save(&track,None)?;let snapshot=st.db.lock().unwrap().snapshot()?;Ok(json!({"snapshot":snapshot,"track":track,"warning":""}))
+       let track=links::resolve(url).await?;let pref=st.db.lock().unwrap().pref();if pref["onlineConsent"]!=true||pref["onboardingDone"]!=true{return Err("Importação cancelada: acesso online desativado.".into());}if track["kind"]!="track"{return Err("Use o link de uma faixa, álbum ou playlist.".into());}st.db.lock().unwrap().save(&track,None)?;let snapshot=st.db.lock().unwrap().snapshot()?;Ok(json!({"snapshot":snapshot,"track":track,"warning":""}))
       }
     },
     "resolveLink"=>{if {let pref=st.db.lock().unwrap().pref();pref["onlineConsent"]!=true||pref["onboardingDone"]!=true}{return Err("Ative as integrações após ler os termos.".into());}links::resolve(p.as_str().ok_or("Link inválido")?).await},
@@ -176,7 +183,7 @@ async fn call(
     },
     "offlineSource"=>{let id=p.as_str().ok_or("Faixa inválida.")?;let db=st.db.lock().unwrap();if let Some((path,duration))=db.offline_path(id){if offline::owned_path(&st.data,&path)&&std::path::Path::new(&path).is_file(){return Ok(json!({"url":format!("{}/offline/{}",st.base,url::form_urlencoded::byte_serialize(id.as_bytes()).collect::<String>()),"duration":duration}));}db.remove_offline(id)?;}Ok(Value::Null)},
     "downloadOffline"=>{
-      static DOWNLOAD:tokio::sync::Semaphore=tokio::sync::Semaphore::const_new(1);let _permit=DOWNLOAD.try_acquire().map_err(|_|"Há outro download em andamento.")?;
+      static DOWNLOAD:tokio::sync::Semaphore=tokio::sync::Semaphore::const_new(2);let _permit=DOWNLOAD.acquire().await.map_err(|_|"Serviço de download indisponível.")?;
       let pref=st.db.lock().unwrap().pref();if pref["onlineConsent"]!=true||pref["onboardingDone"]!=true{return Err("Ative o acesso online para baixar.".into());}db::validate_track(&p)?;
       if !["youtube","link"].contains(&s(&p,"source")){return Err("Esta origem não disponibiliza download neste app.".into());}
       let track=if p["source"]=="link"{links::playback(p.clone(),&st.catalog_url,&st.direct).await?}else{p.clone()};
@@ -185,7 +192,17 @@ async fn call(
       let db=st.db.lock().unwrap();if db.pref()["onlineConsent"]!=true{let _=std::fs::remove_file(path);return Err("Download cancelado: acesso online desativado.".into());}db.save(&track,None)?;db.save_offline(s(&track,"id"),path.to_str().ok_or("Pasta inválida.")?,size,duration)?;db.snapshot()
     },
     "removeOffline"=>{let id=p.as_str().ok_or("Faixa inválida.")?;let db=st.db.lock().unwrap();if let Some((path,_))=db.offline_path(id){if offline::owned_path(&st.data,&path){let _=std::fs::remove_file(path);}db.remove_offline(id)?;}db.snapshot()},
-    "importAudio"=>Err("Adicione músicas por link.".into()),
+    "importAudio"=>{
+      if let Some(files)=rfd::AsyncFileDialog::new().set_title("Importar arquivos de áudio").add_filter("Áudio",&["mp3","flac","wav","m4a","ogg","opus","aac","webm"]).pick_files().await{
+        let db=st.db.lock().unwrap();
+        for file in files.iter().take(500){
+          let _=media::import_file(&db,file.path(),&st.data);
+        }
+        db.snapshot()
+      }else{
+        st.db.lock().unwrap().snapshot()
+      }
+    },
     "exportLibrary"=>{let v=st.db.lock().unwrap().export(p.as_str())?;if let Some(file)=rfd::AsyncFileDialog::new().set_file_name("Glass Music - biblioteca.json").add_filter("Biblioteca JSON",&["json"]).save_file().await{std::fs::write(file.path(),serde_json::to_vec_pretty(&v).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;Ok(json!(true))}else{Ok(json!(false))}},
     "importLibrary"=>{if let Some(file)=rfd::AsyncFileDialog::new().add_filter("Biblioteca JSON",&["json"]).pick_file().await{if std::fs::metadata(file.path()).map_err(|e|e.to_string())?.len()>8_000_000{return Err("Biblioteca maior que 8 MB.".into());}let v:Value=serde_json::from_slice(&std::fs::read(file.path()).map_err(|e|e.to_string())?).map_err(|_|"JSON inválido")?;let snap=st.db.lock().unwrap().import(&v)?;st.search.lock().unwrap().cache.clear();Ok(snap)}else{Ok(Value::Null)}},
     "audioSource"=>{
