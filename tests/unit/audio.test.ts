@@ -22,7 +22,7 @@ it('keeps deterministic upcoming track in shuffle mode and supports playNext + m
  const a:Track={id:'local:a',source:'local',sourceId:'a',kind:'track',title:'A',artist:'X',duration:100,addedAt:0};
  const b:Track={id:'local:b',source:'local',sourceId:'b',kind:'track',title:'B',artist:'X',duration:100,addedAt:0};
  const c:Track={id:'local:c',source:'local',sourceId:'c',kind:'track',title:'C',artist:'X',duration:100,addedAt:0};
- useApp.setState({queue:[a,b],index:0,shuffleNext:1,data:{tracks:[a,b,c],playlists:[],likes:[],history:[],preferences:{...defaults,shuffle:true}}});
+ useApp.setState({queue:[a,b],index:0,shufflePlayed:[0],shuffleNext:1,data:{tracks:[a,b,c],playlists:[],likes:[],history:[],preferences:{...defaults,shuffle:true}}});
  expect(upcomingIndex(useApp.getState())).toBe(1);
  useApp.getState().playNext(c);
  expect(useApp.getState().queue.map(t=>t.id)).toEqual(['local:a','local:c','local:b']);
@@ -30,6 +30,49 @@ it('keeps deterministic upcoming track in shuffle mode and supports playNext + m
  useApp.getState().moveQueue(2,0);
  expect(useApp.getState().queue.map(t=>t.id)).toEqual(['local:b','local:a','local:c']);
  expect(useApp.getState().index).toBe(1);
+});
+it('never repeats any song in shuffle mode until every playable song has been played, while allowing manual replay',()=>{
+ const list:Track[]=Array.from({length:10},(_,i)=>({id:`local:s${i}`,source:'local',sourceId:`s${i}`,kind:'track',title:`Song ${i}`,artist:'Artist',duration:120,addedAt:0}));
+ for(let trial=0;trial<20;trial++){
+  useApp.setState({queue:[],index:-1,shufflePlayed:[],shuffleNext:null,status:'',data:{tracks:list,playlists:[],likes:[],history:[],preferences:{...defaults,shuffle:true,repeat:'off'}}});
+  useApp.getState().play(list[3],list);
+  const visited=[useApp.getState().queue[useApp.getState().index].id];
+  for(let step=0;step<9;step++){
+   const predicted=upcomingIndex(useApp.getState(),false);
+   useApp.getState().next(false);
+   expect(useApp.getState().index).toBe(predicted);
+   visited.push(useApp.getState().queue[useApp.getState().index].id);
+  }
+  expect(new Set(visited).size).toBe(10);
+  expect(upcomingIndex(useApp.getState(),false)).toBe(-1);
+  useApp.getState().next(false);
+  expect(useApp.getState().status).toBe('Fim da fila');
+ }
+ // With repeat: 'all', cycles wrap seamlessly without repeating within a cycle or back-to-back across the boundary
+ useApp.setState({queue:[],index:-1,shufflePlayed:[],shuffleNext:null,status:'',data:{tracks:list,playlists:[],likes:[],history:[],preferences:{...defaults,shuffle:true,repeat:'all'}}});
+ useApp.getState().play(list[0],list);
+ const cycle1=[useApp.getState().queue[useApp.getState().index].id];
+ for(let i=0;i<9;i++){useApp.getState().next(false);cycle1.push(useApp.getState().queue[useApp.getState().index].id);}
+ expect(new Set(cycle1).size).toBe(10);
+ const lastOfCycle1=cycle1[9];
+ const cycle2:string[]=[];
+ for(let i=0;i<10;i++){useApp.getState().next(false);cycle2.push(useApp.getState().queue[useApp.getState().index].id);}
+ expect(cycle2[0]).not.toBe(lastOfCycle1);
+ expect(new Set(cycle2).size).toBe(10);
+ // Manual replay mid-cycle plays the requested song immediately and still finishes the remaining unplayed songs
+ useApp.setState({queue:[],index:-1,shufflePlayed:[],shuffleNext:null,status:'',data:{tracks:list,playlists:[],likes:[],history:[],preferences:{...defaults,shuffle:true,repeat:'off'}}});
+ useApp.getState().play(list[2],list);
+ useApp.getState().next(false);
+ useApp.getState().next(false);
+ const heardSoFar=new Set(useApp.getState().shufflePlayed.map(i=>list[i].id));
+ expect(heardSoFar.size).toBe(3);
+ // User explicitly replays list[2] (already heard!)
+ useApp.getState().play(list[2],list);
+ expect(useApp.getState().queue[useApp.getState().index].id).toBe('local:s2');
+ const remaining:string[]=[];
+ for(let i=0;i<7;i++){useApp.getState().next(false);remaining.push(useApp.getState().queue[useApp.getState().index].id);}
+ expect(remaining.every(id=>!heardSoFar.has(id))).toBe(true);
+ expect(new Set([...heardSoFar,...remaining]).size).toBe(10);
 });
 it('uses saved audio before trying remote matching or extraction',async()=>{
  const offlineSource=vi.fn(async()=>({url:'http://127.0.0.1/offline/file',duration:213}));const audioSource=vi.fn();const linkPlayback=vi.fn();

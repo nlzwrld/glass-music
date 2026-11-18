@@ -45,6 +45,7 @@ interface State {
   toast: string;
   queue: Track[];
   index: number;
+  shufflePlayed: number[];
   shuffleNext: number | null;
   autoAdvance: boolean;
   playing: boolean;
@@ -74,6 +75,7 @@ interface State {
   downloadPlaylist(tracks: Track[]): Promise<void>;
   play(t: Track, list?: Track[]): void;
   playNext(t: Track): void;
+  jumpQueue(index: number): void;
   next(manual?: boolean): void;
   previous(): void;
   removeQueue(index: number): void;
@@ -81,33 +83,82 @@ interface State {
   enqueue(t: Track): void;
 }
 
-function pickShuffleIndex(queue: Track[], current: number): number | null {
-  if (queue.length <= 1) return null;
-  const choices = queue
+function remapIndex(idx: number, from: number, to: number): number {
+  if (idx === from) return to;
+  if (from < to && idx > from && idx <= to) return idx - 1;
+  if (from > to && idx >= to && idx < from) return idx + 1;
+  return idx;
+}
+
+function computeShuffleStep(
+  queue: Track[],
+  current: number,
+  played: number[],
+  allowWrap: boolean,
+): { played: number[]; next: number | null } {
+  const playable = queue
     .map((_, i) => i)
-    .filter(i => i !== current && queue[i]?.available !== false);
-  if (!choices.length) return null;
-  return choices[Math.floor(Math.random() * choices.length)] ?? null;
+    .filter(i => queue[i]?.available !== false);
+  if (current < 0 || current >= queue.length || playable.length <= 1) {
+    return { played: current >= 0 ? [current] : [], next: null };
+  }
+  const uniquePlayed = played.filter(
+    (idx, pos, arr) =>
+      idx >= 0 &&
+      idx < queue.length &&
+      idx !== current &&
+      queue[idx]?.available !== false &&
+      arr.indexOf(idx) === pos,
+  );
+  uniquePlayed.push(current);
+
+  const unplayed = playable.filter(i => !uniquePlayed.includes(i));
+  if (unplayed.length > 0) {
+    const next = unplayed[Math.floor(Math.random() * unplayed.length)] ?? null;
+    return { played: uniquePlayed, next };
+  }
+  if (allowWrap) {
+    const freshPool = playable.filter(i => i !== current);
+    const next = freshPool[Math.floor(Math.random() * freshPool.length)] ?? null;
+    return { played: uniquePlayed, next };
+  }
+  return { played: uniquePlayed, next: null };
 }
 
 export function upcomingIndex(
-  s: Pick<State, 'queue' | 'index' | 'shuffleNext' | 'data'>,
+  s: Pick<State, 'queue' | 'index' | 'shufflePlayed' | 'shuffleNext' | 'data'>,
   manual = false,
 ): number {
   if (!s.queue.length || s.index < 0) return -1;
   const p = s.data.preferences;
   if (!manual && p.repeat === 'one') return s.index;
-  if (p.shuffle && s.queue.length > 1) {
+  if (p.shuffle) {
+    const playable = s.queue
+      .map((_, i) => i)
+      .filter(i => s.queue[i]?.available !== false);
+    if (playable.length <= 1) {
+      return (p.repeat === 'all' || manual) && playable.length === 1 ? playable[0] : -1;
+    }
+    const unplayed = playable.filter(i => !s.shufflePlayed.includes(i) && i !== s.index);
+    const cycleComplete = unplayed.length === 0;
     if (
       s.shuffleNext !== null &&
       s.shuffleNext >= 0 &&
       s.shuffleNext < s.queue.length &&
       s.shuffleNext !== s.index &&
-      s.queue[s.shuffleNext]?.available !== false
+      s.queue[s.shuffleNext]?.available !== false &&
+      (!s.shufflePlayed.includes(s.shuffleNext) || (cycleComplete && (p.repeat === 'all' || manual)))
     ) {
       return s.shuffleNext;
     }
-    return pickShuffleIndex(s.queue, s.index) ?? -1;
+    if (!cycleComplete) {
+      return unplayed[Math.floor(Math.random() * unplayed.length)] ?? -1;
+    }
+    if (p.repeat === 'all' || manual) {
+      const fresh = playable.filter(i => i !== s.index);
+      return fresh[Math.floor(Math.random() * fresh.length)] ?? -1;
+    }
+    return -1;
   }
   const next = s.index + 1;
   if (next < s.queue.length) return next;
@@ -132,6 +183,7 @@ export const useApp = create<State>((set, get) => ({
   sideOpen: false,
   queue: [],
   index: -1,
+  shufflePlayed: [],
   shuffleNext: null,
   autoAdvance: false,
   playing: false,
@@ -208,12 +260,19 @@ export const useApp = create<State>((set, get) => ({
     const permissionChange = ['onlineConsent', 'catalogConsent', 'onboardingDone'].some(
       key => key in patch,
     );
-    const shufflePatch =
-      'shuffle' in patch
-        ? {
-            shuffleNext: next.shuffle ? pickShuffleIndex(prev.queue, prev.index) : null,
-          }
-        : {};
+    const needShuffleRecompute = 'shuffle' in patch || 'repeat' in patch;
+    const shufflePatch = needShuffleRecompute
+      ? (() => {
+          if (!next.shuffle) return { shufflePlayed: [] as number[], shuffleNext: null };
+          const step = computeShuffleStep(
+            prev.queue,
+            prev.index,
+            'shuffle' in patch ? [] : prev.shufflePlayed,
+            next.repeat === 'all',
+          );
+          return { shufflePlayed: step.played, shuffleNext: step.next };
+        })()
+      : {};
     if (!permissionChange)
       set({ data: { ...prev.data, preferences: next }, ...shufflePatch });
     preferenceWrites = preferenceWrites.catch(() => {}).then(async () => {
@@ -372,19 +431,31 @@ export const useApp = create<State>((set, get) => ({
     const found = queue.findIndex(t => t.id === track.id);
     const finalQueue = found >= 0 ? queue : [track];
     const finalIndex = found >= 0 ? found : 0;
+    const prev = get();
+    const sameQueue =
+      prev.status !== 'Fim da fila' &&
+      prev.queue.length === finalQueue.length &&
+      prev.queue.every((t, i) => t.id === finalQueue[i]?.id);
+    const step = prev.data.preferences.shuffle
+      ? computeShuffleStep(
+          finalQueue,
+          finalIndex,
+          sameQueue ? prev.shufflePlayed : [],
+          prev.data.preferences.repeat === 'all',
+        )
+      : { played: [] as number[], next: null };
     set({
       queue: finalQueue,
       index: finalIndex,
-      shuffleNext: get().data.preferences.shuffle
-        ? pickShuffleIndex(finalQueue, finalIndex)
-        : null,
+      shufflePlayed: step.played,
+      shuffleNext: step.next,
       autoAdvance: false,
       playing: false,
       position: 0,
       duration: track.duration,
       error: '',
       status: 'Carregando',
-      revision: get().revision + 1,
+      revision: prev.revision + 1,
     });
   },
   playNext: incoming => {
@@ -406,11 +477,38 @@ export const useApp = create<State>((set, get) => ({
     const nextQueue = [...s.queue];
     const insertAt = Math.min(nextQueue.length, s.index + 1);
     nextQueue.splice(insertAt, 0, enriched);
+    const shiftedPlayed = s.shufflePlayed.map(idx => (idx >= insertAt ? idx + 1 : idx));
     set({
       queue: nextQueue,
+      shufflePlayed: shiftedPlayed,
       shuffleNext: s.data.preferences.shuffle ? insertAt : null,
     });
     s.message(`“${incoming.title}” tocará a seguir.`);
+  },
+  jumpQueue: targetIndex => {
+    const s = get();
+    if (targetIndex < 0 || targetIndex >= s.queue.length) return;
+    const target = s.queue[targetIndex];
+    if (!target || target.available === false) return;
+    const step = s.data.preferences.shuffle
+      ? computeShuffleStep(
+          s.queue,
+          targetIndex,
+          s.shufflePlayed,
+          s.data.preferences.repeat === 'all',
+        )
+      : { played: [] as number[], next: null };
+    set({
+      index: targetIndex,
+      shufflePlayed: step.played,
+      shuffleNext: step.next,
+      autoAdvance: false,
+      position: 0,
+      duration: target.duration,
+      error: '',
+      status: 'Carregando',
+      revision: s.revision + 1,
+    });
   },
   next: (manual = true) => {
     const s = get();
@@ -429,9 +527,18 @@ export const useApp = create<State>((set, get) => ({
       set({ playing: false, autoAdvance: false, status: 'Fim da fila' });
       return;
     }
+    const step = p.shuffle
+      ? computeShuffleStep(
+          s.queue,
+          index,
+          s.shufflePlayed.includes(index) ? [] : s.shufflePlayed,
+          p.repeat === 'all',
+        )
+      : { played: [] as number[], next: null };
     set({
       index,
-      shuffleNext: p.shuffle ? pickShuffleIndex(s.queue, index) : null,
+      shufflePlayed: step.played,
+      shuffleNext: step.next,
       autoAdvance: !manual,
       playing: !manual && s.playing,
       position: 0,
@@ -448,10 +555,37 @@ export const useApp = create<State>((set, get) => ({
       set({ revision: s.revision + 1, position: 0, autoAdvance: false, error: '' });
       return;
     }
+    if (s.data.preferences.shuffle && s.shufflePlayed.length > 1) {
+      const prevPlayed = s.shufflePlayed.slice(0, -1);
+      const prevIndex = prevPlayed[prevPlayed.length - 1]!;
+      if (prevIndex >= 0 && prevIndex < s.queue.length) {
+        set({
+          index: prevIndex,
+          shufflePlayed: prevPlayed,
+          shuffleNext: s.index,
+          autoAdvance: false,
+          position: 0,
+          duration: s.queue[prevIndex].duration,
+          playing: false,
+          error: '',
+          revision: s.revision + 1,
+        });
+        return;
+      }
+    }
     const index = Math.max(0, s.index - 1);
+    const step = s.data.preferences.shuffle
+      ? computeShuffleStep(
+          s.queue,
+          index,
+          s.shufflePlayed,
+          s.data.preferences.repeat === 'all',
+        )
+      : { played: [] as number[], next: null };
     set({
       index,
-      shuffleNext: s.data.preferences.shuffle ? pickShuffleIndex(s.queue, index) : null,
+      shufflePlayed: step.played,
+      shuffleNext: step.next,
       autoAdvance: false,
       position: 0,
       duration: s.queue[index].duration,
@@ -471,12 +605,19 @@ export const useApp = create<State>((set, get) => ({
       return;
     }
     const nextQueue = [...s.queue, t];
+    const step =
+      s.data.preferences.shuffle && s.shuffleNext === null
+        ? computeShuffleStep(
+            nextQueue,
+            s.index,
+            s.shufflePlayed,
+            s.data.preferences.repeat === 'all',
+          )
+        : { played: s.shufflePlayed, next: s.shuffleNext };
     set({
       queue: nextQueue,
-      shuffleNext:
-        s.data.preferences.shuffle && s.shuffleNext === null
-          ? pickShuffleIndex(nextQueue, s.index)
-          : s.shuffleNext,
+      shufflePlayed: step.played,
+      shuffleNext: step.next,
     });
     s.message('Adicionada à fila.');
   },
@@ -485,10 +626,33 @@ export const useApp = create<State>((set, get) => ({
     if (i === s.index) return;
     const nextQueue = s.queue.filter((_, j) => j !== i);
     const nextIdx = i < s.index ? s.index - 1 : s.index;
+    const adjustedPlayed = s.shufflePlayed
+      .filter(idx => idx !== i)
+      .map(idx => (idx > i ? idx - 1 : idx));
+    let nextShuffle =
+      s.shuffleNext === null
+        ? null
+        : s.shuffleNext === i
+          ? null
+          : s.shuffleNext > i
+            ? s.shuffleNext - 1
+            : s.shuffleNext;
+    let finalPlayed = adjustedPlayed;
+    if (s.data.preferences.shuffle && nextShuffle === null) {
+      const step = computeShuffleStep(
+        nextQueue,
+        nextIdx,
+        adjustedPlayed,
+        s.data.preferences.repeat === 'all',
+      );
+      finalPlayed = step.played;
+      nextShuffle = step.next;
+    }
     set({
       queue: nextQueue,
       index: nextIdx,
-      shuffleNext: s.data.preferences.shuffle ? pickShuffleIndex(nextQueue, nextIdx) : null,
+      shufflePlayed: finalPlayed,
+      shuffleNext: nextShuffle,
     });
   },
   moveQueue: (from, to) => {
@@ -504,14 +668,15 @@ export const useApp = create<State>((set, get) => ({
     const nextQueue = [...s.queue];
     const [moved] = nextQueue.splice(from, 1);
     nextQueue.splice(to, 0, moved);
-    let nextIndex = s.index;
-    if (from === s.index) nextIndex = to;
-    else if (from < s.index && to >= s.index) nextIndex = s.index - 1;
-    else if (from > s.index && to <= s.index) nextIndex = s.index + 1;
+    const nextIndex = remapIndex(s.index, from, to);
+    const remappedPlayed = s.shufflePlayed.map(idx => remapIndex(idx, from, to));
+    const remappedNext =
+      s.shuffleNext !== null ? remapIndex(s.shuffleNext, from, to) : null;
     set({
       queue: nextQueue,
       index: nextIndex,
-      shuffleNext: s.data.preferences.shuffle ? pickShuffleIndex(nextQueue, nextIndex) : null,
+      shufflePlayed: remappedPlayed,
+      shuffleNext: remappedNext,
     });
   },
 }));

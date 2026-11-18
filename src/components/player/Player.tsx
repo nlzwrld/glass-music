@@ -123,15 +123,7 @@ export function Queue() {
                   </span>
                   <button
                     className="queue-track"
-                    onClick={() =>
-                      useApp.setState({
-                        index: i,
-                        autoAdvance: false,
-                        revision: useApp.getState().revision + 1,
-                        error: '',
-                        position: 0,
-                      })
-                    }
+                    onClick={() => useApp.getState().jumpQueue(i)}
                   >
                     <Cover track={t} />
                     <span>
