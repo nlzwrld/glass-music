@@ -427,8 +427,13 @@ export function PlayerEngine() {
           .then(url => {
             if (cancelled) return;
             frameOrigin = new URL(url).origin;
-            const send = (action: string, value?: number) =>
-              frame.contentWindow?.postMessage({ channel: 'glass-control', action, value }, frameOrigin);
+            const send = (action: string, value?: number) => {
+              if (frameOrigin && frameOrigin !== 'null')
+                frame.contentWindow?.postMessage(
+                  { channel: 'glass-control', action, value },
+                  frameOrigin,
+                );
+            };
             driver = {
               play: () => send('play'),
               pause: () => send('pause'),

@@ -45,8 +45,8 @@ pub fn apply(hwnd:HWND,scale:f64){
   let _=DwmSetWindowAttribute(hwnd,DWMWA_WINDOW_CORNER_PREFERENCE as u32,&rounded as *const _ as _,4);
   let mut rect:RECT=std::mem::zeroed();if GetWindowRect(hwnd,&mut rect)==0{return;}
   let w=rect.right-rect.left;let h=rect.bottom-rect.top;if w<2||h<2{return;}
-  // The external cutout must also stay rounded while maximized.
-  let diameter=(48.0*scale).round() as i32;
+  // Standard crisp desktop window corner radius (10px logical).
+  let diameter=(20.0*scale).round() as i32;
   // Maximized HWND bounds can extend past the monitor by a resize inset.
   // Clip to the CLIENT rectangle, or the outer rounded corners remain offscreen.
   let mut client:RECT=std::mem::zeroed();let mut origin=POINT{x:0,y:0};

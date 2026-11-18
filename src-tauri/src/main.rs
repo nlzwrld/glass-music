@@ -36,7 +36,8 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut, ShortcutSt
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 fn native_environment(window:&tauri::WebviewWindow,pref:&Value){
-    let desktop=pref["appearance"]["background"]=="desktop";
+    let is_glass=pref.get("uiStyle").and_then(|v|v.as_str()).unwrap_or("matte")=="glass";
+    let desktop=is_glass && pref["appearance"]["background"]=="desktop";
     let target=window.clone();
     let _=window.run_on_main_thread(move || {
         let _=target.set_effects(None);
@@ -128,7 +129,7 @@ async fn call(
     match action.as_str(){
     "bootstrap"=>{let data_snap={let db=st.db.lock().unwrap();let pref=db.pref();if pref["onlineConsent"]==true&&pref["onboardingDone"]==true{direct_catalog::warm_visitor();}db.snapshot()?};let mut data=data_snap;data["_resourceBase"]=json!(st.base);Ok(data)},
     "library"=>{let old=if p["action"]=="removeTrack"{st.db.lock().unwrap().offline_path(s(&p,"id"))}else{None};let v=st.db.lock().unwrap().command(&p)?;if let Some((path,_))=old{if offline::owned_path(&st.data,&path){let _=std::fs::remove_file(path);}}Ok(v)},
-    "preferences"=>{db::validate_prefs(&p)?;let old=st.db.lock().unwrap().pref();if old["startup"]!=p["startup"]{if p["startup"]==true{app.autolaunch().enable()}else{app.autolaunch().disable()}.map_err(|_|"Não foi possível alterar a inicialização do Windows.")?;}if old["globalShortcuts"]!=p["globalShortcuts"]{st.shortcuts.store(shortcuts(&app,p["globalShortcuts"]==true),Ordering::Relaxed);}if old["appearance"]["background"]!=p["appearance"]["background"]{native_environment(&window,&p);}st.db.lock().unwrap().set_pref(&p)?;if old["onlineConsent"]!=p["onlineConsent"]||old["catalogConsent"]!=p["catalogConsent"]||old["onboardingDone"]!=p["onboardingDone"]{let mut search=st.search.lock().unwrap();search.cache.clear();st.audio.clear();st.accounts.cancel();for token in search.requests.values(){token.cancel();}if p["onlineConsent"]==true&&p["onboardingDone"]==true{direct_catalog::warm_visitor();}}Ok(p)},
+    "preferences"=>{db::validate_prefs(&p)?;let old=st.db.lock().unwrap().pref();if old["startup"]!=p["startup"]{if p["startup"]==true{app.autolaunch().enable()}else{app.autolaunch().disable()}.map_err(|_|"Não foi possível alterar a inicialização do Windows.")?;}if old["globalShortcuts"]!=p["globalShortcuts"]{st.shortcuts.store(shortcuts(&app,p["globalShortcuts"]==true),Ordering::Relaxed);}if old["appearance"]["background"]!=p["appearance"]["background"]||old["uiStyle"]!=p["uiStyle"]{native_environment(&window,&p);}st.db.lock().unwrap().set_pref(&p)?;if old["onlineConsent"]!=p["onlineConsent"]||old["catalogConsent"]!=p["catalogConsent"]||old["onboardingDone"]!=p["onboardingDone"]{let mut search=st.search.lock().unwrap();search.cache.clear();st.audio.clear();st.accounts.cancel();for token in search.requests.values(){token.cancel();}if p["onlineConsent"]==true&&p["onboardingDone"]==true{direct_catalog::warm_visitor();}}Ok(p)},
     "integrations"=>Ok(status(&st)),
     "credentials"=>{let mut keys=st.secrets.lock().unwrap();let mut next=keys.clone();next.update(&p)?;next.save(&st.data.join("credentials.dpapi"))?;*keys=next;drop(keys);st.search.lock().unwrap().cache.clear();Ok(status(&st))},
     "search"=>{

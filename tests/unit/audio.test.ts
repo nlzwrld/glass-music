@@ -83,6 +83,7 @@ it('uses saved audio before trying remote matching or extraction',async()=>{
 });
 it('extends finished playlist with outside-playlist style recommendations when autoplay is enabled',async()=>{
  expect(defaults.autoplay).toBe(true);
+ expect(defaults.uiStyle).toBe('matte');
  const p1:Track={id:'youtube:v1',source:'youtube',sourceId:'v1',kind:'track',title:'Montagem 1',artist:'DJ Test',duration:150,addedAt:0};
  const p2:Track={id:'youtube:v2',source:'youtube',sourceId:'v2',kind:'track',title:'Montagem 2',artist:'DJ Test',duration:155,addedAt:0};
  const rec1:Track={id:'youtube:r1',source:'youtube',sourceId:'r1',kind:'track',title:'Montagem Nova',artist:'DJ Outro',duration:160,addedAt:0};

@@ -51,7 +51,7 @@ export default function Search() {
 
   const isLink = looksLikeMusicLink(query);
   const localMatches =
-    source === 'all' || source === 'local'
+    kind !== 'lyrics' && (source === 'all' || source === 'local')
       ? local.filter(
           t =>
             (source === 'local' ? t.source === 'local' : true) &&
@@ -86,7 +86,7 @@ export default function Search() {
       } finally {
         if (generation.current === gen) setLoading(false);
       }
-    }, 360);
+    }, 340);
     return () => {
       clearTimeout(timer);
       generation.current++;
@@ -139,7 +139,7 @@ export default function Search() {
     <div className="search-page">
       <div className="page-heading">
         <h1>Buscar</h1>
-        {loading && <LoaderCircle className="spinner" aria-label="Buscando" />}
+        {loading && <LoaderCircle size={16} className="spinner" aria-label="Buscando" />}
       </div>
 
       <div className="search-filters">
@@ -155,53 +155,57 @@ export default function Search() {
             </button>
           ))}
         </div>
-        <div className="source-filters" role="group" aria-label="Plataforma">
-          {SOURCES.map(([id, label]) => (
-            <button
-              key={id}
-              className={source === id ? 'selected' : ''}
-              aria-pressed={source === id}
-              onClick={() => setSource(id)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        {kind !== 'lyrics' && (
+          <div className="source-filters" role="group" aria-label="Plataforma">
+            {SOURCES.map(([id, label]) => (
+              <button
+                key={id}
+                className={source === id ? 'selected' : ''}
+                aria-pressed={source === id}
+                onClick={() => setSource(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {!query ? (
         <div className="search-empty">
-          <SearchIcon size={27} />
-          <p>Busque no YouTube, Deezer, Apple Music e SoundCloud ou cole um link do Spotify, Bandcamp ou Tidal.</p>
+          <SearchIcon size={20} />
+          <p>Pesquise por música, álbum, artista, letra ou link.</p>
         </div>
       ) : isLink ? (
         <div className="notice">
-          <Link2 size={18} />
-          <span>Link direto detectado: pronto para tocar ou importar no Glass.</span>
+          <Link2 size={16} />
+          <span>Link direto detectado.</span>
           <button
             className="button primary"
             disabled={loading}
             onClick={() => void handleDirectLink(query)}
           >
-            <Play size={15} fill="currentColor" /> Abrir no Glass
+            <Play size={14} fill="currentColor" /> Abrir
           </button>
         </div>
       ) : (
         <>
           {result.notices.map(n => (
             <div className="notice" key={n}>
-              <AlertCircle size={17} />
+              <AlertCircle size={15} />
               <span>{n}</span>
               {!consent && (
-                <button onClick={() => useApp.getState().setPage('settings')}>
-                  Ativar acesso online
+                <button
+                  className="button secondary"
+                  onClick={() => useApp.getState().setPage('settings')}
+                >
+                  Configurações
                 </button>
               )}
             </div>
           ))}
-          <div className="results-count">{loading ? 'Buscando…' : ''}</div>
           {collectionsOnly.length > 0 && (
-            <section className="catalog-section" style={{ marginBottom: 24 }}>
+            <section className="catalog-section" style={{ marginBottom: 20 }}>
               {tracksOnly.length > 0 && (
                 <div className="section-heading">
                   <h2>Coleções e artistas</h2>
@@ -217,7 +221,7 @@ export default function Search() {
           {tracksOnly.length > 0 && <TrackList tracks={tracksOnly} />}
           {!combined.length && !loading && (
             <div className="empty-state">
-              <SearchIcon size={32} />
+              <SearchIcon size={20} />
               <h3>Sem resultados</h3>
             </div>
           )}
@@ -227,7 +231,7 @@ export default function Search() {
               disabled={loading}
               onClick={() => void more()}
             >
-              {loading ? 'Buscando…' : 'Carregar mais resultados'}
+              {loading ? 'Buscando…' : 'Carregar mais'}
             </button>
           )}
         </>

@@ -16,7 +16,7 @@ export default function Collection() {
   if (busy && (!preview || !preview.tracks.length)) {
     return (
       <div className="loading-page" role="status">
-        <LoaderCircle size={22} className="spinner" /> Carregando faixas da coleção…
+        <LoaderCircle size={16} className="spinner" /> Carregando…
       </div>
     );
   }
@@ -45,7 +45,7 @@ export default function Collection() {
         useApp.getState().setPage(`playlist:${result.playlistId}`);
         useApp
           .getState()
-          .message(`${result.count || tracks.length} faixas salvas na sua biblioteca.`);
+          .message(`${result.count || tracks.length} faixas salvas na biblioteca.`);
       }
     } catch (e) {
       useApp.getState().message(cleanError(e));
@@ -56,24 +56,22 @@ export default function Collection() {
 
   return (
     <div className="playlist-page">
-      <div className="page-heading">
+      <div className="page-heading collection-hero">
         <div className="playlist-hero-art">
-          <Cover
-            track={{ title: preview.name, artwork: preview.artwork, source: 'link' }}
-          />
+          <Cover track={{ title: preview.name, artwork: preview.artwork, source: 'link' }} />
         </div>
         <div>
           <SourceBadge source="link" url={preview.url} />
           <h1>{preview.name}</h1>
           <p>{tracks.length} faixas</p>
         </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <div className="heading-actions">
           <button
-            className="button secondary"
+            className="button primary"
             disabled={saving || !tracks.length}
             onClick={() => void importToLibrary()}
           >
-            <Plus size={17} />
+            <Plus size={15} />
             {saving ? 'Salvando…' : 'Salvar na biblioteca'}
           </button>
           {preview.url && (
@@ -85,14 +83,18 @@ export default function Collection() {
                   .catch(e => useApp.getState().message(cleanError(e)))
               }
             >
-              <ExternalLink size={16} />
+              <ExternalLink size={14} />
               Abrir origem
             </button>
           )}
         </div>
       </div>
 
-      {preview.warning && <div className="notice"><span>{preview.warning}</span></div>}
+      {preview.warning && (
+        <div className="notice">
+          <span>{preview.warning}</span>
+        </div>
+      )}
 
       <div className="library-toolbar">
         <div>
@@ -106,24 +108,24 @@ export default function Collection() {
             }}
           >
             {activeHere && playing ? (
-              <Pause size={27} fill="currentColor" />
+              <Pause size={16} fill="currentColor" />
             ) : (
-              <Play size={27} fill="currentColor" />
+              <Play size={16} fill="currentColor" />
             )}
-            <span>{activeHere && playing ? 'Pausar' : 'Play'}</span>
+            <span>{activeHere && playing ? 'Pausar' : 'Reproduzir'}</span>
           </button>
           {tracks.some(t => ['youtube', 'link'].includes(t.source)) && (
             <button
               className="button secondary"
               onClick={() => void useApp.getState().downloadPlaylist(tracks)}
             >
-              <Download size={16} />
+              <Download size={14} />
               Baixar offline
             </button>
           )}
         </div>
         <button className="text-button" onClick={() => useApp.getState().navigate(-1)}>
-          <ArrowLeft size={16} />
+          <ArrowLeft size={14} />
           Voltar
         </button>
       </div>

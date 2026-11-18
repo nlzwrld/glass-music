@@ -9,6 +9,7 @@ export interface Track {
 export function canPlay(track: Track) { return (['local','youtube','link'].includes(track.source) && track.kind === 'track') || (track.source === 'soundcloud' && ['track','playlist'].includes(track.kind)); }
 export interface Playlist { artwork?:string; description?:string; id: string; name: string; createdAt: number; trackIds: string[] }
 export interface Preferences {
+  uiStyle?: 'matte' | 'glass';
   transition:'off'|'fade'|'crossfade'; transitionSeconds:number; volumeBoost:number; limiter:boolean; outputDevice:string; jamEndpoint:string; autoUpdate:boolean; autoplay:boolean;
   appearance?: Record<string, unknown>;
   theme: 'dark' | 'light' | 'system'; glass: number; blur: number; accent: string;
@@ -18,8 +19,9 @@ export interface Preferences {
   eq: number[]; onlineConsent: boolean; catalogConsent: boolean; onboardingDone: boolean;
 }
 export const defaults: Preferences = {
+  uiStyle: 'matte',
   transition:'fade',transitionSeconds:3,volumeBoost:0,limiter:true,outputDevice:'default',jamEndpoint:'',autoUpdate:true,autoplay:true,
-  theme: 'dark', glass: 20, blur: 24, accent: '#e8eeee', autoAccent: false,
+  theme: 'dark', glass: 20, blur: 24, accent: '#52b79a', autoAccent: false,
   reducedMotion: false, performance: false, volume: 65, repeat: 'off', shuffle: false,
   tray: true, startup: false, notifications: false, globalShortcuts: false,
   coverCacheMB: 128, eq: [0, 0, 0, 0, 0], onlineConsent: false, catalogConsent: false, onboardingDone: false

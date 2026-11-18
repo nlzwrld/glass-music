@@ -20,26 +20,26 @@ export default function GlassSearch({
           disabled={index === 0}
           onClick={() => useApp.getState().navigate(-1)}
         >
-          <ArrowLeft size={24} />
+          <ArrowLeft size={16} />
         </button>
         <button
           aria-label="Avançar"
           disabled={index >= count - 1}
           onClick={() => useApp.getState().navigate(1)}
         >
-          <ArrowRight size={24} />
+          <ArrowRight size={16} />
         </button>
       </div>
       <GlassMaterial as="label" variant="thin" material="clear" className="global-search">
         {busy ? (
-          <LoaderCircle size={20} className="spinner" aria-label="Buscando" />
+          <LoaderCircle size={15} className="spinner" aria-label="Buscando" />
         ) : (
-          <Search size={20} />
+          <Search size={15} />
         )}
         <input
           ref={inputRef}
           aria-label="Buscar músicas, artistas e playlists"
-          placeholder="Músicas, álbuns, playlists ou cole um link (Spotify, Deezer, Apple…)"
+          placeholder="Buscar ou colar link"
           value={filter}
           onChange={e => {
             if (useApp.getState().page !== 'search') useApp.getState().setPage('search');
@@ -58,7 +58,7 @@ export default function GlassSearch({
             aria-label="Limpar pesquisa"
             onClick={() => useApp.setState({ filter: '' })}
           >
-            <X size={18} />
+            <X size={14} />
           </button>
         )}
       </GlassMaterial>

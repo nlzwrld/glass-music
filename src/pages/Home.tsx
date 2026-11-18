@@ -1,34 +1,87 @@
-import { Plus } from 'lucide-react';
+import { Plus, FolderInput, Play } from 'lucide-react';
 import { useApp } from '../stores/app';
 import TrackCard from '../components/library/TrackCard';
 import OnlineCatalog from '../components/library/OnlineCatalog';
-import '../styles/home.css';
+import Cover from '../components/glass/Cover';
+import { warmTrack, cancelWarmTrack } from '../lib/playback';
 
 export default function Home() {
   const data = useApp(s => s.data);
   const recent = [...new Set(data.history.map(h => h.id))]
     .map(id => data.tracks.find(t => t.id === id))
-    .filter(t => !!t)
+    .filter((t): t is NonNullable<typeof t> => !!t)
     .slice(0, 6);
 
-  return <div className="home-page">
-    <header className="page-heading home-heading">
-      <h1>Início</h1>
-      <button className="icon-button home-add-link" aria-label="Adicionar link" title="Adicionar link" onClick={() => useApp.getState().setDialog({ type: 'link' })}>
-        <Plus size={20} />
-      </button>
-    </header>
-    {recent.length > 0 && <section aria-labelledby="home-recent-title">
-      <div className="section-heading"><h2 id="home-recent-title">Recentes</h2></div>
-      <div className="catalog-grid">{recent.map(track => <TrackCard key={track.id} track={track} list={recent} />)}</div>
-    </section>}
-    <OnlineCatalog />
-    {data.tracks.length > 0 && <section aria-labelledby="home-library-title">
-      <div className="section-heading">
-        <h2 id="home-library-title">Sua biblioteca</h2>
-        <button className="text-button" onClick={() => useApp.getState().setPage('library')}>Ver tudo</button>
-      </div>
-      <div className="catalog-grid">{data.tracks.slice(0, 6).map(track => <TrackCard key={track.id} track={track} list={data.tracks} />)}</div>
-    </section>}
-  </div>;
+  return (
+    <div className="home-page">
+      <header className="page-heading">
+        <h1>Início</h1>
+        <div className="heading-actions">
+          <button
+            className="button secondary"
+            onClick={() => void useApp.getState().importLocalFiles()}
+          >
+            <FolderInput size={15} />
+            Arquivos
+          </button>
+          <button
+            className="button secondary"
+            aria-label="Adicionar link"
+            onClick={() => useApp.getState().setDialog({ type: 'link' })}
+          >
+            <Plus size={15} />
+            Adicionar link
+          </button>
+        </div>
+      </header>
+
+      {recent.length > 0 && (
+        <section aria-label="Tocadas recentemente">
+          <div className="quick-grid">
+            {recent.map(track => (
+              <button
+                key={track.id}
+                className="quick-tile"
+                onPointerEnter={() => warmTrack(track)}
+                onPointerLeave={cancelWarmTrack}
+                onClick={() => useApp.getState().play(track, recent)}
+              >
+                <span className="quick-tile-art">
+                  <Cover track={track} />
+                </span>
+                <span className="quick-tile-text">
+                  <strong>{track.title}</strong>
+                  <small>{track.artist}</small>
+                </span>
+                <span className="quick-tile-play" aria-hidden="true">
+                  <Play size={14} fill="currentColor" />
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <OnlineCatalog />
+
+      {data.tracks.length > 0 && (
+        <section aria-labelledby="home-library-title">
+          <div className="section-heading">
+            <h2 id="home-library-title">Biblioteca</h2>
+            <button
+              className="text-button"
+              onClick={() => useApp.getState().setPage('library')}
+            >
+              Ver tudo
+            </button>
+          </div>
+          <div className="catalog-grid">
+            {data.tracks.slice(0, 6).map(track => (
+              <TrackCard key={track.id} track={track} list={data.tracks} />
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  );
 }

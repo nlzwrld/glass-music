@@ -17,9 +17,10 @@ export function OpticalEngine({children}:{children:ReactNode}){
  const current=useRef({settings,lab}),invalidate=useRef<(scene?:boolean)=>void>(()=>{}),custom=useRef<HTMLImageElement|undefined>(undefined),poster=useRef<HTMLImageElement|undefined>(undefined);
  const palette=useRef({from:neutralPalette,to:neutralPalette,value:neutralPalette,start:0});
  current.current={settings,lab};
+ const uiStyle=useApp(s=>s.data.preferences.uiStyle)??'matte';
  const performanceMode=useApp(s=>s.data.preferences.performance),userReduced=useApp(s=>s.data.preferences.reducedMotion),glass=useApp(s=>s.data.preferences.glass);
  const reduced=userReduced||systemReduced||performanceMode,artwork=useApp(s=>s.queue[s.index]?.artwork);
- const disabled=performanceMode||settings.quality==='economy'||(!lab&&settings.background==='desktop');
+ const disabled=uiStyle==='matte'||performanceMode||settings.quality==='economy'||(!lab&&settings.background==='desktop');
  useEffect(()=>{if(booted&&(!saved||Object.keys(opticalDefaults).some(key=>saved[key]!==settings[key as keyof OpticalSettings])))void useApp.getState().setPreferences({appearance:{...settings}});},[booted,saved,settings]);
  useEffect(()=>{const media=matchMedia('(prefers-reduced-motion: reduce)'),update=()=>setSystemReduced(media.matches);media.addEventListener('change',update);return()=>media.removeEventListener('change',update);},[]);
  useEffect(()=>{useApp.setState({collapsed:settings.sidebarCompact});document.documentElement.style.setProperty('--ui-scale',String(settings.scale/100));invalidate.current(true);},[settings]);
