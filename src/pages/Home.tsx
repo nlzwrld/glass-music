@@ -1,4 +1,4 @@
-import { Plus, FolderInput, Play } from 'lucide-react';
+import { Play } from 'lucide-react';
 import { useApp } from '../stores/app';
 import TrackCard from '../components/library/TrackCard';
 import OnlineCatalog from '../components/library/OnlineCatalog';
@@ -16,23 +16,6 @@ export default function Home() {
     <div className="home-page">
       <header className="page-heading">
         <h1>Início</h1>
-        <div className="heading-actions">
-          <button
-            className="button secondary"
-            onClick={() => void useApp.getState().importLocalFiles()}
-          >
-            <FolderInput size={15} />
-            Arquivos
-          </button>
-          <button
-            className="button secondary"
-            aria-label="Adicionar link"
-            onClick={() => useApp.getState().setDialog({ type: 'link' })}
-          >
-            <Plus size={15} />
-            Adicionar link
-          </button>
-        </div>
       </header>
 
       {recent.length > 0 && (

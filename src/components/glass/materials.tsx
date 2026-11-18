@@ -64,7 +64,7 @@ export function GlassSlider({ className = '', ...props }: InputHTMLAttributes<HT
 export function LiquidLens({ radius = 99 }: { radius?: number }) { return <span className="lens-fallback" style={{borderRadius:radius}} aria-hidden="true" />; }
 
 export interface GlassMenuItem { label: string; icon?: ReactNode; action(): void; disabled?: boolean; danger?: boolean }
-export function GlassContextMenu({ label, items, disabled = false }: { label: string; items: GlassMenuItem[]; disabled?: boolean }) {
+export function GlassContextMenu({ label, items, disabled = false, icon, className = '', align = 'end' }: { label: string; items: GlassMenuItem[]; disabled?: boolean; icon?: ReactNode; className?: string; align?: 'start' | 'end' }) {
   const {reduced}=useOptics();
   const [point,setPoint]=useState<{x:number;y:number}|null>(null);
   const [open, setOpen] = useState(false), [position, setPosition] = useState({ left: 0, top: 0 });
@@ -78,9 +78,10 @@ export function GlassContextMenu({ label, items, disabled = false }: { label: st
   useLayoutEffect(() => {
     if (!open || !trigger.current || !menu.current) return;
     const r = trigger.current.getBoundingClientRect(), box = menu.current.getBoundingClientRect();
-    setPosition(point?{left:Math.max(12,Math.min(innerWidth-box.width-12,point.x)),top:Math.max(12,Math.min(innerHeight-box.height-12,point.y))}:{ left: Math.max(12, Math.min(innerWidth - box.width - 12, r.right - box.width)), top: r.bottom + box.height + 10 < innerHeight ? r.bottom + 8 : Math.max(12, r.top - box.height - 8) });
+    const anchorX = align === 'start' ? r.left : r.right - box.width;
+    setPosition(point?{left:Math.max(12,Math.min(innerWidth-box.width-12,point.x)),top:Math.max(12,Math.min(innerHeight-box.height-12,point.y))}:{ left: Math.max(12, Math.min(innerWidth - box.width - 12, anchorX)), top: r.bottom + box.height + 10 < innerHeight ? r.bottom + 6 : Math.max(12, r.top - box.height - 6) });
     menu.current.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
-  }, [open,point]);
+  }, [open,point,align]);
   useEffect(() => {
     if (!open) return;
     const close = (e: Event) => { if (!menu.current?.contains(e.target as Node) && !trigger.current?.contains(e.target as Node)) setOpen(false); };
@@ -88,7 +89,7 @@ export function GlassContextMenu({ label, items, disabled = false }: { label: st
     document.addEventListener('pointerdown', close); window.addEventListener('resize', resize);const scroll=(e:Event)=>{if(!menu.current?.contains(e.target as Node))setOpen(false);};document.addEventListener('scroll',scroll,true);
     return () => { document.removeEventListener('pointerdown', close); window.removeEventListener('resize', resize);document.removeEventListener('scroll',scroll,true); };
   }, [open]);
-  return <><button ref={trigger} className="icon-button menu-trigger" aria-label={label} title={label} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined} disabled={disabled} onClick={() => {setPoint(null);setOpen(!open);}}><MoreHorizontal size={16} /></button>{createPortal(<AnimatePresence>{open && <motion.div ref={menu} id={id} role="menu" aria-label={label} className="glass-context-menu" style={position} initial={reduced?false:{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: reduced?0:.12 }} onKeyDown={e => {
+  return <><button ref={trigger} className={`icon-button menu-trigger ${className}`} aria-label={label} title={label} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined} disabled={disabled} onClick={() => {setPoint(null);setOpen(!open);}}>{icon ?? <MoreHorizontal size={16} />}</button>{createPortal(<AnimatePresence>{open && <motion.div ref={menu} id={id} role="menu" aria-label={label} className="glass-context-menu" style={position} initial={reduced?false:{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: reduced?0:.12 }} onKeyDown={e => {
     const nodes = Array.from(menu.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') || []); const index = nodes.indexOf(document.activeElement as HTMLButtonElement);
     if (e.key === 'Escape' || e.key === 'Tab') { setOpen(false); if (e.key === 'Escape') { e.preventDefault(); trigger.current?.focus(); } }
     if (['ArrowDown','ArrowUp','Home','End'].includes(e.key)) { e.preventDefault(); nodes[e.key === 'Home' ? 0 : e.key === 'End' ? nodes.length - 1 : (index + (e.key === 'ArrowDown' ? 1 : -1) + nodes.length) % nodes.length]?.focus(); }

@@ -226,8 +226,18 @@
   height: 24px !important;
 }
 
-.sidebar-collapsed .sidebar-add-btn {
+.sidebar-collapsed .recent-heading {
+  display: flex !important;
+  justify-content: center;
+  padding: 12px 0 6px !important;
+}
+
+.sidebar-collapsed .recent-heading > span {
   display: none;
+}
+
+.sidebar-collapsed .sidebar-add-btn {
+  display: inline-grid !important;
 }
 
 /* Match 10px native Win32 window corner region */

@@ -3,14 +3,12 @@ import { useState, useEffect, useMemo } from 'react';
 import { GlassContextMenu } from '../components/glass/materials';
 import { transport } from '../components/player/engine';
 import {
-  Plus,
   Search,
   Pencil,
   Trash2,
   Play,
   Pause,
   Download,
-  FolderInput,
   Share2,
 } from 'lucide-react';
 import { useApp } from '../stores/app';
@@ -109,35 +107,6 @@ export default function Library() {
             <span className="heading-count">
               {data.playlists.length} playlists · {data.tracks.length} faixas
             </span>
-          </div>
-          <div className="heading-actions">
-            <button
-              className="button secondary"
-              onClick={() => void useApp.getState().importLocalFiles()}
-            >
-              <FolderInput size={15} />
-              Arquivos
-            </button>
-            <button
-              className="button secondary"
-              onClick={() => useApp.getState().setDialog({ type: 'link', playlist: true })}
-            >
-              Importar playlist
-            </button>
-            <button
-              className="button secondary"
-              onClick={() => useApp.getState().setDialog({ type: 'link' })}
-            >
-              <Plus size={15} />
-              Adicionar link
-            </button>
-            <button
-              className="button primary"
-              onClick={() => useApp.getState().setDialog({ type: 'playlist' })}
-            >
-              <Plus size={15} />
-              Criar playlist
-            </button>
           </div>
         </div>
 
@@ -361,15 +330,6 @@ export default function Library() {
             {tracks.length} faixas
             {totalDur ? ` · ${totalDur}` : ''}
           </p>
-        </div>
-        <div className="heading-actions">
-          <button
-            className="button secondary"
-            onClick={() => useApp.getState().setDialog({ type: 'link' })}
-          >
-            <Plus size={15} />
-            Adicionar link
-          </button>
         </div>
       </div>
 

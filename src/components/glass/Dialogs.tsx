@@ -226,7 +226,7 @@ export default function Dialogs() {
         {dialog.type === 'link' && (
           <>
             <h2 id="dialog-title">
-              {dialog.playlist ? 'Importar playlist' : 'Adicionar link'}
+              {dialog.playlist ? 'Importar playlist' : 'Importar por link'}
             </h2>
             {!consent ? (
               <div className="consent-needed">

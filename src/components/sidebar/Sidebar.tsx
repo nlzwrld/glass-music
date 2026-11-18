@@ -9,13 +9,16 @@ import {
   AudioLines,
   Play,
   Plus,
+  ListPlus,
+  Link2,
+  FolderInput,
   PanelLeftClose,
   PanelLeftOpen,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useApp, type Page } from '../../stores/app';
 import { IconButton } from '../glass/controls';
-import { GlassSidebar } from '../glass/materials';
+import { GlassContextMenu, GlassSidebar } from '../glass/materials';
 import { useOptics } from '../glass/v3/OpticalEngine';
 import Cover from '../glass/Cover';
 import PlaylistCover from '../library/PlaylistCover';
@@ -79,7 +82,11 @@ export default function Sidebar() {
               <motion.span
                 className="nav-capsule"
                 layoutId="navigation-capsule"
-                transition={{ type: 'tween', duration: reduced ? 0 : 0.25, ease: [0.22, 1, 0.36, 1] }}
+                transition={{
+                  type: 'tween',
+                  duration: reduced ? 0 : 0.25,
+                  ease: [0.22, 1, 0.36, 1],
+                }}
               />
             )}
             <Icon size={16} />
@@ -89,14 +96,32 @@ export default function Sidebar() {
       </nav>
 
       <div className="playlist-heading recent-heading">
-        <span>{data.playlists.length > 0 ? 'Playlists' : 'Recentes'}</span>
-        <IconButton
-          label="Criar playlist"
+        <span>Playlists</span>
+        <GlassContextMenu
+          label="Criar ou importar"
+          icon={<Plus size={15} />}
           className="sidebar-add-btn"
-          onClick={() => useApp.getState().setDialog({ type: 'playlist' })}
-        >
-          <Plus size={14} />
-        </IconButton>
+          align="start"
+          items={[
+            {
+              label: 'Nova playlist',
+              icon: <ListPlus size={15} />,
+              action: () => useApp.getState().setDialog({ type: 'playlist' }),
+            },
+            {
+              label: 'Importar por link',
+              icon: <Link2 size={15} />,
+              action: () => useApp.getState().setDialog({ type: 'link' }),
+            },
+            {
+              label: 'Arquivos locais',
+              icon: <FolderInput size={15} />,
+              action: () => {
+                void useApp.getState().importLocalFiles();
+              },
+            },
+          ]}
+        />
       </div>
 
       <div
