@@ -211,57 +211,59 @@ void main() {
     uvOffset += perp * ripple * scale / u_canvasSize;
   }
 
-  // Sigma scales with the rim layer so the rim reads as a frosted
-  // bevel even when the centre stays mostly clear.
-  float sigma = u_blur * (1.0 + rim * 1.5);
+  // Sigma scales gently with the rim meniscus so edges read as liquid optical
+  // thickness rather than an over-frosted band.
+  float sigma = u_blur * (1.0 + rim * 0.85);
 
   vec3 col = gaussianSample(v_uv + uvOffset, sigma);
   if (u_chromatic > 0.001) {
-    vec2 caOff = -normal * (u_chromatic * (edge * u_refraction + rim * u_rimIntensity) * 0.5)
+    vec2 caOff = -normal * (u_chromatic * (edge * u_refraction + rim * u_rimIntensity) * 0.45)
                  * scale / u_canvasSize;
     vec3 split = vec3(texture(u_bg,v_uv+uvOffset+caOff).r,texture(u_bg,v_uv+uvOffset).g,texture(u_bg,v_uv+uvOffset-caOff).b);
-    col = mix(col, split, edge * 0.28);
+    col = mix(col, split, edge * 0.22);
   }
   float luma = dot(col, vec3(0.2126,0.7152,0.0722));
   col = mix(vec3(luma),col,u_saturation);
+  // Adaptive highlight compression keeps foreground text legible over bright art.
+  float highlightGuard = smoothstep(0.68, 1.0, luma) * clamp(u_tintOpacity * 3.2, 0.0, 0.20);
+  col *= (1.0 - highlightGuard);
 
   // Vertical-gradient tint (Apple-style top-brighter, bottom-darker).
-  vec3 vGrad = mix(vec3(1.0), vec3(0.98), v_norm.y);
+  vec3 vGrad = mix(vec3(1.0), vec3(0.985), v_norm.y);
   vec3 environmentTint = textureLod(u_bg, vec2(0.5), 8.0).rgb;
-  col = mix(col, mix(environmentTint, u_tint, 0.22) * vGrad, u_tintOpacity);
+  col = mix(col, mix(environmentTint, u_tint, 0.20) * vGrad, u_tintOpacity);
 
-  // Ambient sampled-gradient tint — picks up dominant background colour.
+  // Ambient sampled-gradient tint — picks up surrounding background context.
   if (u_ambientTint > 0.5) {
     vec3 amb = ambientGradient(v_norm.y);
-    col = mix(col, amb, u_tintOpacity * 0.4);
+    col = mix(col, amb, u_tintOpacity * 0.24);
   }
 
   // Solid tint colour mixed in lightly on top.
-  col = mix(col, u_tint, u_tintOpacity * 0.08);
+  col = mix(col, u_tint, u_tintOpacity * 0.06);
 
   if (u_windowMaterial > 0.5) {
     // The full-window bevel has one soft reflection around all four sides.
     // Start inside the cutout, leaving its outermost pixel free of a stroke.
     float bevel = smoothstep(1.0 * u_dpr, 3.5 * u_dpr, depth) *
                   (1.0 - smoothstep(6.0 * u_dpr, 15.0 * u_dpr, depth));
-    col += vec3(bevel * u_specular * (0.055 + u_fresnel * 0.03 + u_edge * 0.018));
+    col += vec3(bevel * u_specular * (0.045 + u_fresnel * 0.024 + u_edge * 0.014));
   } else {
-  // Smaller surfaces retain their directional specular lighting.
+  // Smaller surfaces retain restrained, physical directional specular lighting.
   if (u_specular > 0.001) {
     float ndl = max(0.0, dot(normal, normalize(mix(vec2(-.6,-.8),u_lightDir,u_cursor))));
-    float rimBand = smoothstep(0.0, 2.0 * u_dpr, depth) *
-                    (1.0 - smoothstep(2.0 * u_dpr, 8.0 * u_dpr, depth));
+    float rimBand = smoothstep(0.0, 2.2 * u_dpr, depth) *
+                    (1.0 - smoothstep(2.2 * u_dpr, 9.0 * u_dpr, depth));
     vec2 lightAnchor = clamp(vec2(0.5) + u_lightDir * 0.38, vec2(0.08), vec2(0.92));
     vec2 fromLight = v_norm - lightAnchor;
-    float focus = 0.16 + 0.84 * exp(-dot(fromLight,fromLight) * 5.5);
-    float glow = pow(ndl, 4.0) * rimBand * u_specular * focus;
-    col += vec3(glow) * 1.2;
+    float focus = 0.18 + 0.82 * exp(-dot(fromLight,fromLight) * 5.0);
+    float glow = pow(ndl, 3.5) * rimBand * u_specular * focus;
+    col += vec3(glow) * 0.78;
 
-    // Subtle inner rim sheen — a continuous luminous band along the
-    // very rim, independent of light direction. This is the "always on"
-    // edge highlight that reads as glass.
-    float sheen = exp(-depth * 0.25) * rim * 0.18 * u_specular;
+    // Delicate inner meniscus sheen — subtle physical glass thickness, never a white outline.
+    float sheen = exp(-depth * 0.32) * rim * 0.095 * u_specular;
     col += vec3(sheen);
+    col *= 1.0 - rim * max(0.0, v_norm.y - 0.5) * 0.03 * clamp(u_specular, 0.0, 1.0);
   }
 
   // Schlick reflectance for the apparent rounded surface, not the flat DOM plane.
@@ -269,9 +271,9 @@ void main() {
   float cosView = sqrt(max(0.0, 1.0 - slope * slope));
   float f0 = pow((u_ior - 1.0) / (u_ior + 1.0), 2.0);
   float reflectance = f0 + (1.0 - f0) * pow(1.0 - cosView, 5.0);
-  float directional = .18 + .82 * max(0.0,dot(normal,u_lightDir));
-  col += vec3(reflectance * slope * u_fresnel * directional * .3);
-  col += vec3(exp(-depth / u_dpr) * u_edge * directional * .12);
+  float directional = .20 + .80 * max(0.0,dot(normal,u_lightDir));
+  col += vec3(reflectance * slope * u_fresnel * directional * .22);
+  col += vec3(exp(-depth / u_dpr) * u_edge * directional * .075);
   }
   float aaWidth = max(fwidth(d) * 1.2, u_dpr * 1.25);
   float alpha = clamp(0.5 - d / aaWidth, 0.0, 1.0);
