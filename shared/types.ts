@@ -4,11 +4,12 @@ export interface Track {
   id: string; source: Source; kind: Kind; sourceId: string; title: string; artist: string;
   offline?:boolean; album?: string; artwork?: string; duration: number; url?: string; addedAt: number;
   available?: boolean; reason?: string; playbackId?: string;
+  lyricSnippet?: string; recommended?: boolean;
 }
 export function canPlay(track: Track) { return (['local','youtube','link'].includes(track.source) && track.kind === 'track') || (track.source === 'soundcloud' && ['track','playlist'].includes(track.kind)); }
-export interface Playlist { artwork?:string; id: string; name: string; createdAt: number; trackIds: string[] }
+export interface Playlist { artwork?:string; description?:string; id: string; name: string; createdAt: number; trackIds: string[] }
 export interface Preferences {
-  transition:'off'|'fade'|'crossfade'; transitionSeconds:number; volumeBoost:number; limiter:boolean; outputDevice:string; jamEndpoint:string; autoUpdate:boolean;
+  transition:'off'|'fade'|'crossfade'; transitionSeconds:number; volumeBoost:number; limiter:boolean; outputDevice:string; jamEndpoint:string; autoUpdate:boolean; autoplay:boolean;
   appearance?: Record<string, unknown>;
   theme: 'dark' | 'light' | 'system'; glass: number; blur: number; accent: string;
   autoAccent: boolean; reducedMotion: boolean; performance: boolean; volume: number;
@@ -17,14 +18,14 @@ export interface Preferences {
   eq: number[]; onlineConsent: boolean; catalogConsent: boolean; onboardingDone: boolean;
 }
 export const defaults: Preferences = {
-  transition:'fade',transitionSeconds:3,volumeBoost:0,limiter:true,outputDevice:'default',jamEndpoint:'',autoUpdate:true,
+  transition:'fade',transitionSeconds:3,volumeBoost:0,limiter:true,outputDevice:'default',jamEndpoint:'',autoUpdate:true,autoplay:true,
   theme: 'dark', glass: 20, blur: 24, accent: '#e8eeee', autoAccent: false,
   reducedMotion: false, performance: false, volume: 65, repeat: 'off', shuffle: false,
   tray: true, startup: false, notifications: false, globalShortcuts: false,
   coverCacheMB: 128, eq: [0, 0, 0, 0, 0], onlineConsent: false, catalogConsent: false, onboardingDone: false
 };
 export interface Snapshot { tracks: Track[]; playlists: Playlist[]; likes: string[]; history: { id: string; playedAt: number }[]; preferences: Preferences }
-export type SearchKind = 'all' | 'track' | 'artist' | 'playlist' | 'album';
+export type SearchKind = 'all' | 'track' | 'artist' | 'playlist' | 'album' | 'lyrics';
 export type SearchSource = 'all' | Source | 'deezer' | 'apple';
 export interface SearchRequest { query: string; kind: SearchKind; source: SearchSource; cursor?: Record<string, string>; requestId: string }
 export interface SearchResult { items: Track[]; next: Record<string, string>; notices: string[] }
@@ -59,6 +60,8 @@ export interface LyricsResult {id:number;title:string;artist:string;syncedLyrics
 export interface GlassAPI {
   importLink(url:string,playlist?:boolean):Promise<LinkImport>;
   previewCollection(url:string):Promise<CollectionPreview>;
+  recommendations(seeds:Track[],excludeIds:string[]):Promise<Track[]>;
+  playlistMeta(id:string,meta:{artwork?:string;description?:string}):Promise<Snapshot>;
   accounts():Promise<AccountStatus[]>;
   configureAccounts():Promise<AccountStatus[]>;
   connectAccount(provider:string):Promise<AccountStatus[]>;
@@ -88,7 +91,7 @@ export interface GlassAPI {
   credentials(value: { youtubeKey?: string; brokerUrl?: string; brokerToken?: string }): Promise<IntegrationStatus>;
   external(url: string): Promise<void>;
   playerUrl(): Promise<string>;
-  audioSource(videoId: string, requestId: string): Promise<{url:string;duration:number}>;
+  audioSource(videoId: string, requestId: string, fallback?: {title?:string;artist?:string;duration?:number}): Promise<{url:string;duration:number;videoId?:string}>;
   window(action: 'minimize' | 'maximize' | 'close' | 'mini' | 'restore'): Promise<void>;
   visualState(): Promise<boolean>;
   windowShape(): Promise<{clippedDesktopBackdrop:boolean;systemBackdrop:number;backdropReadResult:number;nativeRegion:boolean;width:number;height:number;clientInsets:number[];corners:boolean[];center:boolean;sideMidpoints:boolean[];maximized:boolean;clientCorners:boolean[];frame:{caption:boolean;resizeStyle:boolean;extendedEdge:boolean;dwmBorderSuppressed:boolean}}>;

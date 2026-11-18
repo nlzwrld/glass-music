@@ -56,7 +56,7 @@ export default function Collection() {
 
   return (
     <div className="playlist-page">
-      <div className="page-heading">
+      <div className="page-heading lg-playlist-hero">
         <div className="playlist-hero-art">
           <Cover
             track={{ title: preview.name, artwork: preview.artwork, source: 'link' }}
@@ -67,25 +67,25 @@ export default function Collection() {
           <h1>{preview.name}</h1>
           <p>{tracks.length} faixas</p>
         </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <div className="lg-hero-actions">
           <button
-            className="button secondary"
+            className="lg-cta-white"
             disabled={saving || !tracks.length}
             onClick={() => void importToLibrary()}
           >
-            <Plus size={17} />
+            <Plus size={16} />
             {saving ? 'Salvando…' : 'Salvar na biblioteca'}
           </button>
           {preview.url && (
             <button
-              className="button secondary"
+              className="lg-pill-btn"
               onClick={() =>
                 void window.glass
                   .external(preview.url)
                   .catch(e => useApp.getState().message(cleanError(e)))
               }
             >
-              <ExternalLink size={16} />
+              <ExternalLink size={15} />
               Abrir origem
             </button>
           )}
@@ -106,24 +106,24 @@ export default function Collection() {
             }}
           >
             {activeHere && playing ? (
-              <Pause size={27} fill="currentColor" />
+              <Pause size={22} fill="currentColor" />
             ) : (
-              <Play size={27} fill="currentColor" />
+              <Play size={22} fill="currentColor" />
             )}
-            <span>{activeHere && playing ? 'Pausar' : 'Play'}</span>
+            <span>{activeHere && playing ? 'Pausar' : 'Reproduzir'}</span>
           </button>
           {tracks.some(t => ['youtube', 'link'].includes(t.source)) && (
             <button
-              className="button secondary"
+              className="lg-pill-btn"
               onClick={() => void useApp.getState().downloadPlaylist(tracks)}
             >
-              <Download size={16} />
+              <Download size={15} />
               Baixar offline
             </button>
           )}
         </div>
-        <button className="text-button" onClick={() => useApp.getState().navigate(-1)}>
-          <ArrowLeft size={16} />
+        <button className="lg-pill-btn" onClick={() => useApp.getState().navigate(-1)}>
+          <ArrowLeft size={15} />
           Voltar
         </button>
       </div>

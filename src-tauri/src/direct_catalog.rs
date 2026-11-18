@@ -17,6 +17,7 @@ const PAGE: usize = 20;
 const MAX_OFFSET: usize = 180;
 const PLUGIN: &str = "plugins/glass/yt_dlp_plugins/extractor/glass_soundcloud.py";
 const VISIONOS_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
+const IOS_UA: &str = "com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_2_1 like Mac OS X;)";
 
 static VISITOR_CACHE: OnceLock<Mutex<Option<(Instant, String)>>> = OnceLock::new();
 
@@ -83,34 +84,49 @@ fn extract_visitor_token(text: &str) -> Option<String> {
     None
 }
 
-async fn innertube_player(id: &str, visitor: &str) -> Result<Value> {
+async fn innertube_player(id: &str, visitor: &str, use_ios: bool) -> Result<Value> {
+    let ua = if use_ios { IOS_UA } else { VISIONOS_UA };
     let mut req = crate::providers::client()
         .post("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
         .header("Content-Type", "application/json")
         .header("Origin", "https://www.youtube.com")
-        .header("User-Agent", VISIONOS_UA)
+        .header("User-Agent", ua)
         .timeout(Duration::from_secs(6));
     if !visitor.is_empty() {
         req = req.header("X-Goog-Visitor-Id", visitor);
     }
+    let client_ctx = if use_ios {
+        json!({
+            "clientName": "IOS",
+            "clientVersion": "20.03.02",
+            "deviceMake": "Apple",
+            "deviceModel": "iPhone16,2",
+            "osName": "iPhone",
+            "osVersion": "18.2.1.22C161",
+            "hl": "pt-BR",
+            "timeZone": "UTC",
+            "utcOffsetMinutes": 0,
+            "visitorData": visitor
+        })
+    } else {
+        json!({
+            "clientName": "VISIONOS",
+            "clientVersion": "0.1",
+            "deviceMake": "Apple",
+            "deviceModel": "RealityDevice14,1",
+            "osName": "visionOS",
+            "osVersion": "1.3.21O771",
+            "hl": "en",
+            "timeZone": "UTC",
+            "utcOffsetMinutes": 0,
+            "visitorData": visitor
+        })
+    };
     let body = json!({
         "videoId": id,
         "contentCheckOk": true,
         "racyCheckOk": true,
-        "context": {
-            "client": {
-                "clientName": "VISIONOS",
-                "clientVersion": "0.1",
-                "deviceMake": "Apple",
-                "deviceModel": "RealityDevice14,1",
-                "osName": "visionOS",
-                "osVersion": "1.3.21O771",
-                "hl": "en",
-                "timeZone": "UTC",
-                "utcOffsetMinutes": 0,
-                "visitorData": visitor
-            }
-        }
+        "context": { "client": client_ctx }
     });
     let mut res = req
         .json(&body)
@@ -178,7 +194,7 @@ async fn innertube_player(id: &str, visitor: &str) -> Result<Value> {
         "protocol": "https",
         "ext": ext,
         "duration": duration,
-        "http_headers": { "User-Agent": VISIONOS_UA }
+        "http_headers": { "User-Agent": ua }
     });
     if let Some(len) = filesize {
         out["filesize"] = json!(len);
@@ -188,16 +204,128 @@ async fn innertube_player(id: &str, visitor: &str) -> Result<Value> {
 
 async fn innertube_audio(id: &str) -> Result<Value> {
     let visitor = visitor_data(false).await;
-    if let Ok(stream) = innertube_player(id, &visitor).await {
+    if let Ok(stream) = innertube_player(id, &visitor, false).await {
+        return Ok(stream);
+    }
+    if let Ok(stream) = innertube_player(id, &visitor, true).await {
         return Ok(stream);
     }
     let refreshed = visitor_data(true).await;
     if !refreshed.is_empty() && refreshed != visitor {
-        if let Ok(stream) = innertube_player(id, &refreshed).await {
+        if let Ok(stream) = innertube_player(id, &refreshed, false).await {
+            return Ok(stream);
+        }
+        if let Ok(stream) = innertube_player(id, &refreshed, true).await {
             return Ok(stream);
         }
     }
     Err("Fallback para extrator auxiliar.".into())
+}
+
+pub async fn youtube_radio_mix(video_id: &str) -> Result<Vec<Value>> {
+    if video_id.len() != 11
+        || !video_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+    {
+        return Err("Vídeo semente inválido.".into());
+    }
+    let body = json!({
+        "videoId": video_id,
+        "playlistId": format!("RD{video_id}"),
+        "context": {
+            "client": {
+                "clientName": "WEB",
+                "clientVersion": "2.20250101.00.00",
+                "hl": "pt-BR",
+                "gl": "BR"
+            }
+        }
+    });
+    let mut res = crate::providers::client()
+        .post("https://www.youtube.com/youtubei/v1/next?prettyPrint=false")
+        .json(&body)
+        .timeout(Duration::from_secs(7))
+        .send()
+        .await
+        .map_err(|_| "Mix indisponível.")?;
+    if !res.status().is_success() {
+        return Err("Mix indisponível.".into());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = res.chunk().await.map_err(|_| "Mix incompleto.")? {
+        if bytes.len() + chunk.len() > 3_500_000 {
+            return Err("Mix muito grande.".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let data: Value = serde_json::from_slice(&bytes).map_err(|_| "Mix inválido.")?;
+    let mut rows = Vec::new();
+    collect_mix_renderers(&data, 0, &mut rows);
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+    for row in rows {
+        if db::validate_track(&row).is_ok() && seen.insert(s(&row, "id").to_string()) {
+            items.push(row);
+        }
+    }
+    Ok(items)
+}
+
+fn collect_mix_renderers(value: &Value, depth: usize, out: &mut Vec<Value>) {
+    if depth > 36 || out.len() >= 25 {
+        return;
+    }
+    if let Some(panel) = value.get("playlistPanelVideoRenderer") {
+        let id = s(panel, "videoId");
+        let title = youtube_text(&panel["title"]);
+        let artist = youtube_text(&panel["shortBylineText"])
+            .replace(" - Topic", "")
+            .trim()
+            .to_string();
+        let length = youtube_text(&panel["lengthText"]);
+        let duration = length
+            .split(':')
+            .try_fold(0_u64, |sum, p| {
+                p.parse::<u64>()
+                    .ok()
+                    .and_then(|n| sum.checked_mul(60)?.checked_add(n))
+            })
+            .unwrap_or(0);
+        if id.len() == 11
+            && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+            && !title.is_empty()
+            && duration > 0
+            && duration <= 7200
+        {
+            out.push(json!({
+                "id": format!("youtube:{id}"),
+                "source": "youtube",
+                "sourceId": id,
+                "kind": "track",
+                "title": title,
+                "artist": if artist.is_empty() { "YouTube".into() } else { artist },
+                "duration": duration as f64,
+                "url": format!("https://www.youtube.com/watch?v={id}"),
+                "artwork": format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg"),
+                "addedAt": now()
+            }));
+        }
+        return;
+    }
+    match value {
+        Value::Object(map) => {
+            for child in map.values() {
+                collect_mix_renderers(child, depth + 1, out);
+            }
+        }
+        Value::Array(list) => {
+            for child in list {
+                collect_mix_renderers(child, depth + 1, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 pub struct DirectCatalog { root: PathBuf, slots: Semaphore, audio_slots: Semaphore, disabled: bool }

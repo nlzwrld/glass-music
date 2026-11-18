@@ -284,10 +284,46 @@ export function PlayerEngine() {
       if (d.type === 'ready') driver?.volume(useApp.getState().data.preferences.volume);
       if (d.type === 'time' && Number.isFinite(d.position) && Number.isFinite(d.duration))
         update({ position: Math.max(0, d.position), duration: Math.max(0, d.duration) });
-      if (d.type === 'error') fail(String(d.message).slice(0, 500));
-      if (d.type === 'blocked') {
-        onPause();
-        useApp.getState().message(String(d.message));
+      if (d.type === 'error' || d.type === 'blocked') {
+        // Rescue restricted SoundCloud tracks via native audio stream!
+        if (track && consent && !cancelled) {
+          frame.src = 'about:blank';
+          const playFallback = () => {
+            if (!el.hasAttribute('src')) return;
+            setupGraph();
+            void el.play().catch(() => fail(String(d.message || 'Faixa indisponível.')));
+          };
+          el.volume = 1;
+          setupGraph().level(el, 0);
+          driver = {
+            play: playFallback,
+            pause: () => all.forEach(deck => deck.pause()),
+            seek: n => {
+              if (Number.isFinite(el.duration)) el.currentTime = Math.max(0, Math.min(n, el.duration));
+            },
+            volume: n => {
+              if (graph.current)
+                void graph.current
+                  .configure({ ...useApp.getState().data.preferences, volume: n })
+                  .catch(() => {});
+            },
+          };
+          void window.glass
+            .audioSource('', crypto.randomUUID(), {
+              title: track.title,
+              artist: track.artist,
+              duration: track.duration,
+            })
+            .then(src => {
+              if (cancelled) return;
+              update({ duration: src.duration || track.duration });
+              el.src = src.url;
+              playFallback();
+            })
+            .catch(() => fail(String(d.message || 'Faixa indisponível.').slice(0, 500)));
+          return;
+        }
+        fail(String(d.message || 'Faixa indisponível.').slice(0, 500));
       }
     };
 
@@ -430,10 +466,26 @@ export function PlayerEngine() {
     };
   }, [track?.id, revision, playbackAllowed]);
 
-  // Pre-warm AND pre-stage the next track on Standby Deck (including in Shuffle mode!)
+  // Pre-warm AND pre-stage the next track on Standby Deck (including in Shuffle mode & Autoplay Radio!)
   useEffect(() => {
     const next = upcomingTrack();
-    if (!next || next.available === false || next.source === 'soundcloud') {
+    if (!next) {
+      staged.current = undefined;
+      if (
+        track &&
+        consent &&
+        preferences.autoplay &&
+        preferences.repeat === 'off' &&
+        useApp.getState().queue.length > 0
+      ) {
+        const timer = setTimeout(() => {
+          void useApp.getState().extendWithRecommendations();
+        }, 600);
+        return () => clearTimeout(timer);
+      }
+      return;
+    }
+    if (next.available === false || next.source === 'soundcloud') {
       staged.current = undefined;
       return;
     }

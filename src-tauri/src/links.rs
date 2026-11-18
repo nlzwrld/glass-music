@@ -101,20 +101,108 @@ fn match_score(reference:&Value,candidate:&Value)->Option<f64>{
     let topic_bonus=if s(candidate,"artist").ends_with(" - Topic"){0.8}else{0.0};
     Some(title_score*8.0+artist_score*5.0+topic_bonus+(if duration>0.0{1.0}else{0.0})-found.len().saturating_sub(title.len()) as f64*0.015)
 }
+fn strip_edition(raw:&str)->String{
+    let mut out=raw.to_string();
+    for sep in [" - "," ("," ["]{
+        if let Some((left,right))=out.split_once(sep){
+            let low=right.to_lowercase();
+            if ["deluxe","remaster","bonus","radio edit","version","versão","versao","explicit","clean","mono","stereo"].iter().any(|k|low.contains(k)){
+                out=left.to_string();
+            }
+        }
+    }
+    out
+}
+fn relaxed_score(reference:&Value,candidate:&Value)->Option<f64>{
+    if db::validate_track(candidate).is_err()||candidate["source"]!="youtube"||candidate["kind"]!="track"{return None;}
+    let clean_ref=strip_edition(s(reference,"title"));
+    let title=words(&clean_ref);
+    let found=words(s(candidate,"title"));
+    let mut all=found.clone();all.extend(words(s(candidate,"artist")));
+    if title.is_empty(){return None;}
+    let title_score=coverage(&title,&all);
+    if title_score<0.55{return None;}
+    let artist=s(reference,"artist");
+    let artist_score=if ["Spotify","Deezer","Apple Music","Tidal","Bandcamp","YouTube","SoundCloud"].contains(&artist){
+        0.4
+    }else{
+        let full=coverage(&words(artist),&all);
+        let prim=coverage(&words(primary_artist(artist)),&all);
+        let sc=full.max(prim);
+        // Allow label channels (GR6, KondZilla, Love Funk, etc.) when title match is very strong (>= 0.85)
+        if sc<0.35 && title_score<0.85 {return None;}
+        sc
+    };
+    let duration=reference["duration"].as_f64().unwrap_or(0.0);
+    let actual=candidate["duration"].as_f64().unwrap_or(0.0);
+    if duration>0.0 && actual>0.0 && (duration-actual).abs()>95.0_f64.max(duration*0.45){return None;}
+    let dur_bonus=if duration>0.0&&actual>0.0{1.0-((duration-actual).abs()/120.0).min(1.0)}else{0.3};
+    Some(title_score*7.0+artist_score*4.0+dur_bonus)
+}
+pub async fn find_playable_youtube_id(
+    title:&str,
+    artist:&str,
+    duration:f64,
+    exclude_id:&str,
+    catalog:&str,
+    direct:&crate::direct_catalog::DirectCatalog,
+)->Result<(String,Option<Value>)>{
+    let reference=json!({"title":title,"artist":artist,"duration":duration});
+    let prim=primary_artist(artist);
+    let clean_t=strip_edition(title);
+    let q1=format!("{} {}",title,if ["Spotify","Deezer","Apple Music","Tidal","Bandcamp","YouTube","SoundCloud"].contains(&artist){""}else{prim}).trim().to_string();
+    let q2=format!("{clean_t} {prim} audio").trim().to_string();
+    let mut queries=vec![q1];
+    if !q2.is_empty() && queries[0].to_lowercase()!=q2.to_lowercase() {queries.push(q2);}
+    let mut ranked:Vec<(f64,String)>=Vec::new();
+    for q in queries{
+        if q.is_empty()||q.len()>800{continue;}
+        let req=json!({"query":q,"kind":"track"});
+        let res=if catalog.is_empty(){direct.search("youtube",&req).await}else{crate::catalog::search(catalog,"youtube",&req).await};
+        let Ok(val)=res else{continue;};
+        let items=val["items"].as_array().cloned().unwrap_or_default();
+        for c in &items{
+            let cid=s(c,"sourceId");
+            if cid.is_empty()||cid==exclude_id||ranked.iter().any(|(_,id)|id==cid){continue;}
+            if let Some(sc)=match_score(&reference,c){ranked.push((sc+20.0,cid.to_string()));}
+            else if let Some(sc)=relaxed_score(&reference,c){ranked.push((sc,cid.to_string()));}
+        }
+        if ranked.iter().any(|(sc,_)|*sc>=25.0){break;}
+    }
+    ranked.sort_by(|a,b|b.0.total_cmp(&a.0));
+    if ranked.is_empty(){
+        return Err("Não encontrei uma versão compatível desta música.".into());
+    }
+    if catalog.is_empty() && direct.available() {
+        for (_,cid) in ranked.iter().take(4){
+            if let Ok(stream)=direct.audio(cid).await{
+                return Ok((cid.clone(),Some(stream)));
+            }
+        }
+    }
+    Ok((ranked[0].1.clone(),None))
+}
 pub async fn playback(mut track:Value,catalog:&str,direct:&crate::direct_catalog::DirectCatalog)->Result<Value>{
     db::validate_track(&track)?;if track["source"]!="link"||track["kind"]!="track"{return Err("Use o link de uma faixa para tocar no Glass.".into());}
-    if track["playbackId"].is_string(){return Ok(track);}
+    if let Some(existing)=track["playbackId"].as_str(){
+        if catalog.is_empty() && direct.available() {
+            if direct.audio(existing).await.is_ok(){return Ok(track);}
+        } else {
+            return Ok(track);
+        }
+    }
     let host=url::Url::parse(s(&track,"url")).ok().and_then(|u|u.host_str().map(str::to_string)).unwrap_or_default();
     if !crate::platforms::supported_link_host(&host){return Err("Este link ainda não tem áudio compatível. Use um link do Spotify, Deezer, Apple Music, Bandcamp, Tidal, YouTube ou SoundCloud.".into());}
     if ["Spotify","Deezer","Apple Music","Tidal"].contains(&s(&track,"artist")){if let Ok(fresh)=resolve(s(&track,"url")).await{track["artist"]=fresh["artist"].clone();if track["duration"].as_f64().unwrap_or(0.0)<=0.0{track["duration"]=fresh["duration"].clone();}}}
-    let primary=primary_artist(s(&track,"artist"));
-    let query=format!("{} {}",s(&track,"title"),if ["Spotify","Deezer","Apple Music","Tidal","Bandcamp"].contains(&s(&track,"artist")){""}else{primary});
-    if query.len()>800{return Err("O nome da faixa é muito longo para buscar uma versão.".into());}
-    let request=json!({"query":query.trim(),"kind":"track"});
-    let result=if catalog.is_empty(){direct.search("youtube",&request).await}else{crate::catalog::search(catalog,"youtube",&request).await}?;
-    let candidate=result["items"].as_array().into_iter().flatten().filter_map(|c|match_score(&track,c).map(|score|(score,c))).max_by(|a,b|a.0.total_cmp(&b.0)).map(|(_,c)|c)
-        .ok_or("Não encontrei uma versão compatível desta música. Cole o link da faixa no YouTube ou SoundCloud.")?;
-    track["playbackId"]=candidate["sourceId"].clone();track["reason"]=json!("Áudio via YouTube");db::validate_track(&track)?;Ok(track)
+    let (vid,_)=find_playable_youtube_id(
+        s(&track,"title"),
+        s(&track,"artist"),
+        track["duration"].as_f64().unwrap_or(0.0),
+        "",
+        catalog,
+        direct,
+    ).await?;
+    track["playbackId"]=json!(vid);track["reason"]=json!("Áudio via YouTube");db::validate_track(&track)?;Ok(track)
 }
 #[cfg(test)]
 mod tests {

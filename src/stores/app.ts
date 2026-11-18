@@ -23,7 +23,7 @@ export type Page =
   | `playlist:${string}`;
 
 type Dialog =
-  | { type: 'playlist'; id?: string; name?: string }
+  | { type: 'playlist'; id?: string; name?: string; description?: string; artwork?: string }
   | { type: 'add'; track: Track; fromPlaylist?: string }
   | { type: 'link'; playlist?: boolean }
   | { type: 'confirm'; title: string; text: string; action: () => Promise<void> }
@@ -80,7 +80,10 @@ interface State {
   previous(): void;
   removeQueue(index: number): void;
   moveQueue(from: number, to: number): void;
+  clearQueue(): void;
   enqueue(t: Track): void;
+  extendWithRecommendations(): Promise<boolean>;
+  startStyleRadio(seed?: Track): Promise<void>;
 }
 
 function remapIndex(idx: number, from: number, to: number): number {
@@ -168,6 +171,7 @@ export function upcomingIndex(
 
 let toastTimer: ReturnType<typeof setTimeout>;
 let preferenceWrites = Promise.resolve();
+let autoplayBusy = false;
 
 export const useApp = create<State>((set, get) => ({
   searchBusy: false,
@@ -524,6 +528,19 @@ export const useApp = create<State>((set, get) => ({
     }
     const index = upcomingIndex(s, manual);
     if (index < 0 || index >= s.queue.length) {
+      if (!manual && p.autoplay && p.onlineConsent && p.onboardingDone) {
+        set({ status: 'Buscando recomendações no seu estilo…' });
+        void get()
+          .extendWithRecommendations()
+          .then(added => {
+            if (added) {
+              get().next(false);
+            } else {
+              set({ playing: false, autoAdvance: false, status: 'Fim da fila' });
+            }
+          });
+        return;
+      }
       set({ playing: false, autoAdvance: false, status: 'Fim da fila' });
       return;
     }
@@ -678,6 +695,92 @@ export const useApp = create<State>((set, get) => ({
       shufflePlayed: remappedPlayed,
       shuffleNext: remappedNext,
     });
+  },
+  clearQueue: () => {
+    const s = get();
+    if (!s.queue.length) return;
+    const active = s.queue[s.index];
+    if (!active) {
+      set({ queue: [], index: -1, shufflePlayed: [], shuffleNext: null });
+      return;
+    }
+    set({
+      queue: [active],
+      index: 0,
+      shufflePlayed: s.data.preferences.shuffle ? [0] : [],
+      shuffleNext: null,
+    });
+    s.message('Próximas músicas removidas da fila.');
+  },
+  extendWithRecommendations: async () => {
+    if (autoplayBusy || !window.glass?.recommendations) return false;
+    const s = get();
+    const p = s.data.preferences;
+    if (!p.onlineConsent || !p.onboardingDone || !s.queue.length || s.index < 0) return false;
+    autoplayBusy = true;
+    try {
+      const current = s.queue[s.index];
+      const recentInQueue = s.queue
+        .slice(Math.max(0, s.index - 2), s.index + 1)
+        .reverse()
+        .filter(Boolean);
+      const seeds = recentInQueue.length ? recentInQueue : current ? [current] : [];
+      const excludeIds = Array.from(
+        new Set([
+          ...s.queue.map(t => t.id),
+          ...s.data.history.slice(0, 30).map(h => h.id),
+        ]),
+      );
+      const recs = await window.glass.recommendations(seeds, excludeIds);
+      const valid = (recs || []).filter(canPlay);
+      if (!valid.length) return false;
+      const latest = get();
+      const existing = new Set(latest.queue.map(t => t.id));
+      const fresh = valid
+        .filter(t => !existing.has(t.id))
+        .slice(0, 6)
+        .map(t => ({ ...t, recommended: true }));
+      if (!fresh.length) return false;
+      const firstNewIdx = latest.queue.length;
+      const nextQueue = [...latest.queue, ...fresh];
+      set({
+        queue: nextQueue,
+        shuffleNext:
+          latest.data.preferences.shuffle && latest.shuffleNext === null
+            ? firstNewIdx
+            : latest.shuffleNext,
+      });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      autoplayBusy = false;
+    }
+  },
+  startStyleRadio: async seed => {
+    const s = get();
+    const p = s.data.preferences;
+    const target =
+      seed ||
+      s.queue[s.index] ||
+      s.data.history.map(h => s.data.tracks.find(t => t.id === h.id)).find(Boolean) ||
+      s.data.tracks[0];
+    if (!target) {
+      s.setPage('explore');
+      return;
+    }
+    if (!p.onlineConsent || !p.onboardingDone) {
+      s.play(target, s.data.tracks);
+      return;
+    }
+    s.message(`Criando mix baseado em “${target.title}”…`);
+    try {
+      const recs = await window.glass.recommendations([target], [target.id]);
+      const list = [target, ...(recs || []).filter(canPlay).map(t => ({ ...t, recommended: true }))];
+      s.play(target, list);
+    } catch {
+      s.play(target, [target]);
+    }
   },
 }));
 

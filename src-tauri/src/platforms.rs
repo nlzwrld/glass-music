@@ -696,6 +696,287 @@ pub async fn resolve_tidal(u: &url::Url) -> Result<Value> {
     Ok(track)
 }
 
+fn clean_lyric_snippet(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut in_tag = false;
+    for ch in raw.chars() {
+        if ch == '<' {
+            in_tag = true;
+        } else if ch == '>' {
+            in_tag = false;
+        } else if !in_tag {
+            out.push(if ch == '\n' || ch == '\r' { ' ' } else { ch });
+        }
+    }
+    out.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(180)
+        .collect()
+}
+
+pub fn parse_letras_jsonp(raw: &str) -> Result<Value> {
+    let trimmed = raw.trim().trim_end_matches(';').trim();
+    let inner = if let Some(rest) = trimmed.strip_prefix("LetrasSug(") {
+        rest.strip_suffix(')').unwrap_or(rest)
+    } else {
+        trimmed
+    };
+    serde_json::from_str(inner).map_err(|_| "Resposta de letras inválida.".into())
+}
+
+pub async fn search_lyrics(
+    query: &str,
+    direct: &crate::direct_catalog::DirectCatalog,
+) -> Result<Value> {
+    let q = query.trim();
+    if q.is_empty() || q.len() > 500 {
+        return Err("Trecho da letra inválido.".into());
+    }
+    let mut res = crate::providers::client()
+        .get("https://solr.sscdn.co/letras/m1/")
+        .query(&[("q", q), ("wt", "json")])
+        .timeout(Duration::from_secs(8))
+        .send()
+        .await
+        .map_err(|_| "Não foi possível pesquisar nas letras agora.")?;
+    if !res.status().is_success() {
+        return Err("Serviço de busca por letras indisponível.".into());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = res.chunk().await.map_err(|_| "Resposta incompleta.")? {
+        if bytes.len() + chunk.len() > 1_000_000 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let text = String::from_utf8(bytes).map_err(|_| "Codificação inválida.")?;
+    let parsed = parse_letras_jsonp(&text)?;
+    let docs = parsed
+        .pointer("/response/docs")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let highlights = &parsed["highlighting"];
+
+    let mut matched = Vec::new();
+    let mut seed_genre = String::new();
+    let mut seed_artist = String::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for doc in docs.iter().filter(|d| s(d, "t") == "2").take(6) {
+        let title = s(doc, "txt");
+        let artist = s(doc, "art");
+        if title.is_empty() || artist.is_empty() {
+            continue;
+        }
+        let dedup_key = format!("{}|{}", title.to_lowercase(), artist.to_lowercase());
+        if !seen.insert(dedup_key) {
+            continue;
+        }
+        if seed_artist.is_empty() {
+            seed_artist = artist.to_string();
+            seed_genre = s(doc, "g")
+                .split(',')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+        }
+        let doc_id = s(doc, "id");
+        let snippet = highlights[doc_id]["letra"]
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(Value::as_str)
+            .map(clean_lyric_snippet)
+            .unwrap_or_default();
+
+        // Resolve a playable Deezer track first (fast + rich metadata), fallback to YouTube search
+        let search_req = json!({ "query": format!("{title} {artist}"), "kind": "track", "cursor": {} });
+        if let Ok(dz) = search_deezer(&search_req).await {
+            if let Some(first) = dz["items"].as_array().and_then(|a| a.first()).cloned() {
+                let mut item = first;
+                if !snippet.is_empty() {
+                    item["lyricSnippet"] = json!(snippet);
+                }
+                matched.push(item);
+                continue;
+            }
+        }
+        if let Ok(yt) = direct.search("youtube", &search_req).await {
+            if let Some(first) = yt["items"].as_array().and_then(|a| a.first()).cloned() {
+                let mut item = first;
+                if !snippet.is_empty() {
+                    item["lyricSnippet"] = json!(snippet);
+                }
+                matched.push(item);
+            }
+        }
+    }
+
+    // Fallback: also query YouTube directly with "<query> letra" when Solr has few hits
+    if matched.len() < 3 {
+        let yt_req = json!({ "query": format!("{q} letra"), "kind": "track", "cursor": {} });
+        if let Ok(yt) = direct.search("youtube", &yt_req).await {
+            if let Some(rows) = yt["items"].as_array() {
+                for row in rows.iter().take(5) {
+                    if !matched.iter().any(|m| m["id"] == row["id"]) {
+                        matched.push(row.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Build lyric-inspired recommendations based on matched artist & musical style
+    if !seed_artist.is_empty() {
+        let rec_query = if !seed_genre.is_empty() {
+            format!("{seed_artist} {seed_genre}")
+        } else {
+            seed_artist
+        };
+        let rec_req = json!({ "query": rec_query, "kind": "track", "cursor": {} });
+        if let Ok(dz_rec) = search_deezer(&rec_req).await {
+            if let Some(rows) = dz_rec["items"].as_array() {
+                for row in rows.iter().take(6) {
+                    let key = format!(
+                        "{}|{}",
+                        s(row, "title").to_lowercase(),
+                        s(row, "artist").to_lowercase()
+                    );
+                    if seen.insert(key) && !matched.iter().any(|m| m["id"] == row["id"]) {
+                        let mut r = row.clone();
+                        r["recommended"] = json!(true);
+                        matched.push(r);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(json!({ "items": matched, "next": Value::Null }))
+}
+
+fn norm_key(title: &str, artist: &str) -> String {
+    let clean = |v: &str| -> String {
+        v.to_lowercase()
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .take(48)
+            .collect()
+    };
+    format!("{}::{}", clean(title), clean(artist))
+}
+
+async fn deezer_artist_radio(title: &str, artist: &str) -> Vec<Value> {
+    let q = format!("{artist} {title}");
+    let Ok(search) = get_json(
+        "https://api.deezer.com/search/track",
+        &[("q", q.trim()), ("limit", "3")],
+        500_000,
+    )
+    .await
+    else {
+        return Vec::new();
+    };
+    let Some(artist_id) = search["data"]
+        .as_array()
+        .and_then(|a| a.first())
+        .and_then(|r| r["artist"]["id"].as_u64())
+    else {
+        return Vec::new();
+    };
+    let Ok(radio) = get_json(
+        &format!("https://api.deezer.com/artist/{artist_id}/radio"),
+        &[("limit", "16")],
+        800_000,
+    )
+    .await
+    else {
+        return Vec::new();
+    };
+    radio["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| deezer_item(r, "track"))
+        .collect()
+}
+
+pub async fn style_recommendations(
+    seeds: &[Value],
+    exclude_ids: &[String],
+    direct: &crate::direct_catalog::DirectCatalog,
+) -> Result<Vec<Value>> {
+    let Some(primary) = seeds.first() else {
+        return Ok(Vec::new());
+    };
+    let mut excluded_ids: std::collections::HashSet<String> =
+        exclude_ids.iter().cloned().collect();
+    let mut excluded_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in seeds {
+        excluded_ids.insert(s(t, "id").to_string());
+        excluded_keys.insert(norm_key(s(t, "title"), s(t, "artist")));
+    }
+
+    let seed_title = s(primary, "title").to_string();
+    let seed_artist = s(primary, "artist").to_string();
+    let mut yt_seed_id = if s(primary, "source") == "youtube" {
+        s(primary, "sourceId").to_string()
+    } else {
+        s(primary, "playbackId").to_string()
+    };
+
+    if yt_seed_id.len() != 11 {
+        let req = json!({ "query": format!("{seed_title} {seed_artist}"), "kind": "track", "cursor": {} });
+        if let Ok(found) = direct.search("youtube", &req).await {
+            if let Some(id) = found["items"]
+                .as_array()
+                .and_then(|a| a.first())
+                .map(|v| s(v, "sourceId").to_string())
+            {
+                yt_seed_id = id;
+            }
+        }
+    }
+
+    let (yt_mix, dz_mix) = tokio::join!(
+        async {
+            if yt_seed_id.len() == 11 {
+                crate::direct_catalog::youtube_radio_mix(&yt_seed_id)
+                    .await
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        },
+        deezer_artist_radio(&seed_title, &seed_artist)
+    );
+
+    let mut results = Vec::new();
+    // Interleave YouTube Radio Mix (great for regional/Funk/Montagem/Trap/Electronic) and Deezer Artist Radio
+    let max_len = yt_mix.len().max(dz_mix.len());
+    for i in 0..max_len {
+        for candidate in [yt_mix.get(i), dz_mix.get(i)].into_iter().flatten() {
+            let cid = s(candidate, "id").to_string();
+            let key = norm_key(s(candidate, "title"), s(candidate, "artist"));
+            if excluded_ids.contains(&cid) || excluded_keys.contains(&key) {
+                continue;
+            }
+            excluded_ids.insert(cid);
+            excluded_keys.insert(key);
+            let mut item = candidate.clone();
+            item["recommended"] = json!(true);
+            results.push(item);
+            if results.len() >= 10 {
+                return Ok(results);
+            }
+        }
+    }
+    Ok(results)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -765,5 +1046,18 @@ mod tests {
         .unwrap();
         assert_eq!(am["title"], "Get Lucky");
         assert!(s(&am, "artwork").contains("500x500bb.jpg"));
+    }
+
+    #[test]
+    fn parses_letras_jsonp_and_strips_highlight_html() {
+        let parsed = parse_letras_jsonp(
+            r#"LetrasSug({"response":{"docs":[{"t":"2","txt":"Blinding Lights","art":"The Weeknd"}]}})"#,
+        )
+        .unwrap();
+        assert_eq!(parsed["response"]["docs"][0]["txt"], "Blinding Lights");
+        assert_eq!(
+            clean_lyric_snippet("<b>I</b> <b>said</b>:\n<b>Ooh</b>, I'm blinded"),
+            "I said: Ooh, I'm blinded"
+        );
     }
 }

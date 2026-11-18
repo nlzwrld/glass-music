@@ -116,7 +116,7 @@ pub fn validate_search(r: &Value) -> Result<()> {
         || s(r, "query").len() > 800
         || !db::valid_id(s(r, "requestId"))
         || !["all", "local", "youtube", "soundcloud", "deezer", "apple"].contains(&s(r, "source"))
-        || !["all", "track", "artist", "playlist", "album"].contains(&s(r, "kind"))
+        || !["all", "track", "artist", "playlist", "album", "lyrics"].contains(&s(r, "kind"))
         || r.to_string().len() > 6000
     {
         return Err("Pesquisa inválida.".into());
@@ -127,6 +127,15 @@ pub async fn search(r: &Value, local: Vec<Value>, consent: bool, catalog: &str, 
     let source = s(r, "source");
     let kind = s(r, "kind");
     let query = s(r, "query").to_lowercase();
+    if kind == "lyrics" {
+        if !consent {
+            return Ok(json!({"items":[],"next":{},"notices":["Ative as integrações em Configurações para pesquisar por letras."]}));
+        }
+        return match crate::platforms::search_lyrics(s(r, "query"), direct).await {
+            Ok(v) => Ok(json!({"items":v["items"],"next":{},"notices":[]})),
+            Err(e) => Ok(json!({"items":[],"next":{},"notices":[e]})),
+        };
+    }
     let mut items = vec![];
     let mut notices = vec![];
     let mut next = json!({});

@@ -15,7 +15,7 @@ pub fn s<'a>(v: &'a Value, key: &str) -> &'a str {
     v[key].as_str().unwrap_or("")
 }
 pub fn defaults() -> Value {
-    json!({"transition":"fade","transitionSeconds":3,"volumeBoost":0,"limiter":true,"outputDevice":"default","jamEndpoint":"","autoUpdate":true,"theme":"dark","glass":20,"blur":24,"accent":"#e8eeee","autoAccent":false,"reducedMotion":false,"performance":false,"volume":65,"repeat":"off","shuffle":false,"tray":true,"startup":false,"notifications":false,"globalShortcuts":false,"coverCacheMB":128,"eq":[0,0,0,0,0],"onlineConsent":false,"catalogConsent":false,"onboardingDone":false})
+    json!({"transition":"fade","transitionSeconds":3,"volumeBoost":0,"limiter":true,"outputDevice":"default","jamEndpoint":"","autoUpdate":true,"autoplay":true,"theme":"dark","glass":20,"blur":24,"accent":"#e8eeee","autoAccent":false,"reducedMotion":false,"performance":false,"volume":65,"repeat":"off","shuffle":false,"tray":true,"startup":false,"notifications":false,"globalShortcuts":false,"coverCacheMB":128,"eq":[0,0,0,0,0],"onlineConsent":false,"catalogConsent":false,"onboardingDone":false})
 }
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty()
@@ -88,9 +88,22 @@ pub fn artwork_url(raw: &str) -> bool {
                         | "is5-ssl.mzstatic.com"
                         | "f4.bcbits.com"
                         | "resources.tidal.com"
+                        | "akamai.sscdn.co"
                 )
             )
     })
+}
+pub fn playlist_artwork_url(raw: &str) -> bool {
+    if artwork_url(raw) {
+        return true;
+    }
+    raw.len() <= 1_800_000
+        && ["data:image/jpeg;base64,", "data:image/png;base64,", "data:image/webp;base64,"]
+            .iter()
+            .any(|prefix| {
+                raw.strip_prefix(prefix)
+                    .is_some_and(|d| !d.is_empty() && d.bytes().all(|c| c.is_ascii_alphanumeric() || b"+/=".contains(&c)))
+            })
 }
 pub fn validate_track(t: &Value) -> Result<()> {
     let source = s(t, "source");
@@ -159,7 +172,7 @@ pub fn validate_prefs(p: &Value) -> Result<()> {
     }
     if p.get("transition").is_some()&&! ["off","fade","crossfade"].contains(&s(p,"transition")){return Err("Transição inválida.".into());}
     for(key,lo,hi)in [("transitionSeconds",0.5,10.0),("volumeBoost",0.0,12.0)]{if p.get(key).is_some()&&!p[key].as_f64().is_some_and(|n|n.is_finite()&&n>=lo&&n<=hi){return Err("Áudio fora dos limites.".into());}}
-    for key in ["limiter","autoUpdate"]{if p.get(key).is_some()&&!p[key].is_boolean(){return Err("Preferência inválida.".into());}}
+    for key in ["limiter","autoUpdate","autoplay"]{if p.get(key).is_some()&&!p[key].is_boolean(){return Err("Preferência inválida.".into());}}
     if p.get("outputDevice").is_some()&&(!p["outputDevice"].is_string()||s(p,"outputDevice").len()>300){return Err("Dispositivo inválido.".into());}
     if p.get("jamEndpoint").is_some(){crate::jam::validate_endpoint(s(p,"jamEndpoint"))?;}
     let accent = s(p, "accent");
@@ -305,6 +318,10 @@ impl Library {
     pub fn save(&self, t: &Value, path: Option<&str>) -> Result<()> {
         validate_track(t)?;
         let mut t = t.clone();
+        if let Some(obj) = t.as_object_mut() {
+            obj.remove("lyricSnippet");
+            obj.remove("recommended");
+        }
         if s(&t,"artwork").is_empty(){if let Ok(Some(art))=self.db.query_row("SELECT json_extract(data,'$.artwork') FROM tracks WHERE id=?",[s(&t,"id")],|row|row.get::<_,Option<String>>(0)){if artwork_url(&art){t["artwork"]=json!(art);}}}
         if s(&t, "source") == "local" && path.is_none() && self.path(s(&t, "id")).is_none() {
             t["available"] = json!(false);
@@ -318,7 +335,7 @@ impl Library {
             "SELECT CASE WHEN EXISTS(SELECT 1 FROM offline_tracks WHERE track_id=tracks.id) THEN json_set(data,'$.offline',json('true')) ELSE json_remove(data,'$.offline') END FROM tracks ORDER BY refreshed DESC LIMIT 20000",
             [],
         )?;
-        let playlists=self.query("SELECT json_object('id',id,'name',name,'createdAt',created,'artwork',(SELECT value FROM settings WHERE key='playlist-artwork:'||playlists.id),'trackIds',json(COALESCE((SELECT json_group_array(track_id) FROM (SELECT track_id FROM playlist_tracks WHERE playlist_id=playlists.id ORDER BY position)),'[]'))) FROM playlists ORDER BY created DESC",[])?;
+        let playlists=self.query("SELECT json_object('id',id,'name',name,'createdAt',created,'artwork',(SELECT value FROM settings WHERE key='playlist-artwork:'||playlists.id),'description',(SELECT value FROM settings WHERE key='playlist-desc:'||playlists.id),'trackIds',json(COALESCE((SELECT json_group_array(track_id) FROM (SELECT track_id FROM playlist_tracks WHERE playlist_id=playlists.id ORDER BY position)),'[]'))) FROM playlists ORDER BY created DESC",[])?;
         let likes = self.query("SELECT json_quote(track_id) FROM likes", [])?;
         let history=self.query("SELECT json_object('id',track_id,'playedAt',played) FROM history ORDER BY played DESC,rowid DESC LIMIT 500",[])?;
         Ok(
@@ -372,8 +389,18 @@ impl Library {
         self.db.execute("UPDATE tracks SET data=json_set(data,'$.artwork',?) WHERE id=?",params![url,id]).map_err(|e|e.to_string())?;Ok(())
     }
     pub fn collection_artwork(&self,id:&str,url:&str)->Result<()> {
-        if !valid_id(id)||!artwork_url(url){return Ok(());}
+        if !valid_id(id)||!playlist_artwork_url(url){return Ok(());}
         self.db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)",params![format!("playlist-artwork:{id}"),url]).map_err(|e|e.to_string())?;Ok(())
+    }
+    pub fn collection_description(&self,id:&str,desc:&str)->Result<()> {
+        if !valid_id(id){return Ok(());}
+        let clean:String=desc.trim().chars().take(300).collect();
+        if clean.is_empty(){
+            self.db.execute("DELETE FROM settings WHERE key=?",[format!("playlist-desc:{id}")]).map_err(|e|e.to_string())?;
+        }else{
+            self.db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)",params![format!("playlist-desc:{id}"),clean]).map_err(|e|e.to_string())?;
+        }
+        Ok(())
     }
     pub fn merge_collection(&self,key:&str,name:&str,tracks:&[Value],liked:bool)->Result<String>{
         use sha2::{Digest,Sha256};

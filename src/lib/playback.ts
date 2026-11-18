@@ -23,7 +23,7 @@ export function preparePlayback(track:Track,active=true){
    }
    const matched=track.source==='link'&&!track.playbackId?await window.glass.linkPlayback(track,created.id):track;
    if(created.cancelled)throw new Error('Preparação cancelada.');
-   const source=await window.glass.audioSource(matched.playbackId||matched.sourceId,created.id);
+   const source=await window.glass.audioSource(matched.playbackId||matched.sourceId,created.id,{title:matched.title,artist:matched.artist,duration:matched.duration});
    if(created.cancelled)throw new Error('Preparação cancelada.');
    created.done=true;return {track:matched,source};
   })().catch(error=>{if(jobs.get(track.id)===created)jobs.delete(track.id);throw error;});

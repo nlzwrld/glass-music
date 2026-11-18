@@ -5,6 +5,7 @@ import {activeLyric,parseLRC} from '../../lib/lyrics';
 import type {LyricsResult} from '../../../shared/types';
 import {GlassMaterial} from '../glass/materials';
 import {IconButton} from '../glass/controls';
+import Cover from '../glass/Cover';
 import {transport} from './engine';
 const cache=new Map<string,LyricsResult|null>();
 export default function Lyrics({detached=false,onSeek,onClose}:{detached?:boolean;onSeek?:(position:number)=>void;onClose?:()=>void}={}){
@@ -25,7 +26,7 @@ export default function Lyrics({detached=false,onSeek,onClose}:{detached?:boolea
  const index=activeLyric(lines,position+offset);
  useEffect(()=>{if(open&&follow)current.current?.scrollIntoView({block:'center',behavior:reduced?'instant':'smooth'});},[index,open,follow,reduced]);
  if(!open)return null;
- return <GlassMaterial as="section" method="css" className="lyrics-panel" aria-label="Letras da música"><header><h2>Letra</h2><div>{!follow&&<IconButton label="Acompanhar letra" onClick={()=>setFollow(true)}><AlignCenter size={18}/></IconButton>}<IconButton label="Fechar letras" onClick={()=>{if(onClose)onClose();else useApp.setState({lyricsOpen:false});}}><X size={19}/></IconButton></div></header>
+ return <GlassMaterial as="section" method="css" className="lyrics-panel lg-lyrics-panel" aria-label="Letras da música"><header className="lg-lyrics-header" data-tauri-drag-region={detached?true:undefined}><div className="lg-lyrics-track">{track&&<span className="lg-lyrics-art"><Cover track={track}/></span>}<div><h2>{track?track.title:'Letra'}</h2>{track&&<small>{track.artist}</small>}</div></div><div>{!follow&&<IconButton label="Acompanhar letra" onClick={()=>setFollow(true)}><AlignCenter size={18}/></IconButton>}<IconButton label="Fechar letras" onClick={()=>{if(onClose)onClose();else useApp.setState({lyricsOpen:false});}}><X size={19}/></IconButton></div></header>
   <div className="lyrics-scroll" onWheel={()=>setFollow(false)}>
    {busy?<div className="lyrics-state" role="status"><LoaderCircle size={23} className="spinner"/></div>:!allowed?<p className="lyrics-state">Ative o acesso online para carregar letras.</p>:error?<p className="lyrics-state" role="status">{error}</p>:result?.instrumental?<p className="lyrics-state">Instrumental</p>:lines.length?<div className="lyrics-lines">{lines.map((line,i)=><button ref={i===index?current:undefined} key={`${line.time}-${i}`} className={i===index?'active':i<index?'past':''} aria-current={i===index?'true':undefined} aria-label={`Ir para ${line.text||'pausa'}`} onClick={()=>{if(onSeek)onSeek(Math.max(0,line.time-offset));else transport.seek(Math.max(0,line.time-offset));useApp.setState({position:Math.max(0,line.time-offset)});setFollow(true);}}>{line.text||'· · ·'}</button>)}</div>:result?.plainLyrics?<div className="lyrics-plain"><p className="fine-print">Sem sincronização disponível</p><p>{result.plainLyrics}</p></div>:<p className="lyrics-state">Letra indisponível</p>}
   </div>

@@ -159,6 +159,20 @@ async fn call(
       let mut count=0;let mut tracks=0;for(list,liked)in lists{if list.tracks.is_empty(){continue;}let pid=st.db.lock().unwrap().merge_collection(&list.key,&list.name,&list.tracks,liked)?;st.db.lock().unwrap().collection_artwork(&pid,&list.artwork)?;count+=1;tracks+=list.tracks.len();}
       st.accounts.synced(provider)?;let snapshot=st.db.lock().unwrap().snapshot()?;Ok(json!({"snapshot":snapshot,"playlists":count,"tracks":tracks,"accounts":st.accounts.status()}))
     },
+    "playlistMeta"=>{
+      let id=s(&p,"id");if !db::valid_id(id){return Err("Playlist inválida.".into());}
+      let db=st.db.lock().unwrap();
+      if let Some(art)=p["artwork"].as_str(){if !art.is_empty(){db.collection_artwork(id,art)?;}}
+      if p.get("description").is_some(){db.collection_description(id,s(&p,"description"))?;}
+      db.snapshot()
+    },
+    "recommendations"=>{
+      let pref=st.db.lock().unwrap().pref();if pref["onlineConsent"]!=true||pref["onboardingDone"]!=true{return Ok(json!([]));}
+      let seeds=p["seeds"].as_array().cloned().unwrap_or_default();
+      let exclude:Vec<String>=p["excludeIds"].as_array().into_iter().flatten().filter_map(|v|v.as_str().map(str::to_string)).take(2500).collect();
+      let items=platforms::style_recommendations(&seeds,&exclude,&st.direct).await?;
+      Ok(json!(items))
+    },
     "previewCollection"=>{
       let pref=st.db.lock().unwrap().pref();if pref["onlineConsent"]!=true||pref["onboardingDone"]!=true{return Err("Ative o acesso online para abrir este álbum ou playlist.".into());}
       let url=p.as_str().ok_or("Link inválido.")?;
@@ -208,14 +222,31 @@ async fn call(
     "audioSource"=>{
       let pref=st.db.lock().unwrap().pref();if pref["onlineConsent"]!=true||pref["onboardingDone"]!=true{return Err("Ative o acesso online antes de reproduzir.".into());}
       let video=s(&p,"videoId");let id=s(&p,"requestId").to_string();
-      if video.len()!=11||!video.bytes().all(|b|b.is_ascii_alphanumeric()||b"_-".contains(&b))||!db::valid_id(&id){return Err("Referência de música inválida.".into());}
-      if let Some((ticket,duration))=st.audio.cached(video){return Ok(json!({"url":format!("{}/audio/{ticket}",st.base),"duration":duration}));}
+      let title=s(&p,"title");let artist=s(&p,"artist");let duration=p["duration"].as_f64().unwrap_or(0.0);
+      if !db::valid_id(&id){return Err("Solicitação inválida.".into());}
+      let valid_video=video.len()==11&&video.bytes().all(|b|b.is_ascii_alphanumeric()||b"_-".contains(&b));
+      if valid_video {
+        if let Some((ticket,dur))=st.audio.cached(video){return Ok(json!({"url":format!("{}/audio/{ticket}",st.base),"duration":dur}));}
+      } else if title.is_empty() {
+        return Err("Referência de música inválida.".into());
+      }
       let token=tokio_util::sync::CancellationToken::new();{let mut search=st.search.lock().unwrap();if search.requests.len()>=30{return Err("Muitas consultas simultâneas.".into());}if let Some(old)=search.requests.insert(id.clone(),token.clone()){old.cancel();}}
-      let result=tokio::select!{_ = token.cancelled()=>Err("Reprodução cancelada.".into()),r=st.direct.audio(video)=>r};
+      let primary_future=async {
+        if valid_video {
+          if let Ok(v)=st.direct.audio(video).await { return Ok((video.to_string(),v)); }
+        }
+        if !title.is_empty() {
+          let (rescued_id,maybe_stream)=links::find_playable_youtube_id(title,artist,duration,video,&st.catalog_url,&st.direct).await?;
+          let stream=match maybe_stream { Some(s)=>s, None=>st.direct.audio(&rescued_id).await? };
+          return Ok((rescued_id,stream));
+        }
+        Err("A plataforma não disponibilizou áudio para esta faixa.".into())
+      };
+      let result:Result<(String,Value)>=tokio::select!{_ = token.cancelled()=>Err("Reprodução cancelada.".into()),r=primary_future=>r};
       st.search.lock().unwrap().requests.remove(&id);
-      let value=result?;if token.is_cancelled(){return Err("Reprodução cancelada.".into());}
-      let (ticket,duration)=st.audio.register(video,&value)?;
-      Ok(json!({"url":format!("{}/audio/{ticket}",st.base),"duration":duration}))
+      let (resolved_video,value)=result?;if token.is_cancelled(){return Err("Reprodução cancelada.".into());}
+      let (ticket,dur)=st.audio.register(&resolved_video,&value)?;
+      Ok(json!({"url":format!("{}/audio/{ticket}",st.base),"duration":dur,"videoId":resolved_video}))
     },
     "playerUrl"=>Ok(json!(format!("{}/embed/index.html",st.base))),
     "external"=>{let url=p.as_str().ok_or("Link inválido")?;if !db::official_url(url)&&!links::public_url(url){return Err("Link não autorizado.".into());}app.opener().open_url(url,None::<&str>).map_err(|_|"Não foi possível abrir o navegador.")?;Ok(Value::Null)},
