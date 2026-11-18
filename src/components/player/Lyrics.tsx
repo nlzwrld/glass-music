@@ -1,25 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlignCenter, LoaderCircle, X } from 'lucide-react';
+import { AlignCenter, ExternalLink, LoaderCircle, Pin, PinOff, X } from 'lucide-react';
 import { useApp, cleanError } from '../../stores/app';
-import { activeLyric, parseLRC } from '../../lib/lyrics';
+import { activeLyric, parseLRC, resolveTrackLyrics } from '../../lib/lyrics';
 import type { LyricsResult } from '../../../shared/types';
 import { GlassMaterial } from '../glass/materials';
 import { IconButton } from '../glass/controls';
 import { transport } from './engine';
 
-const cache = new Map<string, LyricsResult | null>();
-
 export default function Lyrics({
   detached = false,
+  pinned = true,
+  onTogglePin,
   onSeek,
   onClose,
 }: {
   detached?: boolean;
+  pinned?: boolean;
+  onTogglePin?: () => void;
   onSeek?: (position: number) => void;
   onClose?: () => void;
 } = {}) {
   const open = useApp(s => s.lyricsOpen),
     track = useApp(s => s.queue[s.index]),
+    cachedCurrent = useApp(s => s.currentLyrics),
     position = useApp(s => s.position);
   const allowed = useApp(
       s => s.data.preferences.onlineConsent && s.data.preferences.onboardingDone,
@@ -27,7 +30,7 @@ export default function Lyrics({
     reduced = useApp(
       s => s.data.preferences.reducedMotion || (s.data.preferences.uiStyle ?? 'matte') === 'matte',
     );
-  const [result, setResult] = useState<LyricsResult | null>(null),
+  const [result, setResult] = useState<LyricsResult | null>(cachedCurrent),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [offset, setOffset] = useState(0),
@@ -35,27 +38,18 @@ export default function Lyrics({
   const current = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    setResult(null);
     setError('');
     setOffset(0);
     setFollow(true);
     if (!track || !allowed) {
-      setBusy(false);
-      return;
-    }
-    const key = [track.title, track.artist, track.duration].join('|');
-    if (cache.has(key)) {
-      setResult(cache.get(key)!);
+      setResult(null);
       setBusy(false);
       return;
     }
     let active = true;
     setBusy(true);
-    void window.glass
-      .lyrics(track)
+    void resolveTrackLyrics(track, true)
       .then(value => {
-        cache.set(key, value);
-        if (cache.size > 100) cache.delete(cache.keys().next().value!);
         if (active) setResult(value);
       })
       .catch(e => {
@@ -91,10 +85,32 @@ export default function Lyrics({
     >
       <header data-tauri-drag-region={detached ? true : undefined}>
         <h2>Letra</h2>
-        <div>
+        <div className="lyrics-header-actions">
           {!follow && (
             <IconButton label="Acompanhar letra" onClick={() => setFollow(true)}>
               <AlignCenter size={16} />
+            </IconButton>
+          )}
+          {detached ? (
+            <IconButton
+              label={pinned ? 'Desafixar do topo' : 'Fixar no topo'}
+              active={pinned}
+              aria-pressed={pinned}
+              onClick={onTogglePin}
+            >
+              {pinned ? <Pin size={15} /> : <PinOff size={15} />}
+            </IconButton>
+          ) : (
+            <IconButton
+              label="Destacar janela de letras"
+              onClick={() => {
+                useApp.setState({ lyricsOpen: false });
+                void window.glass
+                  .openLyrics()
+                  .catch(e => useApp.getState().message(cleanError(e)));
+              }}
+            >
+              <ExternalLink size={15} />
             </IconButton>
           )}
           <IconButton

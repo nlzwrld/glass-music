@@ -33,11 +33,11 @@ try{
   await cdp.send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});await page.waitForTimeout(700);
   const layout=await page.evaluate(()=>{const main=document.querySelector('.main-scroll'),footer=document.querySelector('.player').getBoundingClientRect(),sidebar=document.querySelector('.sidebar').getBoundingClientRect(),settings=document.querySelector('.settings-page').getBoundingClientRect();return{width:innerWidth,height:innerHeight,horizontalOverflow:main.scrollWidth>main.clientWidth+1,footerInside:footer.bottom<=innerHeight&&footer.left>=0&&footer.right<=innerWidth,sidebarAbovePlayer:sidebar.bottom<footer.top,settingsWidth:settings.width,settingsColumns:getComputedStyle(document.querySelector('.settings-page')).gridTemplateColumns};});
   expect(layout.horizontalOverflow).toBe(false);expect(layout.footerInside).toBe(true);expect(layout.sidebarAbovePlayer).toBe(true);expect(layout.settingsWidth).toBeLessThanOrEqual(1121);result.layouts.push(layout);
-  await page.screenshot({path:join(out,`Glass-Music-corrigido-${width}.png`)});
+  await page.screenshot({path:join(out,`Liquid-Hub-corrigido-${width}.png`)});
  }
  pass('Responsive settings/sidebar/player: 920, 1360 and 1920 px');
  await cdp.send('Emulation.setDeviceMetricsOverride',{width:1360,height:860,deviceScaleFactor:1,mobile:false});await page.waitForTimeout(500);
- await page.getByRole('button',{name:'Claro',exact:true}).click();await expect(page.locator('html')).toHaveAttribute('data-theme','light');await page.screenshot({path:join(out,'Glass-Music-tema-claro.png')});
+ await page.getByRole('button',{name:'Claro',exact:true}).click();await expect(page.locator('html')).toHaveAttribute('data-theme','light');await page.screenshot({path:join(out,'Liquid-Hub-tema-claro.png')});
  await page.getByRole('button',{name:'Escuro',exact:true}).click();await page.mouse.move(0,0);await page.waitForTimeout(600);
  // Real pixels: a high-contrast child must remain within its rounded overflow host.
  const before=PNG.sync.read(await page.screenshot());
@@ -78,7 +78,7 @@ try{
  await page.getByRole('button',{name:'Configurações',exact:true}).click();
  await page.evaluate(()=>{const gl=document.querySelector('.optical-surfaces').getContext('webgl2');window.__qaLoss=gl.getExtension('WEBGL_lose_context');window.__qaLoss.loseContext();});
  await expect(page.locator('html')).toHaveAttribute('data-optical-engine','css');await expect(page.locator('.optical-surfaces')).toHaveCSS('visibility','hidden');
- let audioPosition=await page.locator('audio').evaluate(a=>a.currentTime);await expect.poll(()=>page.locator('audio').evaluate(a=>a.currentTime)).toBeGreaterThan(audioPosition+.3);await page.screenshot({path:join(out,'Glass-Music-fallback.png')});
+ let audioPosition=await page.locator('audio').evaluate(a=>a.currentTime);await expect.poll(()=>page.locator('audio').evaluate(a=>a.currentTime)).toBeGreaterThan(audioPosition+.3);await page.screenshot({path:join(out,'Liquid-Hub-fallback.png')});
  await page.evaluate(()=>window.__qaLoss.restoreContext());await expect(page.locator('html')).toHaveAttribute('data-optical-engine','webgl');
  await page.getByRole('switch',{name:'Modo de desempenho',exact:true}).setChecked(true);await expect(page.locator('html')).toHaveAttribute('data-optical-engine','css');await expect(page.locator('.optical-surfaces')).toHaveCSS('visibility','hidden');
  await page.getByRole('switch',{name:'Modo de desempenho',exact:true}).setChecked(false);await expect(page.locator('html')).toHaveAttribute('data-optical-engine','webgl');pass('Context loss/restore and performance fallback preserve playing audio');
@@ -90,6 +90,6 @@ try{
  result.engine=await page.evaluate(()=>window.__glassOptics);pass('No continuous render loop or texture upload while idle');
  const ps=`$all=Get-CimInstance Win32_Process;$ids=[System.Collections.Generic.List[int]]::new();$ids.Add(${proc.pid});for($i=0;$i -lt $ids.Count;$i++){foreach($p in $all){if($p.ParentProcessId -eq $ids[$i] -and !$ids.Contains([int]$p.ProcessId)){$ids.Add([int]$p.ProcessId)}}};$before=@{};Get-Process -Id $ids.ToArray() -ErrorAction SilentlyContinue|ForEach-Object{$before[$_.Id]=$_.CPU};Start-Sleep -Seconds 2;$cpu=0;$working=0;Get-Process -Id $ids.ToArray() -ErrorAction SilentlyContinue|ForEach-Object{$cpu+=($_.CPU-$before[$_.Id]);$working+=$_.WorkingSet64};$pattern='pid_('+($ids -join '|')+')_';$gpu=@(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine -ErrorAction SilentlyContinue|Where-Object{$_.Name -match $pattern}|Select-Object Name,UtilizationPercentage);@{intervalSeconds=2;cpuOneCorePercent=$cpu/2*100;workingSetMB=$working/1MB;gpuEngines=$gpu}|ConvertTo-Json -Depth 5 -Compress`;
  try{result.nativeIdle=JSON.parse(execFileSync('powershell.exe',['-NoProfile','-Command',ps],{windowsHide:true,encoding:'utf8',timeout:15000}));}catch(e){result.nativeIdle={unavailable:String(e.message)};}
- await page.locator('.main-scroll').evaluate(el=>{el.scrollTop=0;});await page.waitForTimeout(500);await page.screenshot({path:join(out,'Glass-Music-corrigido.png')});
+ await page.locator('.main-scroll').evaluate(el=>{el.scrollTop=0;});await page.waitForTimeout(500);await page.screenshot({path:join(out,'Liquid-Hub-corrigido.png')});
  expect(result.errors).toEqual([]);expect(result.consoleErrors).toEqual([]);pass('No JavaScript or console errors');
 }catch(error){result.failure=String(error.stack||error);throw error;}finally{await writeFile(join(out,'Validacao-Liquid-Glass.json'),JSON.stringify(result,null,2));proc.kill();await browser?.close().catch(()=>{});}

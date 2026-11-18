@@ -13,6 +13,11 @@ deploy/.env
 .test-data/
 work/
 
+# Heavy runtime binaries fetched & SHA-256 verified dynamically at build time via scripts/configure-catalog.mjs
+assets/catalog/yt-dlp/
+assets/catalog/*.zip
+assets/catalog/*.tmp
+
 oauth.clients.json
 *.oauth.private.json
 
@@ -25,3 +30,4 @@ docs/evidencias/
 
 test-results*/
 latest.json
+release-notes.md

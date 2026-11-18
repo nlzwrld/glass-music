@@ -169,9 +169,21 @@ pub fn deezer_item(row: &Value, kind: &str) -> Option<Value> {
         "title": title,
         "artist": artist,
         "duration": duration,
+        "durationMs": (duration * 1000.0).round(),
+        "catalogSource": "deezer",
         "url": canonical,
         "addedAt": now()
     });
+    if entity == "track" {
+        track["resolvedExternalId"] = json!(id);
+        if let Some(isrc) = row["isrc"].as_str() {
+            if (12..=15).contains(&isrc.len())
+                && isrc.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            {
+                track["isrc"] = json!(isrc.to_uppercase());
+            }
+        }
+    }
     if !album.is_empty() {
         track["album"] = json!(album);
     }
@@ -180,6 +192,24 @@ pub fn deezer_item(row: &Value, kind: &str) -> Option<Value> {
     }
     db::validate_track(&track).ok()?;
     Some(track)
+}
+
+pub async fn lookup_deezer_isrc(isrc: &str) -> Option<Value> {
+    let clean: String = isrc
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_uppercase();
+    if clean.len() != 12 {
+        return None;
+    }
+    let data = get_json(&format!("https://api.deezer.com/2.0/track/isrc:{clean}"), &[], 512_000)
+        .await
+        .ok()?;
+    if data.get("error").is_some() {
+        return None;
+    }
+    deezer_item(&data, "track")
 }
 
 pub async fn search_deezer(request: &Value) -> Result<Value> {

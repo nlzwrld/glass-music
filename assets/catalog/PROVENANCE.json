@@ -8,7 +8,7 @@
   "sourceSha256": "21f942d258d25cc4e60b4982a25c423460f0bebb835f38e6dfd1fcb140087f95",
   "purpose": "Public search, public playlist metadata and audio URL resolution; no cookies, account login or audio downloads",
   "files": {
-    "plugins/glass/yt_dlp_plugins/extractor/glass_soundcloud.py": "d445a8babd04db79e5ab830c157fb4638a54a439b17cff2ffa4bd08c57153b76",
+    "plugins/liquid_hub/yt_dlp_plugins/extractor/liquid_hub_soundcloud.py": "2ca848275ef387369e88fc0c4d21c8d1c9fd5e1e4298d4b3a5a07576dca3a88f",
     "yt-dlp/_internal/_asyncio.pyd": "c833cfdab82da58163acdada02cdb2b92d42bc543e1b5519dbcbe4d3805a98fc",
     "yt-dlp/_internal/_brotli.cp314-win_amd64.pyd": "e91121006fc85b001a9d51b9293719d1af0e56e774bfd396bfe1d3ccf21baf85",
     "yt-dlp/_internal/_bz2.pyd": "9590a3f4b7c0801cd379341d40bb89b5dc9a4e232c9498b6f3bc6b5e99d4ae7f",

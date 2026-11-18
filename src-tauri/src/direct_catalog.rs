@@ -15,7 +15,7 @@ use tokio::{
 
 const PAGE: usize = 20;
 const MAX_OFFSET: usize = 180;
-const PLUGIN: &str = "plugins/glass/yt_dlp_plugins/extractor/glass_soundcloud.py";
+const PLUGIN: &str = "plugins/liquid_hub/yt_dlp_plugins/extractor/liquid_hub_soundcloud.py";
 const VISIONOS_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
 const IOS_UA: &str = "com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_2_1 like Mac OS X;)";
 
@@ -339,7 +339,7 @@ impl DirectCatalog {
         !self.disabled && self.root.join("yt-dlp/yt-dlp.exe").is_file() && self.root.join(PLUGIN).is_file()
     }
     async fn extract(&self, source: &str, kind: &str, query: &str, offset: usize) -> Result<Value> {
-        if !self.available() { return Err("Componente de busca ausente. Reinstale esta edição do Glass Music.".into()); }
+        if !self.available() { return Err("Componente de busca ausente. Reinstale esta edição do Liquid Hub.".into()); }
         let _permit = tokio::time::timeout(Duration::from_secs(15), self.slots.acquire()).await
             .map_err(|_| "Há outras buscas em andamento. Tente novamente.")?
             .map_err(|_| "Busca indisponível.")?;
@@ -386,6 +386,97 @@ impl DirectCatalog {
         }
         let value = self.extract(source, s(request, "kind"), s(request, "query"), offset).await?;
         normalize(&value, source, s(request, "kind"), offset)
+    }
+        pub async fn ytmusic_search(&self, query: &str) -> Result<Value> {
+        if self.disabled {
+            return Err("Catálogo direto desativado.".into());
+        }
+        if query.trim().is_empty() || query.len() > 800 {
+            return Err("Pesquisa inválida.".into());
+        }
+        if let Ok(fast) = innertube_music_search(query).await {
+            return Ok(fast);
+        }
+        youtube_search(&format!("{query} topic")).await
+    }
+    pub async fn soundcloud_audio(&self, permalink_url: &str) -> Result<Value> {
+        let u = url::Url::parse(permalink_url).map_err(|_| "URL SoundCloud inválida.")?;
+        if u.scheme() != "https"
+            || !u.username().is_empty()
+            || u.password().is_some()
+            || u.port().is_some()
+            || !matches!(u.host_str(), Some("soundcloud.com" | "www.soundcloud.com"))
+        {
+            return Err("URL SoundCloud não autorizada.".into());
+        }
+        if !self.available() {
+            return Err("Extrator de áudio indisponível.".into());
+        }
+        let _permit = tokio::time::timeout(Duration::from_secs(15), self.audio_slots.acquire())
+            .await
+            .map_err(|_| "Há outra música sendo preparada.")?
+            .map_err(|_| "Áudio indisponível.")?;
+        let mut cmd = Command::new(self.root.join("yt-dlp/yt-dlp.exe"));
+        cmd.current_dir(&self.root)
+            .args([
+                "--ignore-config",
+                "--no-cache-dir",
+                "--no-plugin-dirs",
+                "--no-js-runtimes",
+                "--no-remote-components",
+                "--no-playlist",
+                "--skip-download",
+                "--dump-single-json",
+                "--no-progress",
+                "--no-colors",
+                "--encoding",
+                "utf-8",
+                "--socket-timeout",
+                "10",
+                "--retries",
+                "1",
+                "--extractor-retries",
+                "1",
+                "-f",
+                "bestaudio[ext=mp3][protocol=https]/bestaudio[ext=m4a][protocol=https]/bestaudio[protocol=https]",
+                "--",
+            ])
+            .arg(permalink_url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        cmd.creation_flags(0x08000000);
+        let mut child = cmd.spawn().map_err(|_| "Não foi possível iniciar o áudio SoundCloud.")?;
+        let stdout = child.stdout.take().ok_or("Áudio sem resposta.")?;
+        let stderr = child.stderr.take().ok_or("Áudio sem diagnóstico.")?;
+        let operation = async {
+            tokio::try_join!(
+                async { child.wait().await.map_err(|_| "Consulta interrompida.".to_string()) },
+                limited_read(stdout, 4_000_000),
+                limited_read(stderr, 64_000)
+            )
+        };
+        let (status, output, errors) = tokio::time::timeout(Duration::from_secs(25), operation)
+            .await
+            .map_err(|_| "O áudio SoundCloud demorou a responder.")??;
+        if !status.success() {
+            return Err(friendly_error(&String::from_utf8_lossy(&errors)));
+        }
+        let mut parsed: Value =
+            serde_json::from_slice(&output).map_err(|_| "Resposta de áudio inválida.")?;
+        if parsed["vcodec"].is_null() || s(&parsed, "vcodec").is_empty() {
+            parsed["vcodec"] = json!("none");
+        }
+        if parsed["acodec"].is_null() || s(&parsed, "acodec") == "none" {
+            parsed["acodec"] = json!("mp3");
+        }
+        if parsed["protocol"].is_null() || s(&parsed, "protocol").starts_with("http") {
+            parsed["protocol"] = json!("https");
+        }
+        Ok(parsed)
     }
     pub async fn audio(&self, id: &str) -> Result<Value> {
         if id.len()!=11 || !id.bytes().all(|b|b.is_ascii_alphanumeric()||b"_-".contains(&b)) {return Err("Referência de música inválida.".into());}
@@ -452,7 +543,7 @@ impl DirectCatalog {
         let _permit=self.slots.acquire().await.map_err(|_|"Importação indisponível.")?;
         let mut cmd=Command::new(self.root.join("yt-dlp/yt-dlp.exe"));
         cmd.current_dir(&self.root).args(["--ignore-config","--no-cache-dir","--no-plugin-dirs","--plugin-dirs"]).arg(self.root.join("plugins"))
-            .args(["--no-js-runtimes","--no-remote-components","--flat-playlist","--skip-download","--dump-single-json","--no-progress","--no-colors","--ignore-errors","--socket-timeout","10","--retries","1","--encoding","utf-8","--playlist-end","1001","--"]).arg(if url.starts_with("https://soundcloud.com/"){format!("glass-sc-playlist:{url}")}else{url.to_string()})
+            .args(["--no-js-runtimes","--no-remote-components","--flat-playlist","--skip-download","--dump-single-json","--no-progress","--no-colors","--ignore-errors","--socket-timeout","10","--retries","1","--encoding","utf-8","--playlist-end","1001","--"]).arg(if url.starts_with("https://soundcloud.com/"){format!("liquid-hub-sc-playlist:{url}")}else{url.to_string()})
             .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).env("PYTHONDONTWRITEBYTECODE","1");
         #[cfg(windows)] cmd.creation_flags(0x08000000);
         let mut child=cmd.spawn().map_err(|_|"Não foi possível iniciar a importação.")?;
@@ -460,6 +551,127 @@ impl DirectCatalog {
         let (status,bytes,errors)=tokio::time::timeout(Duration::from_secs(90),async{tokio::try_join!(async{child.wait().await.map_err(|_|"Importação interrompida.".to_string())},limited_read(out,12_000_000),limited_read(err,64_000))}).await.map_err(|_|"A playlist demorou para responder. Tente novamente.")??;
         if !status.success(){return Err(friendly_error(&String::from_utf8_lossy(&errors)));}
         serde_json::from_slice(&bytes).map_err(|_|"Playlist inválida.".into())
+    }
+}
+
+async fn innertube_music_search(query: &str) -> Result<Value> {
+    let body = json!({
+        "query": query,
+        "params": "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D",
+        "context": {
+            "client": {
+                "clientName": "WEB_REMIX",
+                "clientVersion": "1.20250106.01.00",
+                "hl": "pt-BR",
+                "gl": "BR"
+            }
+        }
+    });
+    let mut response = crate::providers::client()
+        .post("https://music.youtube.com/youtubei/v1/search?prettyPrint=false")
+        .header("Origin", "https://music.youtube.com")
+        .header("Referer", "https://music.youtube.com/")
+        .json(&body)
+        .timeout(Duration::from_secs(6))
+        .send()
+        .await
+        .map_err(|_| "YT Music indisponível.")?;
+    if !response.status().is_success() {
+        return Err("YT Music indisponível.".into());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| "Busca incompleta.")? {
+        if bytes.len() + chunk.len() > 3_000_000 {
+            return Err("Busca muito grande.".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let data: Value = serde_json::from_slice(&bytes).map_err(|_| "JSON YT Music inválido.")?;
+    let mut rows = Vec::new();
+    ytmusic_songs(&data, 0, &mut rows);
+    if rows.is_empty() {
+        return Err("Sem faixas no YT Music.".into());
+    }
+    normalize(
+        &json!({ "entries": rows.into_iter().take(PAGE).collect::<Vec<_>>() }),
+        "youtube",
+        "track",
+        0,
+    )
+}
+
+fn ytmusic_songs(value: &Value, depth: usize, rows: &mut Vec<Value>) {
+    if depth > 40 || rows.len() >= PAGE {
+        return;
+    }
+    if let Some(item) = value.get("musicResponsiveListItemRenderer") {
+        let video_id = item
+            .pointer("/playlistItemData/videoId")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                item.pointer("/overlay/musicItemThumbnailOverlayRenderer/content/musicPlayButtonRenderer/playNavigationEndpoint/watchEndpoint/videoId")
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or("");
+        if video_id.len() == 11
+            && video_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+        {
+            let cols = item["flexColumns"].as_array().cloned().unwrap_or_default();
+            let title = cols
+                .first()
+                .map(|c| youtube_text(&c["musicResponsiveListItemFlexColumnRenderer"]["text"]))
+                .unwrap_or_default();
+            let meta_runs = cols
+                .get(1)
+                .and_then(|c| c["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"].as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut artist = String::new();
+            let mut duration = 0_u64;
+            for run in &meta_runs {
+                let txt = s(run, "text").trim();
+                if txt.is_empty() || txt == "•" || txt == " • " || txt == "&" {
+                    continue;
+                }
+                if txt.contains(':') && txt.bytes().all(|b| b.is_ascii_digit() || b == b':') {
+                    duration = txt
+                        .split(':')
+                        .try_fold(0_u64, |sum, p| {
+                            p.parse::<u64>()
+                                .ok()
+                                .and_then(|n| sum.checked_mul(60)?.checked_add(n))
+                        })
+                        .unwrap_or(0);
+                } else if artist.is_empty() && !["Música", "Song", "Vídeo", "Video"].contains(&txt) {
+                    artist = format!("{txt} - Topic");
+                }
+            }
+            if !title.is_empty() && duration > 0 && duration <= 604800 {
+                rows.push(json!({
+                    "id": video_id,
+                    "title": title,
+                    "uploader": if artist.is_empty() { "YouTube Music - Topic".into() } else { artist },
+                    "duration": duration,
+                    "thumbnails": [{ "url": format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg") }]
+                }));
+            }
+        }
+        return;
+    }
+    match value {
+        Value::Object(map) => {
+            for child in map.values() {
+                ytmusic_songs(child, depth + 1, rows);
+            }
+        }
+        Value::Array(list) => {
+            for child in list {
+                ytmusic_songs(child, depth + 1, rows);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -540,7 +752,7 @@ fn friendly_error(error: &str) -> String {
     } else if lower.contains("sign in") || lower.contains("403") || lower.contains("captcha") {
         "A plataforma bloqueou esta consulta pública. Tente novamente mais tarde."
     } else {
-        "Não foi possível consultar a plataforma. Verifique a internet e tente novamente; mudanças no site podem exigir uma atualização do Glass Music."
+        "Não foi possível consultar a plataforma. Verifique a internet e tente novamente; mudanças no site podem exigir uma atualização do Liquid Hub."
     }.into()
 }
 fn parse_cursor(raw: &str) -> Result<usize> {
@@ -562,7 +774,7 @@ fn search_input(source: &str, kind: &str, query: &str, offset: usize) -> Result<
             });
             Ok(url.to_string())
         },
-        "soundcloud" => Ok(format!("glass-sc-search:{}:{offset}:{}", match kind {
+        "soundcloud" => Ok(format!("liquid-hub-sc-search:{}:{offset}:{}", match kind {
             "artist" => "users", "playlist" => "playlists", _ => "tracks",
         }, url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>().replace('+', "%20"))),
         _ => Err("Fonte de busca inválida.".into()),
@@ -575,7 +787,10 @@ fn normalize(value: &Value, source: &str, requested: &str, offset: usize) -> Res
     for row in rows.iter().take(PAGE) {
         let id = s(row, "id");
         if !db::valid_id(id) || id.len() > 150 { continue; }
-        let kind = if source == "soundcloud" { s(row, "glass_kind") } else { match requested {
+        let kind = if source == "soundcloud" {
+            let lk = s(row, "liquid_kind");
+            if lk.is_empty() { s(row, "glass_kind") } else { lk }
+        } else { match requested {
             "artist" => "artist", "playlist" => "playlist", _ => "track",
         }};
         if !["track","artist","playlist"].contains(&kind) || (requested != "all" && kind != requested) { continue; }
@@ -588,14 +803,20 @@ fn normalize(value: &Value, source: &str, requested: &str, offset: usize) -> Res
         let source_id = if source == "soundcloud" && kind != "track" { format!("{kind}-{id}") } else { id.to_string() };
         let artist = [s(row,"uploader"),s(row,"channel"),s(row,"artist")].into_iter().find(|v| !v.is_empty())
             .unwrap_or(if kind == "artist" { s(row,"title") } else { if source == "youtube" { "YouTube" } else { "SoundCloud" } });
+        let dur = row["duration"].as_f64().unwrap_or(0.0);
+        let is_topic = source == "youtube" && artist.to_lowercase().ends_with(" - topic");
+        let cat_source = if is_topic { "ytmusic" } else { source };
         let mut track = json!({"id":format!("{source}:{source_id}"),"source":source,"sourceId":source_id,
-            "kind":kind,"title":s(row,"title"),"artist":artist,"duration":row["duration"].as_f64().unwrap_or(0.0),
-            "url":link,"addedAt":now()});
+            "kind":kind,"title":s(row,"title"),"artist":artist,"duration":dur,"durationMs":(dur * 1000.0).round(),
+            "catalogSource":cat_source,"url":link,"addedAt":now()});
+        if kind == "track" {
+            track["streamProvider"] = json!(cat_source);
+        }
         if let Some(art) = row["thumbnails"].as_array().into_iter().flatten().rev()
             .filter_map(|t| t["url"].as_str()).find(|u| db::artwork_url(u)) { track["artwork"] = json!(art); }
         if db::validate_track(&track).is_ok() && seen.insert(s(&track,"id").to_string()) { items.push(track); }
     }
-    if !rows.is_empty() && items.is_empty() { return Err("Os resultados mudaram de formato. Atualize o Glass Music e tente novamente.".into()); }
+    if !rows.is_empty() && items.is_empty() { return Err("Os resultados mudaram de formato. Atualize o Liquid Hub e tente novamente.".into()); }
     Ok(json!({"items":items,"next":if rows.len()>PAGE && offset<MAX_OFFSET {json!((offset+PAGE).to_string())}else{Value::Null}}))
 }
 

@@ -15,7 +15,7 @@ pub fn s<'a>(v: &'a Value, key: &str) -> &'a str {
     v[key].as_str().unwrap_or("")
 }
 pub fn defaults() -> Value {
-    json!({"uiStyle":"matte","transition":"fade","transitionSeconds":3,"volumeBoost":0,"limiter":true,"outputDevice":"default","jamEndpoint":"","autoUpdate":true,"autoplay":true,"theme":"dark","glass":20,"blur":24,"accent":"#52b79a","autoAccent":false,"reducedMotion":false,"performance":false,"volume":65,"repeat":"off","shuffle":false,"tray":true,"startup":false,"notifications":false,"globalShortcuts":false,"coverCacheMB":128,"eq":[0,0,0,0,0],"onlineConsent":false,"catalogConsent":false,"onboardingDone":false})
+    json!({"uiStyle":"matte","transition":"fade","transitionSeconds":3,"volumeBoost":0,"limiter":true,"outputDevice":"default","jamEndpoint":"","autoUpdate":true,"autoplay":true,"theme":"dark","glass":20,"blur":24,"accent":"#52b79a","autoAccent":false,"reducedMotion":false,"performance":false,"volume":65,"repeat":"off","shuffle":false,"tray":true,"startup":false,"notifications":false,"notificationMode":"off","globalShortcuts":false,"coverCacheMB":128,"eq":[0,0,0,0,0],"onlineConsent":false,"catalogConsent":false,"onboardingDone":false})
 }
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty()
@@ -159,10 +159,94 @@ pub fn validate_track(t: &Value) -> Result<()> {
             return Err("Referência de reprodução inválida.".into());
         }
     }
-    if t.to_string().len() > 12000 {
+    if let Some(cs) = t.get("catalogSource") {
+        if !cs.as_str().is_some_and(|v| {
+            ["spotify", "deezer", "ytmusic", "youtube", "soundcloud", "local"].contains(&v)
+        }) {
+            return Err("Origem de catálogo inválida.".into());
+        }
+    }
+    if let Some(sp) = t.get("streamProvider") {
+        if !sp.as_str().is_some_and(|v| {
+            ["ytmusic", "youtube", "soundcloud", "deezer", "local"].contains(&v)
+        }) {
+            return Err("Provedor de stream inválido.".into());
+        }
+    }
+    if let Some(dms) = t.get("durationMs") {
+        if !dms.as_f64().is_some_and(|v| (0.0..=604_800_000.0).contains(&v)) {
+            return Err("Duração em ms inválida.".into());
+        }
+    }
+    if let Some(isrc) = t.get("isrc") {
+        if !isrc.as_str().is_some_and(|v| {
+            (12..=15).contains(&v.len())
+                && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        }) {
+            return Err("ISRC inválido.".into());
+        }
+    }
+    if let Some(ext_id) = t.get("resolvedExternalId") {
+        if !ext_id.as_str().is_some_and(|v| {
+            !v.is_empty()
+                && v.len() <= 200
+                && v.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_:.-/".contains(&b))
+        }) {
+            return Err("ID externo de stream inválido.".into());
+        }
+    }
+    if let Some(stream_url) = t.get("resolvedStreamUrl") {
+        let valid = stream_url.as_str().is_some_and(|raw| {
+            crate::links::public_url(raw)
+                || url::Url::parse(raw).is_ok_and(|u| {
+                    u.scheme() == "http"
+                        && u.host_str() == Some("127.0.0.1")
+                        && u.username().is_empty()
+                        && u.password().is_none()
+                        && (u.path().starts_with("/audio/")
+                            || u.path().starts_with("/offline/")
+                            || u.path().starts_with("/media/"))
+                })
+        });
+        if !valid {
+            return Err("URL de stream resolvida inválida.".into());
+        }
+    }
+    if t.to_string().len() > 14000 {
         return Err("Metadados muito grandes.".into());
     }
     Ok(())
+}
+
+#[derive(Clone, Debug)]
+pub struct StreamMapping {
+    pub source_track_id: String,
+    pub catalog_source: String,
+    pub resolved_provider: String,
+    pub resolved_id: String,
+    pub resolved_url: Option<String>,
+    pub duration_delta: f64,
+    pub score: f64,
+    pub updated_at: i64,
+}
+
+pub fn canonical_mapping_key(track: &Value) -> String {
+    if let Some(raw_url) = track["url"].as_str() {
+        if let Ok(u) = url::Url::parse(raw_url) {
+            if u.host_str() == Some("open.spotify.com") {
+                let parts: Vec<_> = u.path_segments().into_iter().flatten().collect();
+                if let Some(idx) = parts.iter().position(|p| *p == "track") {
+                    if let Some(sp_id) = parts.get(idx + 1) {
+                        if sp_id.len() == 22 && sp_id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+                            return format!("spotify:track:{sp_id}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    s(track, "id").to_string()
 }
 pub fn validate_prefs(p: &Value) -> Result<()> {
     if !["dark", "light", "system"].contains(&s(p, "theme"))
@@ -172,6 +256,11 @@ pub fn validate_prefs(p: &Value) -> Result<()> {
     }
     if p.get("uiStyle").is_some() && !["matte", "glass"].contains(&s(p, "uiStyle")) {
         return Err("Estilo inválido.".into());
+    }
+    if p.get("notificationMode").is_some()
+        && !["off", "background", "always"].contains(&s(p, "notificationMode"))
+    {
+        return Err("Modo de notificação inválido.".into());
     }
     if p.get("transition").is_some()&&! ["off","fade","crossfade"].contains(&s(p,"transition")){return Err("Transição inválida.".into());}
     for(key,lo,hi)in [("transitionSeconds",0.5,10.0),("volumeBoost",0.0,12.0)]{if p.get(key).is_some()&&!p[key].as_f64().is_some_and(|n|n.is_finite()&&n>=lo&&n<=hi){return Err("Áudio fora dos limites.".into());}}
@@ -225,7 +314,7 @@ pub fn validate_prefs(p: &Value) -> Result<()> {
         for (key,lo,hi) in [("blur",0.0,24.0),("refraction",0.0,12.0),("opacity",0.0,0.14),("saturation",0.5,2.0),("specular",0.0,1.0),("chromatic",0.0,0.2),("thickness",3.0,30.0),("ior",1.0,2.0),("fresnel",0.0,1.0),("edge",0.0,1.0),("scale",90.0,125.0)] {
             if !a[key].as_f64().is_some_and(|v| v>=lo&&v<=hi) { return Err("Aparência fora dos limites.".into()); }
         }
-        if !["auto","economy","balanced","high"].contains(&s(a,"quality")) || !["dynamic","ambient","desktop","custom","solid"].contains(&s(a,"background")) || !a["sidebarCompact"].is_boolean() { return Err("Aparência inválida.".into()); }
+        if !["auto","economy","balanced","high"].contains(&s(a,"quality")) || !["dynamic","ambient","desktop","custom","solid"].contains(&s(a,"background")) || !a["sidebarCompact"].is_boolean() || (a.get("audioReactive").is_some() && !a["audioReactive"].is_boolean()) { return Err("Aparência inválida.".into()); }
         for (key,lo,hi) in [("backgroundMotion",0.0,1.0),("gradientIntensity",0.1,1.0)] {
             if a.get(key).is_some()&&!a[key].as_f64().is_some_and(|n|n>=lo&&n<=hi){return Err("Movimento de fundo inválido.".into());}
         }
@@ -249,7 +338,22 @@ impl Library {
       CREATE TABLE IF NOT EXISTS likes(track_id TEXT PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE);
       CREATE TABLE IF NOT EXISTS history(track_id TEXT REFERENCES tracks(id) ON DELETE CASCADE,played INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS history_played ON history(played DESC);
+      CREATE TABLE IF NOT EXISTS track_stream_mappings(
+        source_track_id TEXT PRIMARY KEY,
+        catalog_source TEXT NOT NULL,
+        resolved_provider TEXT NOT NULL,
+        resolved_id TEXT NOT NULL,
+        resolved_url TEXT,
+        duration_delta REAL NOT NULL DEFAULT 0,
+        score REAL NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_stream_mappings_updated ON track_stream_mappings(updated_at DESC);
       CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL); PRAGMA user_version=1;").map_err(|e|e.to_string())?;
+        let _ = db.execute(
+            "DELETE FROM track_stream_mappings WHERE updated_at < ?",
+            params![now() - 30 * 86_400_000],
+        );
         let this = Self { db };
         let expired = this.query(
             "SELECT data FROM tracks WHERE refreshed < ?",
@@ -400,11 +504,125 @@ impl Library {
         self.db.execute("INSERT INTO tracks VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,local_path=COALESCE(excluded.local_path,tracks.local_path),refreshed=excluded.refreshed",params![s(&t,"id"),t.to_string(),path,now()]).map_err(|e|e.to_string())?;
         Ok(())
     }
+    pub fn get_stream_mapping(&self, key: &str) -> Option<StreamMapping> {
+        let cutoff = now() - 30 * 86_400_000;
+        self.db
+            .query_row(
+                "SELECT source_track_id, catalog_source, resolved_provider, resolved_id, resolved_url, duration_delta, score, updated_at
+                 FROM track_stream_mappings
+                 WHERE source_track_id = ? AND updated_at >= ?",
+                params![key, cutoff],
+                |r| {
+                    Ok(StreamMapping {
+                        source_track_id: r.get(0)?,
+                        catalog_source: r.get(1)?,
+                        resolved_provider: r.get(2)?,
+                        resolved_id: r.get(3)?,
+                        resolved_url: r.get(4)?,
+                        duration_delta: r.get(5)?,
+                        score: r.get(6)?,
+                        updated_at: r.get(7)?,
+                    })
+                },
+            )
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    pub fn save_stream_mapping(&self, m: &StreamMapping) -> Result<()> {
+        if !valid_id(&m.source_track_id)
+            || !["spotify", "deezer", "ytmusic", "youtube", "soundcloud", "local"]
+                .contains(&m.catalog_source.as_str())
+            || !["ytmusic", "youtube", "soundcloud", "deezer"].contains(&m.resolved_provider.as_str())
+            || m.resolved_id.is_empty()
+            || m.resolved_id.len() > 200
+        {
+            return Err("Mapeamento de stream inválido.".into());
+        }
+        self.db
+            .execute(
+                "INSERT INTO track_stream_mappings(source_track_id, catalog_source, resolved_provider, resolved_id, resolved_url, duration_delta, score, updated_at)
+                 VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(source_track_id) DO UPDATE SET
+                   catalog_source = excluded.catalog_source,
+                   resolved_provider = excluded.resolved_provider,
+                   resolved_id = excluded.resolved_id,
+                   resolved_url = excluded.resolved_url,
+                   duration_delta = excluded.duration_delta,
+                   score = excluded.score,
+                   updated_at = excluded.updated_at",
+                params![
+                    m.source_track_id,
+                    m.catalog_source,
+                    m.resolved_provider,
+                    m.resolved_id,
+                    m.resolved_url,
+                    m.duration_delta,
+                    m.score,
+                    m.updated_at
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn invalidate_stream_mapping(&self, key: &str) -> Result<()> {
+        self.db
+            .execute(
+                "DELETE FROM track_stream_mappings WHERE source_track_id = ?",
+                [key],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn snapshot(&self) -> Result<Value> {
-        let tracks = self.query(
+        let mut tracks = self.query(
             "SELECT CASE WHEN EXISTS(SELECT 1 FROM offline_tracks WHERE track_id=tracks.id) THEN json_set(data,'$.offline',json('true')) ELSE json_remove(data,'$.offline') END FROM tracks ORDER BY refreshed DESC LIMIT 20000",
             [],
         )?;
+        let mut mappings = std::collections::HashMap::new();
+        if let Ok(mut stmt) = self.db.prepare(
+            "SELECT source_track_id, resolved_provider, resolved_id, resolved_url FROM track_stream_mappings",
+        ) {
+            if let Ok(rows) = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            }) {
+                for row in rows.flatten() {
+                    mappings.insert(row.0, (row.1, row.2, row.3));
+                }
+            }
+        }
+        if !mappings.is_empty() {
+            for t in &mut tracks {
+                let key = canonical_mapping_key(t);
+                if let Some((prov, rid, rurl)) = mappings
+                    .get(&key)
+                    .or_else(|| mappings.get(s(t, "id")))
+                {
+                    t["streamProvider"] = json!(prov);
+                    t["resolvedExternalId"] = json!(rid);
+                    if let Some(u) = rurl {
+                        if crate::links::public_url(u) {
+                            t["resolvedStreamUrl"] = json!(u);
+                        }
+                    }
+                    if s(t, "source") == "link"
+                        && ["ytmusic", "youtube"].contains(&prov.as_str())
+                        && rid.len() == 11
+                        && rid.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+                    {
+                        t["playbackId"] = json!(rid);
+                    }
+                }
+            }
+        }
         let playlists=self.query("SELECT json_object('id',id,'name',name,'createdAt',created,'artwork',(SELECT value FROM settings WHERE key='playlist-artwork:'||playlists.id),'description',(SELECT value FROM settings WHERE key='playlist-desc:'||playlists.id),'trackIds',json(COALESCE((SELECT json_group_array(track_id) FROM (SELECT track_id FROM playlist_tracks WHERE playlist_id=playlists.id ORDER BY position)),'[]'))) FROM playlists ORDER BY created DESC",[])?;
         let likes = self.query("SELECT json_quote(track_id) FROM likes", [])?;
         let history=self.query("SELECT json_object('id',track_id,'playedAt',played) FROM history ORDER BY played DESC,rowid DESC LIMIT 500",[])?;
@@ -509,11 +727,11 @@ impl Library {
                 .retain(|v| ids.contains(v));
         }
         Ok(
-            json!({"format":"glass-music","version":1,"tracks":snap["tracks"],"playlists":snap["playlists"],"likes":snap["likes"]}),
+            json!({"format":"liquid-hub","version":1,"tracks":snap["tracks"],"playlists":snap["playlists"],"likes":snap["likes"]}),
         )
     }
     pub fn import(&self, v: &Value) -> Result<Value> {
-        if s(v, "format") != "glass-music" || v["version"] != 1 {
+        if !["liquid-hub", "glass-music"].contains(&s(v, "format")) || v["version"] != 1 {
             return Err("Formato de biblioteca inválido.".into());
         }
         let tracks = v["tracks"].as_array().ok_or("Faixas ausentes")?;
@@ -726,5 +944,47 @@ mod tests {
             let tr = tracks.iter().find(|t| t["id"] == id).unwrap();
             assert_eq!(tr["artwork"], album_cover, "{id} album artwork must be preserved");
         }
+    }
+
+    #[test]
+    fn persists_hydrates_and_invalidates_stream_mappings() {
+        let db = Library::open(Path::new(":memory:")).unwrap();
+        let sp = json!({
+            "id": "link:sp1234567890",
+            "source": "link",
+            "sourceId": "sp1234567890",
+            "kind": "track",
+            "title": "Blinding Lights",
+            "artist": "The Weeknd",
+            "duration": 200.04,
+            "durationMs": 200040,
+            "catalogSource": "spotify",
+            "url": "https://open.spotify.com/track/0VjIjW4GlUZAMYd2vXMi3b",
+            "addedAt": now()
+        });
+        db.save(&sp, None).unwrap();
+        let key = canonical_mapping_key(&sp);
+        assert_eq!(key, "spotify:track:0VjIjW4GlUZAMYd2vXMi3b");
+
+        db.save_stream_mapping(&StreamMapping {
+            source_track_id: key.clone(),
+            catalog_source: "spotify".into(),
+            resolved_provider: "ytmusic".into(),
+            resolved_id: "4NRXx6U8ABQ".into(),
+            resolved_url: Some("https://music.youtube.com/watch?v=4NRXx6U8ABQ".into()),
+            duration_delta: 0.04,
+            score: 98.5,
+            updated_at: now(),
+        })
+        .unwrap();
+
+        let snap = db.snapshot().unwrap();
+        let hydrated = &snap["tracks"][0];
+        assert_eq!(hydrated["streamProvider"], "ytmusic");
+        assert_eq!(hydrated["resolvedExternalId"], "4NRXx6U8ABQ");
+        assert_eq!(hydrated["playbackId"], "4NRXx6U8ABQ");
+
+        db.invalidate_stream_mapping(&key).unwrap();
+        assert!(db.get_stream_mapping(&key).is_none());
     }
 }

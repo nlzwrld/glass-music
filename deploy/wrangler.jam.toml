@@ -1,0 +1,17 @@
+# Cloudflare Workers + Durable Objects Free Tier configuration (WebSocket Hibernation)
+name = "liquid-hub-jam"
+main = "../server/jam.ts"
+compatibility_date = "2025-02-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+JAM_IDLE_TTL_MS = "900000"
+
+[[durable_objects.bindings]]
+name = "JAM_ROOMS"
+class_name = "JamRoomDO"
+
+# new_sqlite_classes enables Durable Objects on Cloudflare's $0 Free Tier
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["JamRoomDO"]

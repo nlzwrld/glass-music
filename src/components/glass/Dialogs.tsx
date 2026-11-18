@@ -1,8 +1,133 @@
 import { Input } from '../ui/input';
 import { useEffect, useRef, useState } from 'react';
-import { X, ListMusic, Plus, LoaderCircle } from 'lucide-react';
-import { useApp, cleanError } from '../../stores/app';
-import { IconButton } from './controls';
+import { X, ListMusic, Plus, LoaderCircle, Check, Sparkles } from 'lucide-react';
+import { useApp, cleanError, formatTime } from '../../stores/app';
+import { invalidatePlayback } from '../../lib/playback';
+import type { StreamCandidate, Track } from '../../../shared/types';
+import { IconButton, SourceBadge } from './controls';
+
+function StreamSourcePicker({
+  track,
+  onDone,
+  onError,
+}: {
+  track: Track;
+  onDone: () => void;
+  onError: (msg: string) => void;
+}) {
+  const [candidates, setCandidates] = useState<StreamCandidate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [applyingId, setApplyingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const reqId = `candidates-${Date.now()}`;
+    let active = true;
+    setLoading(true);
+    onError('');
+    void window.glass
+      .streamCandidates(track, reqId)
+      .then(items => {
+        if (active) setCandidates(items || []);
+      })
+      .catch(e => {
+        if (active) onError(cleanError(e));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+      void window.glass.cancelSearch(reqId).catch(() => {});
+    };
+  }, [track.id]);
+
+  const choose = async (cand: StreamCandidate | null) => {
+    const key = cand ? `${cand.provider}:${cand.id}` : 'auto';
+    setApplyingId(key);
+    onError('');
+    try {
+      const updated = await window.glass.selectStreamCandidate(track, cand);
+      invalidatePlayback(track.id);
+      useApp.getState().applyResolvedTrack(updated, true);
+      useApp
+        .getState()
+        .message(
+          cand
+            ? `Fonte alterada para ${cand.provider === 'ytmusic' ? 'YT Music' : cand.provider === 'soundcloud' ? 'SoundCloud' : cand.provider === 'deezer' ? 'Deezer' : 'YouTube'}.`
+            : 'Seleção automática restaurada.',
+        );
+      onDone();
+    } catch (e) {
+      onError(cleanError(e));
+    } finally {
+      setApplyingId(null);
+    }
+  };
+
+  const currentId = track.resolvedExternalId || track.playbackId;
+
+  return (
+    <div className="stream-source-dialog">
+      <h2 id="dialog-title">Trocar fonte de áudio</h2>
+      <p className="subtle">
+        {track.title} · {track.artist}
+      </p>
+      {loading ? (
+        <div className="stream-candidates-loading" role="status">
+          <LoaderCircle size={16} className="spinner" />
+          <span>Buscando versões compatíveis em YT Music, SoundCloud e YouTube…</span>
+        </div>
+      ) : (
+        <div className="playlist-picker stream-candidate-picker" role="listbox" aria-label="Fontes de áudio disponíveis">
+          <button
+            type="button"
+            disabled={applyingId !== null}
+            onClick={() => void choose(null)}
+          >
+            <Sparkles size={15} />
+            <span>
+              Automático (melhor correspondência)
+              <small>Prioriza YT Music Topic, fidelidade de duração e menor latência</small>
+            </span>
+            {!track.streamProvider && <Check size={15} />}
+          </button>
+          {candidates.map(cand => {
+            const key = `${cand.provider}:${cand.id}`;
+            const selected =
+              currentId === cand.id &&
+              (!track.streamProvider || track.streamProvider === cand.provider);
+            return (
+              <button
+                key={key}
+                type="button"
+                className={selected ? 'selected' : ''}
+                disabled={applyingId !== null}
+                onClick={() => void choose(cand)}
+              >
+                <SourceBadge source={cand.provider} compact />
+                <span>
+                  {cand.title}
+                  <small>
+                    {cand.artist} · {formatTime(cand.duration)} · {Math.round(cand.score)}%
+                  </small>
+                </span>
+                {selected ? <Check size={15} /> : null}
+              </button>
+            );
+          })}
+          {!candidates.length && (
+            <p className="fine-print">Nenhuma versão alternativa compatível encontrada agora.</p>
+          )}
+        </div>
+      )}
+      <div className="modal-actions">
+        <button type="button" className="button secondary" disabled={applyingId !== null} onClick={onDone}>
+          Fechar
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function Dialogs() {
   const dialog = useApp(s => s.dialog),
@@ -326,6 +451,14 @@ export default function Dialogs() {
               </form>
             )}
           </>
+        )}
+
+        {dialog.type === 'streamSource' && (
+          <StreamSourcePicker
+            track={dialog.track}
+            onDone={close}
+            onError={setError}
+          />
         )}
 
         {dialog.type === 'confirm' && (

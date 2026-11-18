@@ -14,6 +14,7 @@ import {
   Download,
   HardDriveDownload,
   FolderOpen,
+  Radio,
 } from 'lucide-react';
 import { canPlay, type Track } from '../../../shared/types';
 import { useApp } from '../../stores/app';
@@ -31,7 +32,7 @@ export function trackActions(track: Track, list: Track[], playlistId?: string): 
   const items: GlassMenuItem[] = isCollection
     ? [
         {
-          label: 'Abrir coleção no Glass',
+          label: 'Abrir coleção no Liquid Hub',
           icon: <FolderOpen size={17} />,
           action: () => void s.openCollection(track.url!, track.title),
         },
@@ -105,6 +106,14 @@ export function trackActions(track: Track, list: Track[], playlistId?: string): 
         },
       },
     );
+  }
+
+  if (track.source !== 'local' && track.kind === 'track') {
+    items.push({
+      label: 'Trocar fonte de áudio',
+      icon: <Radio size={17} />,
+      action: () => s.setDialog({ type: 'streamSource', track }),
+    });
   }
 
   if (['youtube', 'link'].includes(track.source) && track.kind === 'track') {

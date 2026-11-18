@@ -22,7 +22,7 @@ pub fn configured_url() -> Result<String> {
 }
 
 async fn fetch(base: &str, path: &str, query: &[(&str, &str)]) -> Result<Value> {
-    if base.is_empty() { return Err("O catálogo online ainda não foi ativado para esta edição do Glass Music. Links públicos continuam disponíveis.".into()); }
+    if base.is_empty() { return Err("O catálogo online ainda não foi ativado para esta edição do Liquid Hub. Links públicos continuam disponíveis.".into()); }
     let mut response = crate::providers::client().get(format!("{base}{path}")).query(query).send().await
         .map_err(|_| "Não foi possível conectar ao catálogo. Verifique sua internet e tente novamente.")?;
     let status = response.status(); let mut bytes = Vec::new();

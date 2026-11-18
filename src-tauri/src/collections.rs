@@ -61,6 +61,11 @@ pub fn spotify_track(v: &Value) -> Option<Value> {
         })
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| s(v, "subtitle").to_string());
+    let dur_ms = v["duration_ms"]
+        .as_f64()
+        .or(v["duration"].as_f64())
+        .unwrap_or(0.0)
+        .max(0.0);
     let mut t = json!({
         "id": format!("link:{hash}"),
         "source": "link",
@@ -68,10 +73,30 @@ pub fn spotify_track(v: &Value) -> Option<Value> {
         "kind": "track",
         "title": v["name"].as_str().or(v["title"].as_str())?,
         "artist": if artist.is_empty() { "Spotify" } else { &artist },
-        "duration": v["duration_ms"].as_f64().or(v["duration"].as_f64()).unwrap_or(0.0) / 1000.0,
+        "duration": dur_ms / 1000.0,
+        "durationMs": dur_ms.round(),
+        "catalogSource": "spotify",
         "url": url,
         "addedAt": now()
     });
+    if let Some(alb) = v
+        .pointer("/album/name")
+        .and_then(Value::as_str)
+        .or_else(|| v.pointer("/albumOfTrack/name").and_then(Value::as_str))
+    {
+        if !alb.trim().is_empty() {
+            t["album"] = json!(alb.trim());
+        }
+    }
+    if let Some(isrc) = v
+        .pointer("/external_ids/isrc")
+        .and_then(Value::as_str)
+        .or_else(|| v.pointer("/externalIds/isrc").and_then(Value::as_str))
+    {
+        if (12..=15).contains(&isrc.len()) && isrc.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            t["isrc"] = json!(isrc.to_uppercase());
+        }
+    }
     let art = artwork(v);
     if !art.is_empty() {
         t["artwork"] = json!(art);

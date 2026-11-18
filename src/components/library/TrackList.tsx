@@ -1,7 +1,7 @@
 import { GlassContextMenu } from '../glass/materials';
 import { trackActions } from './trackActions';
 import { moveWithinPlaylist } from '../../lib/playlist';
-import { warmTrack, cancelWarmTrack } from '../../lib/playback';
+import { warmTrack, cancelWarmTrack, shufflePlay } from '../../lib/playback';
 import { useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
@@ -13,12 +13,13 @@ import {
   GripVertical,
   Music2,
   Clock3,
+  Shuffle,
 } from 'lucide-react';
 import { canPlay, type Track } from '../../../shared/types';
 import { useApp, formatTime } from '../../stores/app';
 import { transport } from '../player/engine';
 import Cover from '../glass/Cover';
-import { IconButton, SourceBadge } from '../glass/controls';
+import { IconButton, OfflineIndicator, SourceBadge } from '../glass/controls';
 
 export default function TrackList({
   tracks,
@@ -32,11 +33,13 @@ export default function TrackList({
   const parent = useRef<HTMLDivElement>(null);
   const dragIndex = useRef<string | null>(null);
   const likes = useApp(s => s.data.likes),
+    downloadingIds = useApp(s => s.downloadingIds),
     current = useApp(s => s.queue[s.index]),
     playing = useApp(s => s.playing);
 
   const hasSnippets = tracks.some(t => !!t.lyricSnippet);
   const rowHeight = hasSnippets ? 56 : 48;
+  const playableCount = tracks.filter(t => canPlay(t) && t.available !== false).length;
 
   const virtual = useVirtualizer({
     count: tracks.length,
@@ -66,7 +69,20 @@ export default function TrackList({
         <span className="col-index">#</span>
         <span>Título</span>
         <span>Álbum / Origem</span>
-        <span />
+        <span className="col-quick-shuffle">
+          {playableCount > 1 && (
+            <button
+              type="button"
+              className="tracklist-shuffle-btn"
+              aria-label="Embaralhar e reproduzir lista"
+              title="Shuffle Play"
+              onClick={() => shufflePlay(tracks)}
+            >
+              <Shuffle size={12} />
+              <span>Aleatório</span>
+            </button>
+          )}
+        </span>
         <span className="col-duration" title="Duração">
           <Clock3 size={13} />
         </span>
@@ -78,10 +94,11 @@ export default function TrackList({
       >
         <div style={{ height: virtual.getTotalSize(), position: 'relative' }}>
           {virtual.getVirtualItems().map(row => {
-            const track = tracks[row.index],
+            const track = tracks[row.index]!,
               active = current?.id === track.id;
             const playable = canPlay(track);
             const liked = likes.includes(track.id);
+            const isDownloading = downloadingIds.includes(track.id);
             return (
               <div
                 data-track-item
@@ -186,17 +203,26 @@ export default function TrackList({
                   </div>
                   <span className="track-text">
                     <strong>{track.title}</strong>
-                    <small>
-                      {track.lyricSnippet
-                        ? `${track.artist} · “${track.lyricSnippet}”`
-                        : track.artist}
+                    <small className="track-subline">
+                      <OfflineIndicator offline={track.offline} downloading={isDownloading} />
+                      <span>
+                        {track.lyricSnippet
+                          ? `${track.artist} · “${track.lyricSnippet}”`
+                          : track.artist}
+                      </span>
                     </small>
                   </span>
                 </button>
 
                 <span className="track-meta-col">
                   {track.album && <span className="track-album-text">{track.album}</span>}
-                  <SourceBadge source={track.source} url={track.url} compact={!!track.album} />
+                  <SourceBadge
+                    source={track.source}
+                    url={track.url}
+                    catalogSource={track.catalogSource}
+                    streamProvider={track.streamProvider}
+                    compact={!!track.album}
+                  />
                 </span>
 
                 <div className="row-actions">

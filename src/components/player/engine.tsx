@@ -1,12 +1,23 @@
 import { useEffect, useRef } from 'react';
 import { useApp, currentTrack, cleanError, upcomingIndex } from '../../stores/app';
-import type { Track } from '../../../shared/types';
-import { preparePlayback, invalidatePlayback } from '../../lib/playback';
+import { resolveNotificationMode, type Track } from '../../../shared/types';
+import {
+  preparePlayback,
+  invalidatePlayback,
+  needsStreamSyncStatus,
+  TrackNotificationController,
+} from '../../lib/playback';
 import { nativeResource } from '../../lib/native';
 import { AudioGraph, transitionSeconds } from '../../lib/audioGraph';
 import { coverURL } from '../glass/Cover';
 
-type Driver = { play(): void; pause(): void; seek(n: number): void; volume(n: number): void };
+type Driver = {
+  play(): void;
+  pause(): void;
+  seek(n: number): void;
+  volume(n: number): void;
+  rate?(r: number): void;
+};
 let driver: Driver | undefined;
 
 export const transport = {
@@ -17,6 +28,7 @@ export const transport = {
   pause: () => driver?.pause(),
   seek: (n: number) => driver?.seek(n),
   volume: (n: number) => driver?.volume(n),
+  rate: (r: number) => driver?.rate?.(Math.min(1.05, Math.max(0.95, Number.isFinite(r) ? r : 1))),
 };
 
 function upcomingTrack(): Track | undefined {
@@ -33,7 +45,17 @@ export function PlayerEngine() {
     graph = useRef<AudioGraph | undefined>(undefined),
     retire = useRef<ReturnType<typeof setTimeout> | undefined>(undefined),
     outgoingDeck = useRef<HTMLAudioElement | undefined>(undefined),
-    staged = useRef<{ id: string; url: string; duration: number } | undefined>(undefined);
+    staged = useRef<{ id: string; url: string; duration: number } | undefined>(undefined),
+    notifier = useRef<TrackNotificationController | undefined>(undefined);
+
+  if (!notifier.current) {
+    notifier.current = new TrackNotificationController(payload => window.glass?.notify(payload));
+  }
+
+  const isAppWindowFocused = () =>
+    typeof document !== 'undefined' &&
+    document.visibilityState === 'visible' &&
+    document.hasFocus();
 
   const track = useApp(s => s.queue[s.index]),
     revision = useApp(s => s.revision),
@@ -113,6 +135,7 @@ export function PlayerEngine() {
       started = false,
       fadingOut = false,
       pausedDuringPreparation = false,
+      retriedStreamFallback = false,
       frameOrigin = '',
       resolvedTrack = track;
     let preparation: ReturnType<typeof preparePlayback> | undefined;
@@ -129,6 +152,21 @@ export function PlayerEngine() {
 
     frame.src = 'about:blank';
     driver = undefined;
+
+    notifier.current?.onTrackChange(
+      track ? { id: track.id, title: track.title, artist: track.artist } : null,
+    );
+    if (track) {
+      void window.glass
+        .updateMediaMetadata?.({
+          id: track.id,
+          title: track.title,
+          artist: track.artist,
+          album: track.album,
+          playing: false,
+        })
+        .catch(() => {});
+    }
 
     const update = (state: Partial<ReturnType<typeof useApp.getState>>) => {
       if (!cancelled && generation === activeGeneration.current) useApp.setState(state);
@@ -196,21 +234,70 @@ export function PlayerEngine() {
         } else stopOutgoing();
       }
       update({ playing: true, status: 'Reproduzindo', error: '' });
+      if ('mediaSession' in navigator) {
+        try {
+          navigator.mediaSession.playbackState = 'playing';
+        } catch {}
+      }
+      const activeMeta = resolvedTrack || track;
+      if (activeMeta) {
+        notifier.current?.onTrackChange({
+          id: activeMeta.id,
+          title: activeMeta.title,
+          artist: activeMeta.artist,
+        });
+        void window.glass
+          .updateMediaMetadata?.({
+            id: activeMeta.id,
+            title: activeMeta.title,
+            artist: activeMeta.artist,
+            album: activeMeta.album,
+            playing: true,
+          })
+          .catch(() => {});
+        notifier.current?.onPlaybackUpdate({
+          isPlaying: true,
+          currentTime: el.currentTime || 0,
+          mode: resolveNotificationMode(useApp.getState().data.preferences),
+          isFocused: isAppWindowFocused(),
+        });
+      }
       if (!recorded && resolvedTrack) {
         recorded = true;
         void useApp
           .getState()
           .mutate({ action: 'history', track: resolvedTrack })
           .catch(() => {});
-        void window.glass.notify({
-          title: resolvedTrack.title,
-          artist: resolvedTrack.artist,
-        });
       }
     };
 
     const onPause = () => {
-      if (!cancelled && !advanced) update({ playing: false, status: 'Pausado' });
+      if (!cancelled && !advanced) {
+        update({ playing: false, status: 'Pausado' });
+        if ('mediaSession' in navigator) {
+          try {
+            navigator.mediaSession.playbackState = 'paused';
+          } catch {}
+        }
+        const activeMeta = resolvedTrack || track;
+        if (activeMeta) {
+          void window.glass
+            .updateMediaMetadata?.({
+              id: activeMeta.id,
+              title: activeMeta.title,
+              artist: activeMeta.artist,
+              album: activeMeta.album,
+              playing: false,
+            })
+            .catch(() => {});
+        }
+        notifier.current?.onPlaybackUpdate({
+          isPlaying: false,
+          currentTime: el.currentTime || 0,
+          mode: resolveNotificationMode(useApp.getState().data.preferences),
+          isFocused: isAppWindowFocused(),
+        });
+      }
     };
     const onSeeked = () => {
       fadingOut = false;
@@ -219,6 +306,12 @@ export function PlayerEngine() {
     const onTime = () => {
       const duration = Number.isFinite(el.duration) ? el.duration : track?.duration || 0;
       update({ position: el.currentTime, duration });
+      notifier.current?.onPlaybackUpdate({
+        isPlaying: !el.paused,
+        currentTime: el.currentTime,
+        mode: resolveNotificationMode(useApp.getState().data.preferences),
+        isFocused: isAppWindowFocused(),
+      });
       if ('mediaSession' in navigator && duration > 0 && el.currentTime <= duration) {
         try {
           navigator.mediaSession.setPositionState({
@@ -261,12 +354,51 @@ export function PlayerEngine() {
     };
     const onError = () => {
       if (track) invalidatePlayback(track.id);
-      if (el.hasAttribute('src'))
-        fail(
-          track?.source !== 'local'
-            ? 'O áudio não pôde ser carregado. Tente reproduzir novamente.'
-            : 'Não foi possível abrir o arquivo de áudio.',
-        );
+      if (!el.hasAttribute('src')) return;
+      // Transparent re-resolution if a cached stream URL expired or was blocked
+      if (
+        track &&
+        track.source !== 'local' &&
+        consent &&
+        !retriedStreamFallback &&
+        !cancelled
+      ) {
+        retriedStreamFallback = true;
+        const failedId =
+          resolvedTrack?.resolvedExternalId ||
+          resolvedTrack?.playbackId ||
+          track.resolvedExternalId ||
+          track.playbackId;
+        update({ status: 'Sincronizando fonte de áudio...', error: '' });
+        preparation?.release();
+        preparation = preparePlayback(track, true, {
+          forceRefresh: true,
+          excludeIds: failedId ? [failedId] : [],
+        });
+        void preparation.promise
+          .then(({ track: rematched, source }) => {
+            if (cancelled) return;
+            resolvedTrack = rematched;
+            useApp.getState().applyResolvedTrack(rematched, false);
+            update({ duration: source.duration || rematched.duration });
+            el.src = source.url;
+            if (!pausedDuringPreparation) {
+              setupGraph();
+              void el.play().catch(() =>
+                fail('O áudio não pôde ser carregado. Tente reproduzir novamente.'),
+              );
+            }
+          })
+          .catch(() =>
+            fail('O áudio não pôde ser carregado. Tente reproduzir novamente.'),
+          );
+        return;
+      }
+      fail(
+        track?.source !== 'local'
+          ? 'O áudio não pôde ser carregado. Tente reproduzir novamente.'
+          : 'Não foi possível abrir o arquivo de áudio.',
+      );
     };
     const message = (e: MessageEvent) => {
       if (
@@ -282,8 +414,15 @@ export function PlayerEngine() {
       if (d.type === 'ended') onEnded();
       if (d.type === 'buffering') update({ status: 'Carregando' });
       if (d.type === 'ready') driver?.volume(useApp.getState().data.preferences.volume);
-      if (d.type === 'time' && Number.isFinite(d.position) && Number.isFinite(d.duration))
+      if (d.type === 'time' && Number.isFinite(d.position) && Number.isFinite(d.duration)) {
         update({ position: Math.max(0, d.position), duration: Math.max(0, d.duration) });
+        notifier.current?.onPlaybackUpdate({
+          isPlaying: useApp.getState().playing,
+          currentTime: Math.max(0, d.position),
+          mode: resolveNotificationMode(useApp.getState().data.preferences),
+          isFocused: isAppWindowFocused(),
+        });
+      }
       if (d.type === 'error' || d.type === 'blocked') {
         // Rescue restricted SoundCloud tracks via native audio stream!
         if (track && consent && !cancelled) {
@@ -373,6 +512,9 @@ export function PlayerEngine() {
                 .configure({ ...useApp.getState().data.preferences, volume: n })
                 .catch(() => {});
           },
+          rate: r => {
+            el.playbackRate = r;
+          },
         };
 
         const wasPreStaged =
@@ -395,21 +537,26 @@ export function PlayerEngine() {
           el.pause();
           el.removeAttribute('src');
           el.load();
+          if (needsStreamSyncStatus(track) && !outgoing) {
+            update({ status: 'Sincronizando fonte de áudio...' });
+          }
           preparation = preparePlayback(track);
           void preparation.promise
             .then(({ track: matched, source }) => {
               if (cancelled) return;
               resolvedTrack = matched;
-              if (track.source === 'link' && track.playbackId !== matched.playbackId) {
-                update({
-                  queue: useApp
+              if (
+                matched.streamProvider !== track.streamProvider ||
+                matched.resolvedExternalId !== track.resolvedExternalId ||
+                matched.playbackId !== track.playbackId
+              ) {
+                useApp.getState().applyResolvedTrack(matched, false);
+                if (useApp.getState().data.tracks.some(t => t.id === matched.id)) {
+                  void useApp
                     .getState()
-                    .queue.map(t => (t.id === matched.id ? matched : t)),
-                });
-                void useApp
-                  .getState()
-                  .mutate({ action: 'save', track: matched })
-                  .catch(() => {});
+                    .mutate({ action: 'save', track: matched })
+                    .catch(() => {});
+                }
               }
               update({ duration: source.duration || track.duration });
               el.src = source.url;
@@ -518,14 +665,18 @@ export function PlayerEngine() {
             duration: source.duration || matched.duration,
           };
           stageStandby();
-          if (next.source === 'link' && next.playbackId !== matched.playbackId) {
-            useApp.setState(s => ({
-              queue: s.queue.map(t => (t.id === matched.id ? matched : t)),
-            }));
-            void useApp
-              .getState()
-              .mutate({ action: 'save', track: matched })
-              .catch(() => {});
+          if (
+            next.streamProvider !== matched.streamProvider ||
+            next.resolvedExternalId !== matched.resolvedExternalId ||
+            next.playbackId !== matched.playbackId
+          ) {
+            useApp.getState().applyResolvedTrack(matched, false);
+            if (useApp.getState().data.tracks.some(t => t.id === matched.id)) {
+              void useApp
+                .getState()
+                .mutate({ action: 'save', track: matched })
+                .catch(() => {});
+            }
           }
         })
         .catch(() => {});
@@ -556,6 +707,7 @@ export function PlayerEngine() {
   useEffect(
     () => () => {
       clearTimeout(retire.current);
+      notifier.current?.dispose();
       elements().forEach(el => el?.pause());
       void graph.current?.close();
       graph.current = undefined;
@@ -597,7 +749,7 @@ export function PlayerEngine() {
     navigator.mediaSession.metadata = new MediaMetadata({
       title: track.title,
       artist: track.artist,
-      album: track.album || 'Glass Music',
+      album: track.album || 'Liquid Hub',
       artwork: art ? [{ src: art, sizes: '512x512' }] : undefined,
     });
     const actions: [MediaSessionAction, MediaSessionActionHandler][] = [

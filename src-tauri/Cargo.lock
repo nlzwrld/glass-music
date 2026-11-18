@@ -1535,36 +1535,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "glass-music"
-version = "2.2.0"
-dependencies = [
- "base64 0.22.1",
- "lofty",
- "reqwest",
- "rfd",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-notification",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "tauri-plugin-updater",
- "tiny_http",
- "tokio",
- "tokio-util",
- "url",
- "uuid",
- "windows",
- "windows-numerics",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "glib"
 version = "0.18.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2395,6 +2365,37 @@ name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
+
+[[package]]
+name = "liquid-hub"
+version = "2.2.0"
+dependencies = [
+ "base64 0.22.1",
+ "lofty",
+ "reqwest",
+ "rfd",
+ "ring",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-notification",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-updater",
+ "tiny_http",
+ "tokio",
+ "tokio-util",
+ "url",
+ "uuid",
+ "windows",
+ "windows-numerics",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "litemap"

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import Appearance from '../components/glass/Appearance';
 import { useApp, cleanError } from '../stores/app';
+import { resolveNotificationMode, type NotificationMode } from '../../shared/types';
 import AccountConnections from '../components/library/AccountConnections';
 import { Toggle } from '../components/glass/controls';
 import { audioOutputDevices, requestAudioOutput } from '../lib/audioGraph';
@@ -276,11 +277,27 @@ export default function Settings() {
           checked={p.globalShortcuts}
           onChange={v => void pref({ globalShortcuts: v })}
         />
-        <Toggle
-          label="Notificações"
-          checked={p.notifications}
-          onChange={v => void pref({ notifications: v })}
-        />
+        <label className="setting-row">
+          <span>
+            <strong>Notificações ao trocar de faixa</strong>
+            <small>Controles de mídia do sistema continuam ativos em tempo real</small>
+          </span>
+          <select
+            aria-label="Notificações ao trocar de faixa"
+            value={resolveNotificationMode(p)}
+            onChange={e => {
+              const mode = e.target.value as NotificationMode;
+              void pref({
+                notificationMode: mode,
+                notifications: mode !== 'off',
+              });
+            }}
+          >
+            <option value="off">Desativado (Silencioso)</option>
+            <option value="background">Apenas em segundo plano (Sem spam)</option>
+            <option value="always">Sempre</option>
+          </select>
+        </label>
         <Toggle
           label="Atualizar automaticamente"
           checked={p.autoUpdate}

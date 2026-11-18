@@ -1,13 +1,13 @@
-name: Build and publish Glass Music
+name: Build and publish Liquid Hub
 on:
   push:
     branches: [main]
-    paths-ignore: ['**/*.md']
+    paths-ignore: ['README.md', 'docs/**/*.md', 'deploy/**/*.md']
   workflow_dispatch:
 permissions:
   contents: write
 concurrency:
-  group: glass-release
+  group: liquid-hub-release
   cancel-in-progress: false
 jobs:
   release:
@@ -23,6 +23,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Provision verified catalog binaries
+        run: node scripts/configure-catalog.mjs --ensure-binaries
       - name: Prepare release version and channel
         run: node scripts/prepare-release.mjs
       - name: Validate
@@ -40,4 +42,4 @@ jobs:
           node scripts/update-manifest.mjs
           $version = (Get-Content package.json | ConvertFrom-Json).version
           $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
-          gh release create "v$version" $setup.FullName "$($setup.FullName).sig" latest.json --title "Glass Music $version" --generate-notes --latest
+          gh release create "v$version" $setup.FullName "$($setup.FullName).sig" latest.json --title "Liquid Hub $version" --notes-file release-notes.md --latest

@@ -46,7 +46,11 @@ pub async fn resolve(raw:&str)->Result<Value> {
     let parts:Vec<_>=u.path_segments().into_iter().flatten().filter(|p|!p.is_empty()).map(str::to_string).collect();
     let mut title=parts.last().map(|v|v.replace('-'," ")).unwrap_or_else(||host.clone());
     let mut artist=host.trim_start_matches("www.").to_string();let mut artwork=String::new();let mut duration=0.0;let mut kind="track";
+    let mut album = String::new();
+    let mut isrc = String::new();
+    let mut catalog_source = "";
     if host=="open.spotify.com" {
+        catalog_source = "spotify";
         let index=parts.iter().position(|v|["track","album","playlist","artist","episode","show"].contains(&v.as_str())).ok_or("Use o link completo compartilhado pelo Spotify.")?;
         let entity=parts.get(index+1).ok_or("Link do Spotify incompleto.")?;
         if entity.len()!=22 || !entity.bytes().all(|b|b.is_ascii_alphanumeric()){return Err("Link do Spotify inválido.".into());}
@@ -54,10 +58,38 @@ pub async fn resolve(raw:&str)->Result<Value> {
         title=s(&data,"title").to_string();artist="Spotify".into();artwork=s(&data,"thumbnail_url").to_string();
         kind=match parts[index].as_str(){"playlist"=>"playlist","album"=>"album","artist"=>"artist",_=>"track"};
         if parts[index]=="track"{if let Ok(meta)=spotify_entity("track",entity).await{
-            if let Some(name)=meta["artists"].as_array().and_then(|a|a.first()).and_then(|a|a["name"].as_str()){artist=name.to_string();}
-            duration=meta["duration"].as_f64().unwrap_or(0.0)/1000.0;
+            let joined_artists = meta["artists"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|a| a["name"].as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            if !joined_artists.is_empty() {
+                artist = joined_artists;
+            }
+            if let Some(alb) = meta
+                .pointer("/albumOfTrack/name")
+                .and_then(Value::as_str)
+                .or_else(|| meta.pointer("/album/name").and_then(Value::as_str))
+            {
+                album = alb.trim().to_string();
+            }
+            if let Some(code) = meta
+                .pointer("/external_ids/isrc")
+                .and_then(Value::as_str)
+                .or_else(|| meta.pointer("/externalIds/isrc").and_then(Value::as_str))
+            {
+                if (12..=15).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+                    isrc = code.to_uppercase();
+                }
+            }
+            duration=meta["duration"].as_f64().or(meta["duration_ms"].as_f64()).unwrap_or(0.0)/1000.0;
         }}
     } else if host=="deezer.com" || host=="www.deezer.com" {
+        catalog_source = "deezer";
         let index=parts.iter().position(|v|["track","album","playlist","artist"].contains(&v.as_str())).ok_or("Use o link completo de música, álbum ou playlist do Deezer.")?;
         let id=parts.get(index+1).ok_or("Link Deezer incompleto.")?;
         if id.len()>25||!id.bytes().all(|b|b.is_ascii_digit()){return Err("Link Deezer inválido.".into());}
@@ -65,11 +97,20 @@ pub async fn resolve(raw:&str)->Result<Value> {
         if data.get("error").is_some(){return Err("Conteúdo do Deezer não encontrado.".into());}
         title=data["title"].as_str().or(data["name"].as_str()).unwrap_or("Deezer").to_string();
         artist=data["artist"]["name"].as_str().or(data["creator"]["name"].as_str()).unwrap_or("Deezer").to_string();
+        album=data["album"]["title"].as_str().unwrap_or("").trim().to_string();
+        if let Some(code) = data["isrc"].as_str() {
+            if (12..=15).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+                isrc = code.to_uppercase();
+            }
+        }
         artwork=data["album"]["cover_big"].as_str().or(data["album"]["cover_medium"].as_str()).or(data["cover_big"].as_str()).or(data["cover_medium"].as_str()).or(data["picture_big"].as_str()).or(data["picture_medium"].as_str()).unwrap_or("").to_string();
         duration=data["duration"].as_f64().unwrap_or(0.0).min(604800.0);kind=match parts[index].as_str(){"playlist"=>"playlist","album"=>"album","artist"=>"artist",_=>"track"};u.set_query(None);
     }
     let canonical=u.to_string();let id=format!("{:x}",Sha256::digest(canonical.as_bytes()))[..32].to_string();
-    let mut track=json!({"id":format!("link:{id}"),"source":"link","sourceId":id,"kind":kind,"title":title,"artist":artist,"duration":duration,"url":canonical,"addedAt":now()});
+    let mut track=json!({"id":format!("link:{id}"),"source":"link","sourceId":id,"kind":kind,"title":title,"artist":artist,"duration":duration,"durationMs":(duration * 1000.0).round(),"url":canonical,"addedAt":now()});
+    if !catalog_source.is_empty() { track["catalogSource"] = json!(catalog_source); }
+    if !album.is_empty() { track["album"] = json!(album); }
+    if !isrc.is_empty() { track["isrc"] = json!(isrc); }
     if db::artwork_url(&artwork){track["artwork"]=json!(artwork);}
     db::validate_track(&track)?;Ok(track)
 }
@@ -183,7 +224,7 @@ pub async fn find_playable_youtube_id(
     Ok((ranked[0].1.clone(),None))
 }
 pub async fn playback(mut track:Value,catalog:&str,direct:&crate::direct_catalog::DirectCatalog)->Result<Value>{
-    db::validate_track(&track)?;if track["source"]!="link"||track["kind"]!="track"{return Err("Use o link de uma faixa para tocar no Glass.".into());}
+    db::validate_track(&track)?;if track["source"]!="link"||track["kind"]!="track"{return Err("Use o link de uma faixa para tocar no Liquid Hub.".into());}
     if let Some(existing)=track["playbackId"].as_str(){
         if catalog.is_empty() && direct.available() {
             if direct.audio(existing).await.is_ok(){return Ok(track);}

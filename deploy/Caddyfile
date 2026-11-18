@@ -1,10 +1,36 @@
-{$CATALOG_DOMAIN} {
-    encode zstd gzip
-    reverse_proxy catalog:8788 {
-        header_up X-Glass-Client-IP {remote_host}
-    }
+(security_headers) {
     header {
-        X-Content-Type-Options nosniff
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        Content-Security-Policy "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "no-referrer"
+        Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+        Cross-Origin-Opener-Policy "same-origin"
+        Cross-Origin-Resource-Policy "same-origin"
         -Server
     }
+}
+
+{$CATALOG_DOMAIN} {
+    encode zstd gzip
+    request_body {
+        max_size 16KB
+    }
+    reverse_proxy catalog:8788 {
+        header_up X-Liquid-Client-IP {remote_host}
+        header_up X-Glass-Client-IP {remote_host}
+    }
+    import security_headers
+}
+
+{$JAM_DOMAIN:jam.localhost} {
+    encode zstd gzip
+    request_body {
+        max_size 16KB
+    }
+    reverse_proxy jam:8789 {
+        header_up X-Liquid-Client-IP {remote_host}
+    }
+    import security_headers
 }

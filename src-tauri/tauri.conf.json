@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Glass Music",
+  "productName": "Liquid Hub",
   "version": "2.2.0",
-  "identifier": "com.glassmusic.desktop",
+  "identifier": "com.nlzwrld.liquidhub",
   "build": {
     "beforeDevCommand": "node node_modules/vite/bin/vite.js --host 127.0.0.1",
     "devUrl": "http://127.0.0.1:5173",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Glass Music",
+        "title": "Liquid Hub",
         "width": 1360,
         "height": 860,
         "minWidth": 920,
@@ -41,7 +41,7 @@
       "nsis"
     ],
     "category": "Music",
-    "shortDescription": "Sua m\u00fasica, em outra atmosfera.",
+    "shortDescription": "Hub centralizado de m\u00fasicas, cat\u00e1logos e sess\u00f5es ao vivo.",
     "icon": [
       "../assets/icon.ico",
       "../assets/icon.png"

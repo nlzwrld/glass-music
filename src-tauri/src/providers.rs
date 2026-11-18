@@ -26,7 +26,7 @@ pub fn client() -> reqwest::Client {
         .connect_timeout(Duration::from_secs(6))
         .timeout(Duration::from_secs(18))
         .redirect(reqwest::redirect::Policy::none())
-        .user_agent("GlassMusic/1.0")
+        .user_agent("LiquidHub/2.2")
         .build()
         .expect("http client")).clone()
 }
@@ -115,7 +115,7 @@ pub fn validate_search(r: &Value) -> Result<()> {
     if s(r, "query").trim().is_empty()
         || s(r, "query").len() > 800
         || !db::valid_id(s(r, "requestId"))
-        || !["all", "local", "youtube", "soundcloud", "deezer", "apple"].contains(&s(r, "source"))
+        || !["all", "local", "youtube", "ytmusic", "soundcloud", "deezer", "apple", "spotify"].contains(&s(r, "source"))
         || !["all", "track", "artist", "playlist", "album", "lyrics"].contains(&s(r, "kind"))
         || r.to_string().len() > 6000
     {
@@ -149,7 +149,9 @@ pub async fn search(r: &Value, local: Vec<Value>, consent: bool, catalog: &str, 
     }
     let (yt, dz, ap, sc) = tokio::join!(
         async {
-            if consent && ["all", "youtube"].contains(&source) && kind != "album" {
+            if consent && source == "ytmusic" && kind != "album" {
+                Some(direct.ytmusic_search(s(r, "query")).await)
+            } else if consent && ["all", "youtube"].contains(&source) && kind != "album" {
                 Some(if !catalog.is_empty() { crate::catalog::search(catalog, "youtube", r).await } else { direct.search("youtube", r).await })
             } else {
                 None

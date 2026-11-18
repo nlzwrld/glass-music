@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 await mkdir('../../work/profiles',{recursive:true});
 const profile=await mkdtemp(resolve('../../work/profiles/providers-'));
-const processHandle=spawn(process.env.GLASS_EXE || resolve('src-tauri/target/debug/glass-music.exe'),[],{env:{...process.env,GLASS_TEST_DATA:profile,WEBVIEW2_USER_DATA_FOLDER:join(profile,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9337'},windowsHide:true});
+const processHandle=spawn(process.env.GLASS_EXE || resolve('src-tauri/target/debug/liquid-hub.exe'),[],{env:{...process.env,GLASS_TEST_DATA:profile,WEBVIEW2_USER_DATA_FOLDER:join(profile,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9337'},windowsHide:true});
 let app;const diagnostics=[];const result={testedAt:new Date().toISOString(),runtime:'Tauri + WebView2',providers:[],diagnostics};
 try {
   for(let i=0;i<90;i++){try{if((await fetch('http://127.0.0.1:9337/json/version')).ok)break;}catch{}await new Promise(r=>setTimeout(r,300));}

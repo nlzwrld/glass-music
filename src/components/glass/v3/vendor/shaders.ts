@@ -84,6 +84,7 @@ uniform float u_ior;
 uniform float u_fresnel;
 uniform float u_edge;
 uniform float u_cursor;
+uniform float u_bass;
 
 float sdRoundedBox(vec2 p, vec2 b, float r) {
   vec2 q = abs(p) - b + vec2(r);
@@ -185,13 +186,14 @@ void main() {
   // Inward depth from the rim, in canvas pixels.
   float depth = max(0.0, -d);
 
-  // Three-layer refraction profile.
+  // Three-layer refraction profile with subtle audio-reactive bass modulation.
   float edge = exp(-depth * u_edgeDistance);
   float rim  = exp(-depth * u_rimDistance);
   float base = 1.0 - exp(-depth * u_baseDistance);
-  float refractAmt = edge * u_refraction
+  float bassGain = 1.0 + clamp(u_bass, 0.0, 1.0) * 0.22;
+  float refractAmt = (edge * u_refraction
                    + rim  * u_rimIntensity
-                   + base * u_baseIntensity;
+                   + base * u_baseIntensity) * bassGain;
 
   float scale = min(u_rect.z, u_rect.w);
   vec2 uvOffset = -normal * refractAmt * scale / u_canvasSize;
@@ -200,14 +202,15 @@ void main() {
   if (u_cornerBoost > 0.001) {
     vec2 toCorner = abs(v_local) - (halfSize - vec2(r));
     float cornerProx = length(max(toCorner, vec2(0.0)));
-    float boost = exp(-cornerProx * 0.15) * u_cornerBoost;
+    float boost = exp(-cornerProx * 0.15) * u_cornerBoost * bassGain;
     uvOffset += -normal * boost * scale / u_canvasSize;
   }
 
-  // Tangential ripple along the rim.
-  if (u_ripple > 0.001) {
+  // Tangential ripple along the rim (modulated gently by low-end audio energy).
+  float effectiveRipple = u_ripple + clamp(u_bass, 0.0, 1.0) * 0.0085;
+  if (effectiveRipple > 0.001) {
     vec2 perp = vec2(-normal.y, normal.x);
-    float ripple = sin(depth * 0.4) * rim * u_ripple;
+    float ripple = sin(depth * 0.4) * rim * effectiveRipple;
     uvOffset += perp * ripple * scale / u_canvasSize;
   }
 
@@ -257,11 +260,11 @@ void main() {
     vec2 lightAnchor = clamp(vec2(0.5) + u_lightDir * 0.38, vec2(0.08), vec2(0.92));
     vec2 fromLight = v_norm - lightAnchor;
     float focus = 0.18 + 0.82 * exp(-dot(fromLight,fromLight) * 5.0);
-    float glow = pow(ndl, 3.5) * rimBand * u_specular * focus;
+    float glow = pow(ndl, 3.5) * rimBand * u_specular * focus * (1.0 + clamp(u_bass, 0.0, 1.0) * 0.28);
     col += vec3(glow) * 0.78;
 
     // Delicate inner meniscus sheen — subtle physical glass thickness, never a white outline.
-    float sheen = exp(-depth * 0.32) * rim * 0.095 * u_specular;
+    float sheen = exp(-depth * 0.32) * rim * 0.095 * u_specular * (1.0 + clamp(u_bass, 0.0, 1.0) * 0.20);
     col += vec3(sheen);
     col *= 1.0 - rim * max(0.0, v_norm.y - 0.5) * 0.03 * clamp(u_specular, 0.0, 1.0);
   }

@@ -5,9 +5,14 @@ import { canPlay, type Track } from '../../../shared/types';
 import { useApp } from '../../stores/app';
 import Cover from '../glass/Cover';
 import { GlassCard, GlassContextMenu } from '../glass/materials';
-import { SourceBadge } from '../glass/controls';
+import { OfflineIndicator, SourceBadge } from '../glass/controls';
 
 export default function TrackCard({ track, list }: { track: Track; list?: Track[] }) {
+  const downloading = useApp(s => s.downloadingIds.includes(track.id));
+  const savedOffline = useApp(
+    s => Boolean(track.offline || s.data.tracks.find(t => t.id === track.id)?.offline),
+  );
+
   return (
     <GlassCard data-track-item className="track-card" tabIndex={0}>
       <div className="card-art">
@@ -47,7 +52,16 @@ export default function TrackCard({ track, list }: { track: Track; list?: Track[
           <h3>{track.title}</h3>
           <p>{track.artist}</p>
         </div>
-        <SourceBadge source={track.source} url={track.url} compact />
+        <span className="card-badges">
+          <OfflineIndicator offline={savedOffline} downloading={downloading} />
+          <SourceBadge
+            source={track.source}
+            url={track.url}
+            catalogSource={track.catalogSource}
+            streamProvider={track.streamProvider}
+            compact
+          />
+        </span>
       </div>
     </GlassCard>
   );

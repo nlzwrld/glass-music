@@ -156,10 +156,10 @@ impl AudioStreams {
         let stream = Stream {
             url: url.to_string(),
             agent,
-            mime: if s(data, "ext") == "m4a" {
-                "audio/mp4"
-            } else {
-                "audio/webm"
+            mime: match s(data, "ext") {
+                "m4a" => "audio/mp4",
+                "mp3" => "audio/mpeg",
+                _ => "audio/webm",
             }
             .into(),
             expires,
@@ -298,14 +298,23 @@ impl AudioStreams {
 
 pub fn valid_cdn(raw: &str) -> bool {
     url::Url::parse(raw).is_ok_and(|u| {
-        u.scheme() == "https"
-            && u.username().is_empty()
-            && u.password().is_none()
-            && u.port().is_none()
-            && u.host_str()
-                .is_some_and(|host| host.ends_with(".googlevideo.com"))
-            && u.path() == "/videoplayback"
-            && raw.len() < 16000
+        if u.scheme() != "https"
+            || !u.username().is_empty()
+            || u.password().is_some()
+            || u.port().is_some()
+            || raw.len() >= 16000
+        {
+            return false;
+        }
+        let Some(host) = u.host_str() else {
+            return false;
+        };
+        let is_youtube_cdn = host.ends_with(".googlevideo.com") && u.path() == "/videoplayback";
+        let is_soundcloud_cdn = (host == "cf-media.sndcdn.com"
+            || host == "playback.media-streaming.soundcloud.cloud"
+            || (host.ends_with(".sndcdn.com") && host.len() > ".sndcdn.com".len()))
+            && (u.path().starts_with("/media/") || u.path().contains(".mp3") || u.path().contains(".m4a") || u.path().contains(".opus"));
+        is_youtube_cdn || is_soundcloud_cdn
     })
 }
 

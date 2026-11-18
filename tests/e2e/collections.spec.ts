@@ -5,7 +5,7 @@ import {join,resolve} from 'node:path';
 test('public playlists become real local collections; account setup is honest and imports stay inside Glass',async()=>{
  test.setTimeout(240000);await mkdir('../../work/profiles',{recursive:true});await mkdir('test-results',{recursive:true});
  const profile=await mkdtemp(resolve('../../work/profiles/collections-190-'));let browser:Browser|undefined;const errors:string[]=[];
- const proc=spawn(process.env.GLASS_EXE||join(process.env.LOCALAPPDATA!,'Glass Music/glass-music.exe'),[],{windowsHide:true,env:{...process.env,GLASS_TEST_DATA:profile,GLASS_TEST_DISABLE_DIRECT:'0',GLASS_TEST_CATALOG_URL:'',WEBVIEW2_USER_DATA_FOLDER:join(profile,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9354'}});
+ const proc=spawn(process.env.GLASS_EXE||join(process.env.LOCALAPPDATA!,'Liquid Hub/liquid-hub.exe'),[],{windowsHide:true,env:{...process.env,GLASS_TEST_DATA:profile,GLASS_TEST_DISABLE_DIRECT:'0',GLASS_TEST_CATALOG_URL:'',WEBVIEW2_USER_DATA_FOLDER:join(profile,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9354'}});
  try{
   for(let i=0;i<90;i++){try{if((await fetch('http://127.0.0.1:9354/json/version')).ok)break;}catch{}await new Promise(r=>setTimeout(r,200));}
   browser=await chromium.connectOverCDP('http://127.0.0.1:9354');const page=browser.contexts()[0].pages()[0];page.on('pageerror',e=>errors.push(e.message));

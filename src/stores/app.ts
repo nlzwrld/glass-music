@@ -2,13 +2,23 @@ import { create } from 'zustand';
 import {
   canPlay,
   defaults,
+  isCatalogOnlyTrack,
   type Snapshot,
   type Preferences,
   type Track,
   type LibraryCommand,
   type IntegrationStatus,
   type CollectionPreview,
+  type LyricsResult,
 } from '../../shared/types';
+import { hasValidLyrics, resolveTrackLyrics } from '../lib/lyrics';
+
+function initialPlaybackStatus(track: Track): string {
+  if (!track.offline && isCatalogOnlyTrack(track) && !track.streamProvider && !track.playbackId) {
+    return 'Sincronizando fonte de áudio...';
+  }
+  return 'Carregando';
+}
 
 export type Page =
   | 'home'
@@ -26,6 +36,7 @@ type Dialog =
   | { type: 'playlist'; id?: string; name?: string; description?: string; artwork?: string }
   | { type: 'add'; track: Track; fromPlaylist?: string }
   | { type: 'link'; playlist?: boolean }
+  | { type: 'streamSource'; track: Track }
   | { type: 'confirm'; title: string; text: string; action: () => Promise<void> }
   | null;
 
@@ -54,6 +65,9 @@ interface State {
   status: string;
   error: string;
   lyricsOpen: boolean;
+  lyricsAvailable: boolean;
+  lyricsChecking: boolean;
+  currentLyrics: LyricsResult | null;
   expanded: boolean;
   queueOpen: boolean;
   mini: boolean;
@@ -73,6 +87,8 @@ interface State {
   openCollection(url: string, fallbackTitle?: string): Promise<void>;
   downloadTrack(track: Track): Promise<void>;
   downloadPlaylist(tracks: Track[]): Promise<void>;
+  probeLyrics(track?: Track | null): Promise<boolean>;
+  applyResolvedTrack(updated: Track, reloadIfActive?: boolean): void;
   play(t: Track, list?: Track[]): void;
   playNext(t: Track): void;
   jumpQueue(index: number): void;
@@ -172,6 +188,7 @@ export function upcomingIndex(
 let toastTimer: ReturnType<typeof setTimeout>;
 let preferenceWrites = Promise.resolve();
 let autoplayBusy = false;
+let lyricsProbeSeq = 0;
 
 export const useApp = create<State>((set, get) => ({
   searchBusy: false,
@@ -196,6 +213,9 @@ export const useApp = create<State>((set, get) => ({
   status: '',
   error: '',
   lyricsOpen: false,
+  lyricsAvailable: false,
+  lyricsChecking: false,
+  currentLyrics: null,
   expanded: false,
   queueOpen: false,
   mini: false,
@@ -282,8 +302,10 @@ export const useApp = create<State>((set, get) => ({
     preferenceWrites = preferenceWrites.catch(() => {}).then(async () => {
       try {
         await window.glass.preferences(next);
-        if (permissionChange)
+        if (permissionChange) {
           set({ data: { ...get().data, preferences: next }, ...shufflePatch });
+          void get().probeLyrics(get().queue[get().index] || null);
+        }
       } catch (e) {
         get().message(cleanError(e));
         const data = await window.glass.bootstrap();
@@ -404,6 +426,53 @@ export const useApp = create<State>((set, get) => ({
         : 'Não foi possível concluir o download offline.',
     );
   },
+  probeLyrics: async (incomingTrack = get().queue[get().index] || null) => {
+    const seq = ++lyricsProbeSeq;
+    const p = get().data.preferences;
+    const allowed = p.onlineConsent && p.onboardingDone;
+    if (!incomingTrack || !allowed || typeof window === 'undefined' || !window.glass?.lyrics) {
+      set({
+        lyricsAvailable: false,
+        lyricsChecking: false,
+        currentLyrics: null,
+        lyricsOpen: false,
+      });
+      if (typeof window !== 'undefined') void window.glass?.closeLyrics?.().catch(() => {});
+      return false;
+    }
+    set({ lyricsChecking: true });
+    try {
+      const result = await resolveTrackLyrics(incomingTrack, true);
+      if (seq !== lyricsProbeSeq) return get().lyricsAvailable;
+      const valid = hasValidLyrics(result);
+      if (valid) {
+        set({
+          lyricsAvailable: true,
+          lyricsChecking: false,
+          currentLyrics: result,
+        });
+        return true;
+      }
+      set({
+        lyricsAvailable: false,
+        lyricsChecking: false,
+        currentLyrics: null,
+        lyricsOpen: false,
+      });
+      void window.glass?.closeLyrics?.().catch(() => {});
+      return false;
+    } catch {
+      if (seq !== lyricsProbeSeq) return get().lyricsAvailable;
+      set({
+        lyricsAvailable: false,
+        lyricsChecking: false,
+        currentLyrics: null,
+        lyricsOpen: false,
+      });
+      void window.glass?.closeLyrics?.().catch(() => {});
+      return false;
+    }
+  },
   play: (incoming, list = [incoming]) => {
     const enrich = (t: Track) => {
       const saved = get().data.tracks.find(v => v.id === t.id);
@@ -419,7 +488,7 @@ export const useApp = create<State>((set, get) => ({
         void get().openCollection(track.url, track.title);
         return;
       }
-      get().message('Use o link de uma faixa para reproduzir no Glass.');
+      get().message('Use o link de uma faixa para reproduzir no Liquid Hub.');
       return;
     }
     if (track.available === false) {
@@ -436,6 +505,7 @@ export const useApp = create<State>((set, get) => ({
     const finalQueue = found >= 0 ? queue : [track];
     const finalIndex = found >= 0 ? found : 0;
     const prev = get();
+    const sameTrack = prev.queue[prev.index]?.id === track.id;
     const sameQueue =
       prev.status !== 'Fim da fila' &&
       prev.queue.length === finalQueue.length &&
@@ -458,8 +528,30 @@ export const useApp = create<State>((set, get) => ({
       position: 0,
       duration: track.duration,
       error: '',
-      status: 'Carregando',
+      status: initialPlaybackStatus(track),
       revision: prev.revision + 1,
+      ...(sameTrack ? {} : { lyricsAvailable: false, currentLyrics: null }),
+    });
+    void get().probeLyrics(track);
+  },
+  applyResolvedTrack: (updated, reloadIfActive = false) => {
+    set(s => {
+      const isActive = s.queue[s.index]?.id === updated.id;
+      return {
+        queue: s.queue.map(t => (t.id === updated.id ? { ...t, ...updated } : t)),
+        data: {
+          ...s.data,
+          tracks: s.data.tracks.map(t => (t.id === updated.id ? { ...t, ...updated } : t)),
+        },
+        ...(reloadIfActive && isActive
+          ? {
+              revision: s.revision + 1,
+              position: 0,
+              status: initialPlaybackStatus(updated),
+              error: '',
+            }
+          : {}),
+      };
     });
   },
   playNext: incoming => {
@@ -494,6 +586,7 @@ export const useApp = create<State>((set, get) => ({
     if (targetIndex < 0 || targetIndex >= s.queue.length) return;
     const target = s.queue[targetIndex];
     if (!target || target.available === false) return;
+    const sameTrack = s.queue[s.index]?.id === target.id;
     const step = s.data.preferences.shuffle
       ? computeShuffleStep(
           s.queue,
@@ -510,9 +603,11 @@ export const useApp = create<State>((set, get) => ({
       position: 0,
       duration: target.duration,
       error: '',
-      status: 'Carregando',
+      status: initialPlaybackStatus(target),
       revision: s.revision + 1,
+      ...(sameTrack ? {} : { lyricsAvailable: false, currentLyrics: null }),
     });
+    void get().probeLyrics(target);
   },
   next: (manual = true) => {
     const s = get();
@@ -544,6 +639,8 @@ export const useApp = create<State>((set, get) => ({
       set({ playing: false, autoAdvance: false, status: 'Fim da fila' });
       return;
     }
+    const nextTrack = s.queue[index]!;
+    const sameTrack = s.queue[s.index]?.id === nextTrack.id;
     const step = p.shuffle
       ? computeShuffleStep(
           s.queue,
@@ -559,11 +656,13 @@ export const useApp = create<State>((set, get) => ({
       autoAdvance: !manual,
       playing: !manual && s.playing,
       position: 0,
-      duration: s.queue[index].duration,
+      duration: nextTrack.duration,
       error: '',
-      status: !manual && s.playing ? 'Reproduzindo' : 'Carregando',
+      status: !manual && s.playing ? 'Reproduzindo' : initialPlaybackStatus(nextTrack),
       revision: s.revision + 1,
+      ...(sameTrack ? {} : { lyricsAvailable: false, currentLyrics: null }),
     });
+    void get().probeLyrics(nextTrack);
   },
   previous: () => {
     const s = get();
@@ -576,21 +675,27 @@ export const useApp = create<State>((set, get) => ({
       const prevPlayed = s.shufflePlayed.slice(0, -1);
       const prevIndex = prevPlayed[prevPlayed.length - 1]!;
       if (prevIndex >= 0 && prevIndex < s.queue.length) {
+        const prevTrack = s.queue[prevIndex]!;
         set({
           index: prevIndex,
           shufflePlayed: prevPlayed,
           shuffleNext: s.index,
           autoAdvance: false,
           position: 0,
-          duration: s.queue[prevIndex].duration,
+          duration: prevTrack.duration,
           playing: false,
           error: '',
           revision: s.revision + 1,
+          lyricsAvailable: false,
+          currentLyrics: null,
         });
+        void get().probeLyrics(prevTrack);
         return;
       }
     }
     const index = Math.max(0, s.index - 1);
+    const targetTrack = s.queue[index]!;
+    const sameTrack = s.queue[s.index]?.id === targetTrack.id;
     const step = s.data.preferences.shuffle
       ? computeShuffleStep(
           s.queue,
@@ -605,11 +710,13 @@ export const useApp = create<State>((set, get) => ({
       shuffleNext: step.next,
       autoAdvance: false,
       position: 0,
-      duration: s.queue[index].duration,
+      duration: targetTrack.duration,
       playing: false,
       error: '',
       revision: s.revision + 1,
+      ...(sameTrack ? {} : { lyricsAvailable: false, currentLyrics: null }),
     });
+    void get().probeLyrics(targetTrack);
   },
   enqueue: t => {
     if (!canPlay(t)) {
@@ -684,7 +791,7 @@ export const useApp = create<State>((set, get) => ({
       return;
     const nextQueue = [...s.queue];
     const [moved] = nextQueue.splice(from, 1);
-    nextQueue.splice(to, 0, moved);
+    nextQueue.splice(to, 0, moved!);
     const nextIndex = remapIndex(s.index, from, to);
     const remappedPlayed = s.shufflePlayed.map(idx => remapIndex(idx, from, to));
     const remappedNext =
@@ -701,7 +808,15 @@ export const useApp = create<State>((set, get) => ({
     if (!s.queue.length) return;
     const active = s.queue[s.index];
     if (!active) {
-      set({ queue: [], index: -1, shufflePlayed: [], shuffleNext: null });
+      set({
+        queue: [],
+        index: -1,
+        shufflePlayed: [],
+        shuffleNext: null,
+        lyricsAvailable: false,
+        currentLyrics: null,
+        lyricsOpen: false,
+      });
       return;
     }
     set({
@@ -789,6 +904,7 @@ export function cleanError(e: unknown): string {
     .replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
     .replace(/^Error: /, '');
 }
+
 export function looksLikeMusicLink(raw: string): boolean {
   const v = raw.trim();
   if (!v.startsWith('https://') || /\s/.test(v)) return false;
@@ -798,6 +914,7 @@ export function looksLikeMusicLink(raw: string): boolean {
     return false;
   }
 }
+
 export async function handleDirectLink(raw: string) {
   const url = raw.trim();
   const s = useApp.getState();
@@ -830,10 +947,12 @@ export async function handleDirectLink(raw: string) {
     useApp.setState({ searchBusy: false });
   }
 }
+
 export function currentTrack() {
   const s = useApp.getState();
   return s.queue[s.index];
 }
+
 export function formatTime(seconds: number) {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
   return `${Math.floor(seconds / 60)}:${Math.floor(seconds % 60)

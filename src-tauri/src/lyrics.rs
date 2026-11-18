@@ -20,7 +20,7 @@ fn metadata(track:&Value)->(String,String) {
 async fn request(endpoint:&str,query:&[(String,String)])->Result<Option<Value>> {
  if now()<*COOLDOWN.lock().unwrap(){return Err("Letras temporariamente indisponíveis. Tente mais tarde.".into());}
  let mut response=crate::providers::client().get(format!("https://lrclib.net/api/{endpoint}"))
-  .header("User-Agent",format!("Glass Music v{} (Windows desktop)",env!("CARGO_PKG_VERSION")))
+  .header("User-Agent",format!("Liquid Hub v{} (Windows desktop)",env!("CARGO_PKG_VERSION")))
   .timeout(Duration::from_secs(9)).query(query).send().await.map_err(|_|"Não foi possível carregar a letra.")?;
  if response.status().as_u16()==404{return Ok(None);}
  if [429,503].contains(&response.status().as_u16()){

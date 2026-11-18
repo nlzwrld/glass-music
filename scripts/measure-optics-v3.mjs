@@ -4,7 +4,7 @@ import { mkdir,mkdtemp,writeFile } from 'node:fs/promises';
 import { join,resolve } from 'node:path';
 await mkdir('../../work/profiles',{recursive:true});await mkdir('test-results',{recursive:true});
 const profile=await mkdtemp(resolve('../../work/profiles/optical-memory-'));
-const proc=spawn(join(process.env.LOCALAPPDATA,'Glass Music/glass-music.exe'),[],{windowsHide:true,env:{...process.env,GLASS_TEST_DATA:profile,GLASS_TEST_DISABLE_DIRECT:'1',WEBVIEW2_USER_DATA_FOLDER:join(profile,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9348'}});
+const proc=spawn(join(process.env.LOCALAPPDATA,'Liquid Hub/liquid-hub.exe'),[],{windowsHide:true,env:{...process.env,GLASS_TEST_DATA:profile,GLASS_TEST_DISABLE_DIRECT:'1',WEBVIEW2_USER_DATA_FOLDER:join(profile,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9348'}});
 let browser;
 try{
  for(let i=0;i<90;i++){try{if((await fetch('http://127.0.0.1:9348/json/version')).ok)break;}catch{}await new Promise(r=>setTimeout(r,200));}

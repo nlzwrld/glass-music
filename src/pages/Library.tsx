@@ -1,4 +1,4 @@
-import { preparePlayback } from '../lib/playback';
+import { preparePlayback, shufflePlay } from '../lib/playback';
 import { useState, useEffect, useMemo } from 'react';
 import { GlassContextMenu } from '../components/glass/materials';
 import { transport } from '../components/player/engine';
@@ -10,6 +10,7 @@ import {
   Pause,
   Download,
   Share2,
+  Shuffle,
 } from 'lucide-react';
 import { useApp } from '../stores/app';
 import PlaylistCover from '../components/library/PlaylistCover';
@@ -358,6 +359,19 @@ export default function Library() {
               <Play size={16} fill="currentColor" />
             )}
             <span>{activeHere && playing ? 'Pausar' : 'Reproduzir'}</span>
+          </button>
+
+          <button
+            type="button"
+            className="button secondary playlist-shuffle-play"
+            disabled={!tracks.length}
+            aria-label={
+              playlist ? 'Reproduzir playlist no aleatório' : 'Reproduzir coleção no aleatório'
+            }
+            onClick={() => shufflePlay(tracks)}
+          >
+            <Shuffle size={15} />
+            <span>Aleatório</span>
           </button>
 
           {playlist &&

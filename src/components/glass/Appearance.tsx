@@ -302,6 +302,11 @@ export default function Appearance() {
               </select>
             </label>
             <Toggle
+              label="Ótica reativa aos graves"
+              checked={s.audioReactive !== false}
+              onChange={audioReactive => setSettings({ audioReactive })}
+            />
+            <Toggle
               label="Modo de desempenho"
               checked={p.performance}
               onChange={performance => void pref({ performance })}

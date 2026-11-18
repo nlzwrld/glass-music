@@ -3,7 +3,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 await mkdir('../../work/profiles',{recursive:true});const profile=await mkdtemp(resolve('../../work/profiles/installed-'));
-const exe=join(process.env.LOCALAPPDATA,'Glass Music/glass-music.exe');const start=Date.now();
+const exe=join(process.env.LOCALAPPDATA,'Liquid Hub/liquid-hub.exe');const start=Date.now();
 const proc=spawn(exe,[],{env:{...process.env,GLASS_TEST_DATA:profile,WEBVIEW2_USER_DATA_FOLDER:join(profile,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9338'},windowsHide:true});
 let browser;
 try {

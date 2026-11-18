@@ -1,5 +1,5 @@
 /* ==========================================================================
-   GLASS MUSIC — MINIMALIST MATTE DESIGN SYSTEM
+   LIQUID HUB — MINIMALIST MATTE DESIGN SYSTEM
    References: Spicetify Sleek (Deep/Deeper), Spicetify Matte & Feishin.
    Default UI Style: Solid Matte, Compact Desktop Proportions, Zero AI Slop.
    Optional Alternative: Liquid Glass (html[data-ui-style='glass']) preserved.
@@ -1653,4 +1653,276 @@ html:not([data-ui-style='glass']) .update-banner .update-now-btn {
   height: 26px;
   padding: 0 11px;
   font-size: 12px;
+}
+
+/* --------------------------------------------------------------------------
+   8. LIQUID HUB INDICATORS, SHUFFLE PLAY, CONDITIONAL LYRICS & LIVE JAM
+   -------------------------------------------------------------------------- */
+
+.playlist-shuffle-play {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 14px;
+  font-weight: 550;
+}
+
+.col-quick-shuffle {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.tracklist-shuffle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--line);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.tracklist-shuffle-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* Conditional Lyrics Button Smooth Micro-Animation (Fade + Scale) */
+@keyframes liquidLyricsAppear {
+  from {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.lyrics-btn-presence {
+  display: inline-flex;
+  align-items: center;
+}
+
+html:not([data-motion='reduced']) .lyrics-btn-presence {
+  animation: liquidLyricsAppear 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.lyrics-header-actions,
+.expanded-header-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Offline Cache & Provider Badges */
+.card-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.track-subline,
+.now-subline {
+  display: flex !important;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.track-subline > span:last-child,
+.now-subline > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.offline-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: var(--accent, #52b79a);
+}
+
+.offline-indicator.downloading {
+  color: var(--muted);
+}
+
+/* Queue Button Count Dot */
+.queue-btn-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.queue-count-dot {
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 99px;
+  background: var(--accent, #52b79a);
+  color: #0e1412;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Live JAM Pulse & Listener Badges */
+@keyframes jamPulseGlow {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(1.22);
+  }
+}
+
+.jam-pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #52d69c;
+  flex: none;
+}
+
+html:not([data-motion='reduced']) .connected .jam-pulse-dot {
+  animation: jamPulseGlow 1.9s ease-in-out infinite;
+}
+
+.reconnecting .jam-pulse-dot {
+  background: #e0a54c;
+}
+
+.jam-live-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 6px 2px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(82, 183, 154, 0.1);
+  border: 1px solid rgba(82, 183, 154, 0.28);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.jam-live-pill:hover {
+  background: rgba(82, 183, 154, 0.16);
+}
+
+.jam-live-text {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jam-live-count {
+  padding: 1px 6px;
+  border-radius: 99px;
+  background: rgba(82, 183, 154, 0.22);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebar-collapsed .jam-live-pill {
+  justify-content: center;
+  padding: 6px;
+}
+
+.sidebar-collapsed .jam-live-text,
+.sidebar-collapsed .jam-pulse-dot {
+  display: none;
+}
+
+.jam-player-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 99px;
+  background: rgba(82, 183, 154, 0.12);
+  border: 1px solid rgba(82, 183, 154, 0.3);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.jam-player-badge:hover {
+  background: rgba(82, 183, 154, 0.2);
+}
+
+/* Zero-Trust Hub Login Form */
+.hub-auth-form {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  max-width: 440px;
+}
+
+/* Cross-Platform Dual Source Badge & Stream Source Picker */
+.source-badge.dual-source {
+  gap: 4px;
+  border-color: rgba(82, 183, 154, 0.28);
+}
+
+.source-badge.compact.dual-source {
+  width: auto;
+  padding: 0 5px;
+  gap: 3px;
+}
+
+.now-subline .source-badge.compact {
+  margin-left: 5px;
+  height: 18px;
+  vertical-align: middle;
+}
+
+.stream-candidates-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 4px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.stream-candidate-picker {
+  max-height: 310px;
+  overflow-y: auto;
+}
+
+.stream-candidate-picker button.selected {
+  border-color: rgba(82, 183, 154, 0.45);
+  background: rgba(82, 183, 154, 0.09);
 }

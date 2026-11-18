@@ -1,7 +1,7 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { Button } from '../ui/button';
 import { Switch } from '../ui/switch';
-import { AudioLines, Link2 } from 'lucide-react';
+import { CheckCircle2, HardDrive, Link2, LoaderCircle } from 'lucide-react';
 
 export type PlatformKind =
   | 'local'
@@ -29,14 +29,18 @@ export function detectPlatform(source: string, url?: string): PlatformKind {
     } catch {}
   }
   if (source === 'youtube') return 'youtube';
+  if (source === 'ytmusic') return 'ytmusic';
   if (source === 'soundcloud') return 'soundcloud';
+  if (source === 'spotify') return 'spotify';
   if (source === 'deezer') return 'deezer';
   if (source === 'apple') return 'apple';
+  if (source === 'bandcamp') return 'bandcamp';
+  if (source === 'tidal') return 'tidal';
   return 'link';
 }
 
 const platformLabels: Record<PlatformKind, string> = {
-  local: 'Local',
+  local: 'Arquivo local',
   youtube: 'YouTube',
   ytmusic: 'YT Music',
   soundcloud: 'SoundCloud',
@@ -169,28 +173,92 @@ export function PlatformIcon({ source, url }: { source: string; url?: string }) 
         />
       </svg>
     );
-  if (kind === 'link') return <Link2 className="platform-icon" size={17} />;
-  return <AudioLines className="platform-icon local-icon" size={19} />;
+  if (kind === 'link') return <Link2 className="platform-icon" size={14} />;
+  return <HardDrive className="platform-icon local-icon" size={14} />;
 }
 
 export function SourceBadge({
   source,
   url,
+  catalogSource,
+  streamProvider,
   compact = false,
 }: {
   source: string;
   url?: string;
+  catalogSource?: string;
+  streamProvider?: string;
   compact?: boolean;
 }) {
-  const kind = detectPlatform(source, url);
-  const label = platformLabels[kind];
+  const catalogKind = catalogSource
+    ? detectPlatform(catalogSource, url)
+    : detectPlatform(source, url);
+  const catalogLabel = platformLabels[catalogKind];
+
+  const streamKind =
+    streamProvider && streamProvider !== 'local'
+      ? detectPlatform(streamProvider)
+      : undefined;
+  const crossStream =
+    streamKind &&
+    streamKind !== catalogKind &&
+    !(catalogKind === 'youtube' && streamKind === 'ytmusic');
+  const streamLabel = crossStream ? platformLabels[streamKind] : undefined;
+
+  const tooltip = streamLabel
+    ? `Importado do ${catalogLabel} • Tocando via ${streamLabel}`
+    : catalogLabel;
+
   return (
     <span
-      className={`source-badge ${kind} ${compact ? 'compact' : ''}`}
-      title={kind === 'local' ? 'Arquivo local' : label}
+      className={`source-badge ${catalogKind} ${compact ? 'compact' : ''} ${crossStream ? 'dual-source' : ''}`}
+      data-provider-badge={catalogKind}
+      data-stream-badge={crossStream ? streamKind : undefined}
+      title={tooltip}
+      aria-label={tooltip}
     >
-      <PlatformIcon source={source} url={url} />
-      {!compact && label}
+      <PlatformIcon source={catalogSource || source} url={url} />
+      {crossStream && compact && (
+        <PlatformIcon source={streamProvider!} />
+      )}
+      {!compact && (
+        <span>
+          {catalogKind === 'local' ? 'Local' : catalogLabel}
+          {streamLabel ? ` • ${streamLabel}` : ''}
+        </span>
+      )}
+    </span>
+  );
+}
+
+export function OfflineIndicator({
+  offline,
+  downloading = false,
+}: {
+  offline?: boolean;
+  downloading?: boolean;
+}) {
+  if (downloading) {
+    return (
+      <span
+        className="offline-indicator downloading"
+        data-offline-state="downloading"
+        title="Baixando para ouvir offline…"
+        aria-label="Baixando para ouvir offline"
+      >
+        <LoaderCircle size={13} className="spinner" />
+      </span>
+    );
+  }
+  if (!offline) return null;
+  return (
+    <span
+      className="offline-indicator cached"
+      data-offline-state="cached"
+      title="Disponível offline"
+      aria-label="Disponível offline"
+    >
+      <CheckCircle2 size={13} />
     </span>
   );
 }

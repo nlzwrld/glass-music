@@ -1,3 +1,4 @@
+import { AnimatePresence, motion } from 'motion/react';
 import {
   Heart,
   Play,
@@ -19,13 +20,28 @@ import {
   PanelRightOpen,
   MicVocal,
   LoaderCircle,
+  Radio,
 } from 'lucide-react';
 import { useApp, formatTime, cleanError } from '../../stores/app';
+import { useJam } from '../jam/state';
 import { PlayerEngine, transport } from './engine';
 import Cover from '../glass/Cover';
-import { IconButton, SourceBadge } from '../glass/controls';
-import { GlassContextMenu, GlassMaterial, GlassPanel, GlassSlider, LiquidLens } from '../glass/materials';
+import { IconButton, OfflineIndicator, SourceBadge } from '../glass/controls';
+import {
+  GlassContextMenu,
+  GlassMaterial,
+  GlassPanel,
+  GlassSlider,
+  LiquidLens,
+} from '../glass/materials';
 import type { Track } from '../../../shared/types';
+
+export function shouldRenderLyricsButton(state: {
+  hasActive: boolean;
+  lyricsAvailable: boolean;
+}): boolean {
+  return Boolean(state.hasActive && state.lyricsAvailable);
+}
 
 function useDisplayTrack() {
   return useApp(
@@ -209,6 +225,16 @@ function TrackMenu({ track, label }: { track?: Track; label: string }) {
                     .catch(() => {});
                 },
               },
+              ...(track.source !== 'local' && track.kind === 'track'
+                ? [
+                    {
+                      label: 'Trocar fonte de áudio',
+                      icon: <Radio size={15} />,
+                      action: () =>
+                        useApp.getState().setDialog({ type: 'streamSource', track }),
+                    },
+                  ]
+                : []),
               ...(track.url
                 ? [
                     {
@@ -253,32 +279,77 @@ function Favorite({ label, track }: { label: string; track?: Track }) {
 
 function AuxiliaryControls() {
   const queueOpen = useApp(s => s.queueOpen),
+    queueCount = useApp(s => Math.max(0, s.queue.length - (s.index >= 0 ? 1 : 0))),
     lyricsOpen = useApp(s => s.lyricsOpen),
+    lyricsAvailable = useApp(s => s.lyricsAvailable),
     hasActive = useApp(s => !!s.queue[s.index]),
-    mini = useApp(s => s.mini);
+    mini = useApp(s => s.mini),
+    jamSession = useJam(s => s.session),
+    jamConnected = useJam(s => s.connected),
+    jamListeners = useJam(s => s.room?.members.length ?? (s.session ? 1 : 0));
+
+  const showLyrics = shouldRenderLyricsButton({ hasActive, lyricsAvailable });
+
   return (
     <>
-      <IconButton
-        label="Letras"
-        active={lyricsOpen}
-        disabled={!hasActive}
-        onClick={() => {
-          if (mini)
-            void window.glass
-              .openLyrics()
-              .catch(e => useApp.getState().message(cleanError(e)));
-          else useApp.setState({ lyricsOpen: !useApp.getState().lyricsOpen });
-        }}
-      >
-        <MicVocal size={16} />
-      </IconButton>
-      <IconButton
-        label="Fila de reprodução"
-        active={queueOpen}
-        onClick={() => useApp.setState({ queueOpen: !queueOpen })}
-      >
-        <ListMusic size={16} />
-      </IconButton>
+      {jamSession && (
+        <button
+          type="button"
+          className={`jam-player-badge ${jamConnected ? 'connected' : 'reconnecting'}`}
+          aria-label={`JAM ativa com ${jamListeners} ouvinte(s)`}
+          title={`JAM ao vivo · ${jamListeners} ouvinte(s)`}
+          onClick={() => {
+            if (mini) {
+              void window.glass.window('restore').then(() => useApp.setState({ mini: false }));
+            }
+            useApp.getState().setPage('settings');
+            setTimeout(() => {
+              document.getElementById('jam-section')?.scrollIntoView({ behavior: 'smooth' });
+            }, 60);
+          }}
+        >
+          <span className="jam-pulse-dot" aria-hidden="true" />
+          <Radio size={14} />
+          <span>{jamListeners}</span>
+        </button>
+      )}
+      <AnimatePresence initial={false}>
+        {showLyrics && (
+          <motion.span
+            key="conditional-lyrics-btn"
+            className="lyrics-btn-presence"
+            initial={{ opacity: 0, scale: 0.82 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.82 }}
+            transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+          >
+            <IconButton
+              label="Letras"
+              active={lyricsOpen}
+              onClick={() => {
+                if (mini)
+                  void window.glass
+                    .openLyrics()
+                    .catch(e => useApp.getState().message(cleanError(e)));
+                else useApp.setState({ lyricsOpen: !useApp.getState().lyricsOpen });
+              }}
+            >
+              <MicVocal size={16} />
+            </IconButton>
+          </motion.span>
+        )}
+      </AnimatePresence>
+      <span className="queue-btn-wrap">
+        <IconButton
+          label="Fila de reprodução"
+          active={queueOpen}
+          aria-expanded={queueOpen}
+          onClick={() => useApp.setState({ queueOpen: !queueOpen })}
+        >
+          <ListMusic size={16} />
+        </IconButton>
+        {queueCount > 0 && <span className="queue-count-dot" aria-hidden="true">{queueCount > 99 ? '99+' : queueCount}</span>}
+      </span>
       <IconButton
         label={mini ? 'Sair do mini-player' : 'Mini-player'}
         active={mini}
@@ -304,7 +375,9 @@ function AuxiliaryControls() {
 
 export function SidePlayer() {
   const track = useDisplayTrack(),
-    active = useApp(s => s.queue[s.index]);
+    active = useApp(s => s.queue[s.index]),
+    downloadingIds = useApp(s => s.downloadingIds);
+  const isDownloading = !!track && downloadingIds.includes(track.id);
   return (
     <GlassPanel
       className={`side-player ${active && active.source !== 'local' ? 'external-track' : ''}`}
@@ -344,7 +417,13 @@ export function SidePlayer() {
       </div>
       {track && (
         <div className="side-badges">
-          <SourceBadge source={track.source} url={track.url} />
+          <OfflineIndicator offline={track.offline} downloading={isDownloading} />
+          <SourceBadge
+            source={track.source}
+            url={track.url}
+            catalogSource={track.catalogSource}
+            streamProvider={track.streamProvider}
+          />
         </div>
       )}
       <Seekbar />
@@ -360,8 +439,11 @@ export function SidePlayer() {
 export default function GlassPlayer() {
   const track = useDisplayTrack(),
     active = useApp(s => s.queue[s.index]),
+    downloadingIds = useApp(s => s.downloadingIds),
     sideOpen = useApp(s => s.sideOpen),
     error = useApp(s => s.error);
+  const isDownloading = !!track && downloadingIds.includes(track.id);
+
   return (
     <GlassMaterial
       as="footer"
@@ -385,7 +467,19 @@ export default function GlassPlayer() {
         </button>
         <div className="now-info">
           <strong>{track?.title || 'Nenhuma faixa'}</strong>
-          <small>{track?.artist || '—'}</small>
+          <small className="now-subline">
+            {track && <OfflineIndicator offline={track.offline} downloading={isDownloading} />}
+            <span>{track?.artist || '—'}</span>
+            {track && track.streamProvider && track.source === 'link' && (
+              <SourceBadge
+                source={track.source}
+                url={track.url}
+                catalogSource={track.catalogSource}
+                streamProvider={track.streamProvider}
+                compact
+              />
+            )}
+          </small>
         </div>
         <Favorite label="Curtir música atual" track={track} />
         <TrackMenu label="Opções da música atual" track={track} />

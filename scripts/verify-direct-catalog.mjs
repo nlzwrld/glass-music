@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 await mkdir('../../work/profiles', { recursive: true });
 await mkdir('test-results', { recursive: true });
 const profile = await mkdtemp(resolve('../../work/profiles/direct-catalog-'));
-const exe = process.env.GLASS_EXE || join(process.env.LOCALAPPDATA, 'Glass Music/glass-music.exe');
+const exe = process.env.GLASS_EXE || join(process.env.LOCALAPPDATA, 'Liquid Hub/liquid-hub.exe');
 const proc = spawn(exe, [], { windowsHide: true, env: { ...process.env,
   GLASS_TEST_DATA: profile, GLASS_TEST_CATALOG_URL: '', GLASS_TEST_DISABLE_DIRECT: '0',
   WEBVIEW2_USER_DATA_FOLDER: join(profile, 'webview'), WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=9340' } });

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, Copy, Headphones, LogOut, Radio, Users } from 'lucide-react';
+import { Check, Copy, Headphones, LogOut, Radio, RefreshCw, Users } from 'lucide-react';
 import { useApp, cleanError } from '../../stores/app';
 import { canJam } from '../../../shared/jam';
 import { useJam } from './state';
@@ -19,7 +19,9 @@ export function JamSettings() {
 
   useEffect(() => {
     void useJam.getState().refresh();
-  }, []);
+    if (consent) void useJam.getState().scanLan();
+  }, [consent]);
+
   useEffect(() => {
     setEndpoint(jam.endpoint);
   }, [jam.endpoint]);
@@ -42,7 +44,7 @@ export function JamSettings() {
   };
 
   return (
-    <div className="jam-settings" aria-label="JAM">
+    <div className="jam-settings" id="jam-section" aria-label="JAM">
       <h2>JAM</h2>
       {!consent ? (
         <p className="fine-print">Ative o acesso online em Integrações para usar a JAM.</p>
@@ -80,6 +82,17 @@ export function JamSettings() {
             <i data-connected={jam.connected} />
             {jam.connected ? 'Conectado' : 'Reconectando…'} ·{' '}
             {jam.session.host ? 'Anfitrião' : 'Ouvinte'}
+            {jam.session.mode && (
+              <>
+                {' · '}
+                {jam.session.mode === 'lan-fallback'
+                  ? 'LAN (Fallback)'
+                  : jam.session.mode === 'lan'
+                    ? 'Rede local'
+                    : 'Cloud'}
+              </>
+            )}
+            {jam.rttMs > 0 && ` · ${jam.rttMs} ms`}
           </div>
           <div className="jam-members" aria-label="Pessoas na JAM">
             {jam.room?.members.map(member => (
@@ -129,7 +142,33 @@ export function JamSettings() {
                 Criar online
               </button>
             )}
+            <button
+              type="button"
+              className="button secondary"
+              disabled={jam.busy}
+              onClick={() => void jam.scanLan()}
+              title="Procurar salas ativas na rede local"
+            >
+              <RefreshCw size={14} />
+              Buscar na LAN
+            </button>
           </div>
+          {jam.lanRooms.length > 0 && (
+            <div className="jam-members" aria-label="Salas encontradas na rede local">
+              {jam.lanRooms.map(r => (
+                <button
+                  key={r.code}
+                  type="button"
+                  className="button secondary"
+                  disabled={jam.busy || !name.trim()}
+                  onClick={() => void jam.enter('join', name, r.code, r.endpoint)}
+                >
+                  <Radio size={14} />
+                  {r.hostName} ({r.members}/8) · {r.code.slice(0, 6)}
+                </button>
+              ))}
+            </div>
+          )}
           <form
             className="jam-join"
             onSubmit={e => {

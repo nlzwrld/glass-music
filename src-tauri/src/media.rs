@@ -13,6 +13,76 @@ use std::{
     time::Duration,
 };
 use tiny_http::{Header, Request, Response, Server, StatusCode};
+
+pub const NOW_PLAYING_SLOT_ID: i32 = 1001;
+pub const NOW_PLAYING_TAG: &str = "liquid-hub-now-playing";
+
+/// Anti-spam gate separating real-time OS media metadata from desktop pop-up notifications.
+#[derive(Default)]
+pub struct NotificationGate {
+    active_track_id: Option<String>,
+    last_notified_track_id: Option<String>,
+    pending_abort: Option<tokio::task::AbortHandle>,
+}
+
+pub fn resolve_notification_mode(pref: &serde_json::Value) -> &'static str {
+    match db::s(pref, "notificationMode") {
+        "off" => "off",
+        "background" => "background",
+        "always" => "always",
+        _ => {
+            if pref["notifications"] == true {
+                "background"
+            } else {
+                "off"
+            }
+        }
+    }
+}
+
+impl NotificationGate {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel_pending(&mut self) {
+        if let Some(handle) = self.pending_abort.take() {
+            handle.abort();
+        }
+    }
+
+    /// Updates immediate OS/tray track identity and aborts any pending notification from a skipped track.
+    pub fn on_track_metadata(&mut self, track_id: &str) {
+        if self.active_track_id.as_deref() != Some(track_id) {
+            self.cancel_pending();
+            self.active_track_id = if track_id.is_empty() {
+                None
+            } else {
+                Some(track_id.to_string())
+            };
+        }
+    }
+
+    /// Evaluates focus-aware suppression, user preference mode, and single-slot deduplication.
+    pub fn should_dispatch(&mut self, mode: &str, window_focused: bool, track_id: &str) -> bool {
+        self.cancel_pending();
+        if mode == "off" || !["background", "always"].contains(&mode) {
+            return false;
+        }
+        if mode == "background" && window_focused {
+            return false;
+        }
+        if track_id.is_empty() {
+            return false;
+        }
+        if self.last_notified_track_id.as_deref() == Some(track_id) {
+            return false;
+        }
+        self.last_notified_track_id = Some(track_id.to_string());
+        true
+    }
+}
+
 pub fn hash(raw: &[u8]) -> String {
     format!("{:x}", Sha256::digest(raw))
 }
@@ -31,7 +101,8 @@ pub fn import_file(db: &Library, path: &Path, data: &Path) -> Result<()> {
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
-    let mut t = json!({"id":format!("local:{id}"),"source":"local","sourceId":id,"kind":"track","title":tag.and_then(|t|t.title()).map(|s|s.into_owned()).unwrap_or(fallback),"artist":tag.and_then(|t|t.artist()).map(|s|s.into_owned()).unwrap_or("Artista desconhecido".into()),"album":tag.and_then(|t|t.album()).map(|s|s.into_owned()).unwrap_or_default(),"duration":tagged.properties().duration().as_secs_f64(),"available":true,"addedAt":now()});
+    let dur_sec = tagged.properties().duration().as_secs_f64();
+    let mut t = json!({"id":format!("local:{id}"),"source":"local","sourceId":id,"kind":"track","title":tag.and_then(|t|t.title()).map(|s|s.into_owned()).unwrap_or(fallback),"artist":tag.and_then(|t|t.artist()).map(|s|s.into_owned()).unwrap_or("Artista desconhecido".into()),"album":tag.and_then(|t|t.album()).map(|s|s.into_owned()).unwrap_or_default(),"duration":dur_sec,"durationMs":(dur_sec * 1000.0).round(),"catalogSource":"local","streamProvider":"local","available":true,"addedAt":now()});
     if let Some(pic) = tag.and_then(|t| t.pictures().first()) {
         if pic.data().len() < 4_000_000 {
             let ext = match pic.mime_type().map(|m| m.as_str()) {
@@ -359,5 +430,22 @@ mod tests {
         assert_eq!(t["duration"], 48.0);
         assert_eq!(t["available"], true);
         assert!(db.path(db::s(t, "id")).unwrap().ends_with("prisma.wav"));
+    }
+
+    #[test]
+    fn notification_gate_suppresses_off_focused_and_duplicate_tracks() {
+        let mut gate = NotificationGate::new();
+        // Off mode (default) never dispatches
+        assert!(!gate.should_dispatch("off", false, "youtube:track1"));
+        // Background mode suppresses when window is focused
+        assert!(!gate.should_dispatch("background", true, "youtube:track1"));
+        // Background mode dispatches once when unfocused
+        assert!(gate.should_dispatch("background", false, "youtube:track1"));
+        // Pause/play/seek on the same track never re-notifies
+        assert!(!gate.should_dispatch("background", false, "youtube:track1"));
+        assert!(!gate.should_dispatch("always", false, "youtube:track1"));
+        // Advancing to a new track dispatches and updates slot
+        gate.on_track_metadata("youtube:track2");
+        assert!(gate.should_dispatch("background", false, "youtube:track2"));
     }
 }

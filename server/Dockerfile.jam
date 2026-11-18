@@ -1,8 +1,16 @@
+# Optimized multi-arch (amd64 / arm64) zero-dependency container for Oracle Cloud Free Tier & Fly.io
 FROM node:24-alpine
 WORKDIR /app
-ENV NODE_ENV=production JAM_HOST=0.0.0.0 PORT=8789
+ENV NODE_ENV=production \
+    JAM_HOST=0.0.0.0 \
+    PORT=8789 \
+    JAM_STRICT_REPLAY=1 \
+    UV_THREADPOOL_SIZE=4 \
+    NODE_OPTIONS="--max-old-space-size=192"
 COPY --chown=node:node server/jam.ts ./server/
-COPY --chown=node:node shared/jam.ts shared/types.ts ./shared/
+COPY --chown=node:node shared/jam.ts shared/types.ts shared/validation.ts ./shared/
 USER node
 EXPOSE 8789
+HEALTHCHECK --interval=30s --timeout=4s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||8789)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
 CMD ["node", "--experimental-strip-types", "server/jam.ts"]

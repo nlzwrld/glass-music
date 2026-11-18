@@ -1,19 +1,24 @@
 import { useRef } from 'react';
-import { Heart, ChevronDown, GripVertical, X } from 'lucide-react';
+import { Heart, ChevronDown, GripVertical, ListMusic, MicVocal, X } from 'lucide-react';
 import { useApp, formatTime } from '../../stores/app';
 import Cover from '../glass/Cover';
 import SVGPlane from '../glass/v3/SVGPlane';
-import { IconButton, SourceBadge } from '../glass/controls';
-import { PlaybackControls, Seekbar } from './GlassPlayer';
-export { default, SidePlayer } from './GlassPlayer';
+import { IconButton, OfflineIndicator, SourceBadge } from '../glass/controls';
+import { PlaybackControls, Seekbar, shouldRenderLyricsButton } from './GlassPlayer';
+export { default, SidePlayer, shouldRenderLyricsButton } from './GlassPlayer';
 
 export function ExpandedPlayer() {
   const expanded = useApp(s => s.expanded),
     track = useApp(s => s.queue[s.index]),
     likes = useApp(s => s.data.likes),
+    queueOpen = useApp(s => s.queueOpen),
+    lyricsOpen = useApp(s => s.lyricsOpen),
+    lyricsAvailable = useApp(s => s.lyricsAvailable),
     isGlass = useApp(s => (s.data.preferences.uiStyle ?? 'matte') === 'glass');
 
   if (!expanded || !track) return null;
+
+  const showLyrics = shouldRenderLyricsButton({ hasActive: true, lyricsAvailable });
 
   return (
     <section
@@ -28,7 +33,26 @@ export function ExpandedPlayer() {
         >
           <ChevronDown size={18} />
         </IconButton>
-        <SourceBadge source={track.source} url={track.url} />
+        <div className="expanded-header-right">
+          <OfflineIndicator offline={track.offline} />
+          <SourceBadge source={track.source} url={track.url} />
+          {showLyrics && (
+            <IconButton
+              label="Letras no player expandido"
+              active={lyricsOpen}
+              onClick={() => useApp.setState({ lyricsOpen: !lyricsOpen })}
+            >
+              <MicVocal size={16} />
+            </IconButton>
+          )}
+          <IconButton
+            label="Abrir fila no player expandido"
+            active={queueOpen}
+            onClick={() => useApp.setState({ queueOpen: !queueOpen })}
+          >
+            <ListMusic size={16} />
+          </IconButton>
+        </div>
       </div>
       <div className="expanded-content">
         <div className="expanded-art">

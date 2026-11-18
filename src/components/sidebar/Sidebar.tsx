@@ -14,9 +14,11 @@ import {
   FolderInput,
   PanelLeftClose,
   PanelLeftOpen,
+  Radio,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useApp, type Page } from '../../stores/app';
+import { useJam } from '../jam/state';
 import { IconButton } from '../glass/controls';
 import { GlassContextMenu, GlassSidebar } from '../glass/materials';
 import { useOptics } from '../glass/v3/OpticalEngine';
@@ -37,6 +39,9 @@ export default function Sidebar() {
   const page = useApp(s => s.page),
     data = useApp(s => s.data),
     setPage = useApp(s => s.setPage),
+    jamSession = useJam(s => s.session),
+    jamConnected = useJam(s => s.connected),
+    jamMembersCount = useJam(s => s.room?.members.length ?? (s.session ? 1 : 0)),
     { settings, setSettings, reduced } = useOptics();
   const isGlass = (data.preferences.uiStyle ?? 'matte') === 'glass';
 
@@ -52,12 +57,12 @@ export default function Sidebar() {
         <button
           className="brand"
           onClick={() => setPage('home')}
-          aria-label="Glass Music início"
+          aria-label="Liquid Hub início"
         >
           <span className="brand-mark">
             <AudioLines size={16} />
           </span>
-          <span>Glass Music</span>
+          <span>Liquid Hub</span>
         </button>
         <IconButton
           label={settings.sidebarCompact ? 'Expandir sidebar' : 'Recolher sidebar'}
@@ -94,6 +99,26 @@ export default function Sidebar() {
           </button>
         ))}
       </nav>
+
+      {jamSession && (
+        <button
+          type="button"
+          className={`jam-live-pill ${jamConnected ? 'connected' : 'reconnecting'}`}
+          aria-label={`JAM ao vivo com ${jamMembersCount} ouvinte(s)`}
+          title={`Sala ${jamSession.code} · ${jamMembersCount} ouvinte(s)`}
+          onClick={() => {
+            setPage('settings');
+            setTimeout(() => {
+              document.getElementById('jam-section')?.scrollIntoView({ behavior: 'smooth' });
+            }, 60);
+          }}
+        >
+          <span className="jam-pulse-dot" aria-hidden="true" />
+          <Radio size={14} />
+          <span className="jam-live-text">JAM ao vivo</span>
+          <span className="jam-live-count">{jamMembersCount}</span>
+        </button>
+      )}
 
       <div className="playlist-heading recent-heading">
         <span>Playlists</span>

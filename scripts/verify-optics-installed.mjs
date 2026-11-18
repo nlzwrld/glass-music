@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 
 await mkdir('../../work/profiles', { recursive: true });
 const profile = await mkdtemp(resolve('../../work/profiles/optics-'));
-const executable = process.env.GLASS_EXE || join(process.env.LOCALAPPDATA, 'Glass Music/glass-music.exe');
+const executable = process.env.GLASS_EXE || join(process.env.LOCALAPPDATA, 'Liquid Hub/liquid-hub.exe');
 const app = spawn(executable, [], { windowsHide: true, env: {
   ...process.env, GLASS_TEST_DATA: profile, WEBVIEW2_USER_DATA_FOLDER: join(profile, 'webview'),
   WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=9340',

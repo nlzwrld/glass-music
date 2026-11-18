@@ -24,7 +24,7 @@ export class CrystalRenderer {
     gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
   }
   private u(name:string){if(!this.uniforms.has(name))this.uniforms.set(name,this.gl.getUniformLocation(this.program,name));return this.uniforms.get(name)!;}
-  draw(source:HTMLCanvasElement,root:HTMLElement,settings:OpticalSettings,light:[number,number],upload:boolean,lab:boolean){
+  draw(source:HTMLCanvasElement,root:HTMLElement,settings:OpticalSettings,light:[number,number],upload:boolean,lab:boolean,bass=0){
     const started=performance.now(),gl=this.gl,dpr=source.width/root.clientWidth;
     if(this.canvas.width!==source.width||this.canvas.height!==source.height){this.canvas.width=source.width;this.canvas.height=source.height;}
     gl.viewport(0,0,this.canvas.width,this.canvas.height);gl.disable(gl.SCISSOR_TEST);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);
@@ -69,6 +69,7 @@ export class CrystalRenderer {
       f('u_blur',value('opticalBlur',settings.blur)*preset.blur*dpr);f('u_chromatic',settings.quality==='economy'?0:settings.chromatic*.75);
       f('u_tintOpacity',Math.min(1,value('opticalOpacity',settings.opacity)));f('u_ambientTint',isWindow||lab?0:1);f('u_specular',value('opticalSpecular',settings.specular)*preset.specular);
       f('u_cursor',value('opticalCursor',preset.cursor));
+      f('u_bass',isWindow?bass*.45:bass);
       f('u_saturation',value('opticalSaturation',settings.saturation*100)/100);gl.uniform2f(this.u('u_lightDir'),light[0],light[1]);
       const tint=el.dataset.opticalTint||settings.tint;
       const rgb=[1,3,5].map(offset=>parseInt(tint.slice(offset,offset+2),16)/255);gl.uniform3f(this.u('u_tint'),rgb[0],rgb[1],rgb[2]);

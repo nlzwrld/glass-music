@@ -11,20 +11,33 @@ services:
     restart: unless-stopped
     read_only: true
     tmpfs: [/tmp]
-    mem_limit: 384m
+    mem_limit: 256m
     cpus: 1
     networks:
-      catalog:
+      liquid:
         ipv4_address: 172.30.0.3
-    healthcheck:
-      test: [CMD, node, -e, "fetch('http://127.0.0.1:8788/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+  jam:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile.jam
+    environment:
+      JAM_HOST: 0.0.0.0
+      PORT: 8789
+      JAM_MAX_ROOMS: 2500
+      JAM_STRICT_REPLAY: "1"
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    mem_limit: 256m
+    cpus: 1
+    networks:
+      liquid:
+        ipv4_address: 172.30.0.4
   gateway:
     image: caddy:2-alpine
     environment:
       CATALOG_DOMAIN: ${CATALOG_DOMAIN:?Defina CATALOG_DOMAIN no arquivo .env}
+      JAM_DOMAIN: ${JAM_DOMAIN:-jam.localhost}
     ports: ["80:80", "443:443"]
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
@@ -34,11 +47,13 @@ services:
     depends_on:
       catalog:
         condition: service_healthy
+      jam:
+        condition: service_healthy
     networks:
-      catalog:
+      liquid:
         ipv4_address: 172.30.0.2
 networks:
-  catalog:
+  liquid:
     ipam:
       config:
         - subnet: 172.30.0.0/24

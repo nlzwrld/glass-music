@@ -1,6 +1,16 @@
 import { useState } from 'react';
-import { ArrowLeft, Download, ExternalLink, LoaderCircle, Pause, Play, Plus } from 'lucide-react';
+import {
+  ArrowLeft,
+  Download,
+  ExternalLink,
+  LoaderCircle,
+  Pause,
+  Play,
+  Plus,
+  Shuffle,
+} from 'lucide-react';
 import { useApp, cleanError } from '../stores/app';
+import { shufflePlay } from '../lib/playback';
 import { transport } from '../components/player/engine';
 import Cover from '../components/glass/Cover';
 import TrackList from '../components/library/TrackList';
@@ -113,6 +123,16 @@ export default function Collection() {
               <Play size={16} fill="currentColor" />
             )}
             <span>{activeHere && playing ? 'Pausar' : 'Reproduzir'}</span>
+          </button>
+          <button
+            type="button"
+            className="button secondary playlist-shuffle-play"
+            disabled={!tracks.length}
+            aria-label="Reproduzir coleção no aleatório"
+            onClick={() => shufflePlay(tracks)}
+          >
+            <Shuffle size={15} />
+            <span>Aleatório</span>
           </button>
           {tracks.some(t => ['youtube', 'link'].includes(t.source)) && (
             <button

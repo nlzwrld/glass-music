@@ -15,7 +15,7 @@ test('existing local audio remains playable offline with the optical engine',asy
  db.prepare('INSERT INTO tracks VALUES(?,?,?,?)').run(track.id,JSON.stringify(track),resolve('assets/audio/prisma.wav'),Date.now());
  db.prepare('INSERT INTO settings VALUES(?,?)').run('preferences',JSON.stringify({...defaults,onboardingDone:true,volume:0,reducedMotion:true}));db.close();
  let browser:Browser|undefined;const errors:string[]=[];
- const proc=spawn(process.env.GLASS_EXE||join(process.env.LOCALAPPDATA!,'Glass Music/glass-music.exe'),[],{windowsHide:true,env:{...process.env,GLASS_TEST_DATA:profile,GLASS_TEST_DISABLE_DIRECT:'1',WEBVIEW2_USER_DATA_FOLDER:join(profile,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9347'}});
+ const proc=spawn(process.env.GLASS_EXE||join(process.env.LOCALAPPDATA!,'Liquid Hub/liquid-hub.exe'),[],{windowsHide:true,env:{...process.env,GLASS_TEST_DATA:profile,GLASS_TEST_DISABLE_DIRECT:'1',WEBVIEW2_USER_DATA_FOLDER:join(profile,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9347'}});
  try{
   for(let i=0;i<90;i++){try{if((await fetch('http://127.0.0.1:9347/json/version')).ok)break;}catch{}await new Promise(r=>setTimeout(r,200));}
   browser=await chromium.connectOverCDP('http://127.0.0.1:9347');const page=browser.contexts()[0].pages()[0];page.on('pageerror',e=>errors.push(e.message));

@@ -1,7 +1,8 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { MotionConfig, motion } from 'motion/react';
 import { Minus, Square, X, AudioLines } from 'lucide-react';
-import {repairArtwork} from '../lib/artwork';
+import { purgeSensitiveWebStorage } from '../../shared/validation';
+import { repairArtwork } from '../lib/artwork';
 import { autoSyncAccounts } from '../stores/accounts';
 import { useApp } from '../stores/app';
 import Sidebar from '../components/sidebar/Sidebar';
@@ -11,47 +12,209 @@ import GlassSearch from '../components/glass/GlassSearch';
 import Dialogs from '../components/glass/Dialogs';
 import Cover from '../components/glass/Cover';
 import Home from '../pages/Home';
-import {AutoUpdates} from '../lib/updates';
-import {LyricsWindowBridge} from '../lib/lyricsWindow';
-import {JamEngine} from '../components/jam/JamEngine';
+import { AutoUpdates } from '../lib/updates';
+import { LyricsWindowBridge } from '../lib/lyricsWindow';
+import { JamEngine } from '../components/jam/JamEngine';
 import Lyrics from '../components/player/Lyrics';
 import Welcome from '../components/glass/Welcome';
 import { OpticalEngine } from '../components/glass/v3/OpticalEngine';
 import GlassLaboratory from '../components/glass/v3/GlassLaboratory';
+
 const Explore = lazy(() => import('../pages/Explore'));
 const Search = lazy(() => import('../pages/Search'));
 const Library = lazy(() => import('../pages/Library'));
 const Collection = lazy(() => import('../pages/Collection'));
 const Settings = lazy(() => import('../pages/Settings'));
+
 export default function App() {
-  const ready = useApp(s => s.ready), page = useApp(s => s.page), p = useApp(s => s.data.preferences), toast = useApp(s => s.toast), mini = useApp(s => s.mini), track = useApp(s => s.queue[s.index]), expanded = useApp(s => s.expanded);
-  const searchInput = useRef<HTMLInputElement>(null); const [systemLight,setSystemLight] = useState(matchMedia('(prefers-color-scheme: light)').matches);
-  const artworkTracks=useApp(s=>s.data.tracks);
-  useEffect(()=>{if(ready)repairArtwork();},[ready,artworkTracks,p.onlineConsent,p.onboardingDone]);
-  useEffect(() => { void useApp.getState().boot(); }, []);
-  useEffect(()=>{if(!ready||!p.onlineConsent||!p.catalogConsent||!p.onboardingDone)return;const initial=setTimeout(()=>void autoSyncAccounts(),5000),timer=setInterval(()=>void autoSyncAccounts(),30*60*1000);return()=>{clearTimeout(initial);clearInterval(timer);};},[ready,p.onlineConsent,p.catalogConsent,p.onboardingDone]);
-  useEffect(() => { const media = matchMedia('(prefers-color-scheme: light)'); const changed = () => setSystemLight(media.matches); media.addEventListener('change',changed); return () => media.removeEventListener('change',changed); }, []);
+  const ready = useApp(s => s.ready),
+    page = useApp(s => s.page),
+    p = useApp(s => s.data.preferences),
+    toast = useApp(s => s.toast),
+    mini = useApp(s => s.mini),
+    track = useApp(s => s.queue[s.index]),
+    expanded = useApp(s => s.expanded);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const [systemLight, setSystemLight] = useState(
+    matchMedia('(prefers-color-scheme: light)').matches,
+  );
+  const artworkTracks = useApp(s => s.data.tracks);
+
+  useEffect(() => {
+    purgeSensitiveWebStorage();
+    void useApp.getState().boot();
+  }, []);
+
+  useEffect(() => {
+    if (ready) repairArtwork();
+  }, [ready, artworkTracks, p.onlineConsent, p.onboardingDone]);
+
+  useEffect(() => {
+    if (!ready || !p.onlineConsent || !p.catalogConsent || !p.onboardingDone) return;
+    const initial = setTimeout(() => void autoSyncAccounts(), 5000),
+      timer = setInterval(() => void autoSyncAccounts(), 30 * 60 * 1000);
+    return () => {
+      clearTimeout(initial);
+      clearInterval(timer);
+    };
+  }, [ready, p.onlineConsent, p.catalogConsent, p.onboardingDone]);
+
+  useEffect(() => {
+    const media = matchMedia('(prefers-color-scheme: light)');
+    const changed = () => setSystemLight(media.matches);
+    media.addEventListener('change', changed);
+    return () => media.removeEventListener('change', changed);
+  }, []);
+
   useEffect(() => {
     const uiStyle = p.uiStyle ?? 'matte';
     document.documentElement.dataset.uiStyle = uiStyle;
-    document.documentElement.dataset.theme = p.theme === 'system' ? systemLight ? 'light' : 'dark' : p.theme;
+    document.documentElement.dataset.theme =
+      p.theme === 'system' ? (systemLight ? 'light' : 'dark') : p.theme;
     document.documentElement.dataset.performance = String(p.performance);
     document.documentElement.dataset.motion = p.reducedMotion ? 'reduced' : 'full';
     document.documentElement.style.setProperty('--user-accent', p.accent || '#52b79a');
-    document.documentElement.style.setProperty('--blur', p.performance || uiStyle === 'matte' ? '0px' : `${p.blur}px`);
+    document.documentElement.style.setProperty(
+      '--blur',
+      p.performance || uiStyle === 'matte' ? '0px' : `${p.blur}px`,
+    );
     document.documentElement.style.setProperty('--glass-alpha', `${0.025 + p.glass / 1000}`);
-  }, [p.uiStyle,p.theme,p.performance,p.reducedMotion,p.blur,p.glass,p.accent,systemLight]);
-  useEffect(() => { const key = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); if (mini) { void window.glass.window('restore'); useApp.setState({mini:false}); } useApp.getState().setPage('search'); setTimeout(() => searchInput.current?.focus(),0); } if (e.key === 'Escape') useApp.setState({expanded:false,queueOpen:false,lyricsOpen:false}); }; window.addEventListener('keydown',key); return () => window.removeEventListener('keydown',key); }, [mini]);
-  useEffect(() => { document.querySelector('.main-scroll')?.scrollTo({top:0}); }, [page]);
+  }, [p.uiStyle, p.theme, p.performance, p.reducedMotion, p.blur, p.glass, p.accent, systemLight]);
+
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        if (mini) {
+          void window.glass.window('restore');
+          useApp.setState({ mini: false });
+        }
+        useApp.getState().setPage('search');
+        setTimeout(() => searchInput.current?.focus(), 0);
+      }
+      if (e.key === 'Escape') {
+        useApp.setState({ expanded: false, queueOpen: false, lyricsOpen: false });
+      }
+    };
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  }, [mini]);
+
+  useEffect(() => {
+    document.querySelector('.main-scroll')?.scrollTo({ top: 0 });
+  }, [page]);
+
   const external = !!track && track.source !== 'local';
-  const collapsed = useApp(s => s.collapsed), sideOpen = useApp(s => s.sideOpen);
-  if (!window.glass) return <div className="boot-screen"><AudioLines size={28} /><h1>Glass Music</h1><p>Execute o aplicativo desktop.</p></div>;
+  const collapsed = useApp(s => s.collapsed),
+    sideOpen = useApp(s => s.sideOpen);
+  if (!window.glass) {
+    return (
+      <div className="boot-screen">
+        <AudioLines size={28} />
+        <h1>Liquid Hub</h1>
+        <p>Execute o aplicativo desktop.</p>
+      </div>
+    );
+  }
   const isMatte = (p.uiStyle ?? 'matte') === 'matte';
-  return <MotionConfig reducedMotion={p.reducedMotion || p.performance || isMatte ? 'always' : 'user'}><GlassWindow className={`${mini ? 'mini' : ''} ${external ? 'has-external' : ''} ${expanded ? 'is-expanded' : ''} ${collapsed ? 'sidebar-collapsed' : ''} ${sideOpen ? 'side-open' : ''}`}>
-    <OpticalEngine><header className="titlebar" data-tauri-drag-region onDoubleClick={() => void window.glass.window('maximize')}><span data-tauri-drag-region /><div><button aria-label="Minimizar janela" onClick={() => void window.glass.window('minimize')}><Minus size={15} /></button><button aria-label="Maximizar janela" onClick={() => void window.glass.window('maximize')}><Square size={13} /></button><button className="window-close" aria-label="Fechar janela" onClick={() => void window.glass.window('close')}><X size={16} /></button></div></header>
-    <div className="app-body"><Sidebar /><div className="main-shell"><GlassSearch inputRef={searchInput} /><AutoUpdates/><main className="main-scroll"><Suspense fallback={<div className="loading-page">Carregando…</div>}><motion.div key={page} initial={{ opacity:p.reducedMotion||p.performance||isMatte?1:0, y:0 }} animate={{ opacity: 1, y: 0 }} transition={{duration:p.reducedMotion||p.performance||isMatte?0:.2,ease:[.22,1,.36,1]}}>{!ready ? <div className="loading-page">Carregando…</div> : page === 'home' ? <Home /> : page === 'explore' ? <Explore /> : page === 'search' ? <Search /> : page === 'collection' ? <Collection /> : page === 'settings' ? <Settings /> : <Library key={page} />}</motion.div></Suspense></main></div><SidePlayer /></div>
-    <div className="mini-content"><Cover track={track} /><h2>{track?.title || 'Glass Music'}</h2><p>{track?.artist || ''}</p></div>
-    <LyricsWindowBridge/><JamEngine/><ExpandedPlayer /><Queue /><Lyrics /><Player /><Dialogs /><Welcome /><GlassLaboratory />
-    {toast && <div className="toast glass" role="status"><span>{toast}</span><button aria-label="Fechar notificação" onClick={() => useApp.setState({toast:''})}><X size={14} /></button></div>}
-  </OpticalEngine></GlassWindow></MotionConfig>;
+  return (
+    <MotionConfig reducedMotion={p.reducedMotion || p.performance || isMatte ? 'always' : 'user'}>
+      <GlassWindow
+        className={`${mini ? 'mini' : ''} ${external ? 'has-external' : ''} ${expanded ? 'is-expanded' : ''} ${collapsed ? 'sidebar-collapsed' : ''} ${sideOpen ? 'side-open' : ''}`}
+      >
+        <OpticalEngine>
+          <header
+            className="titlebar"
+            data-tauri-drag-region
+            onDoubleClick={() => void window.glass.window('maximize')}
+          >
+            <span data-tauri-drag-region />
+            <div>
+              <button
+                aria-label="Minimizar janela"
+                onClick={() => void window.glass.window('minimize')}
+              >
+                <Minus size={15} />
+              </button>
+              <button
+                aria-label="Maximizar janela"
+                onClick={() => void window.glass.window('maximize')}
+              >
+                <Square size={13} />
+              </button>
+              <button
+                className="window-close"
+                aria-label="Fechar janela"
+                onClick={() => void window.glass.window('close')}
+              >
+                <X size={16} />
+              </button>
+            </div>
+          </header>
+          <div className="app-body">
+            <Sidebar />
+            <div className="main-shell">
+              <GlassSearch inputRef={searchInput} />
+              <AutoUpdates />
+              <main className="main-scroll">
+                <Suspense fallback={<div className="loading-page">Carregando…</div>}>
+                  <motion.div
+                    key={page}
+                    initial={{ opacity: p.reducedMotion || p.performance || isMatte ? 1 : 0, y: 0 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{
+                      duration: p.reducedMotion || p.performance || isMatte ? 0 : 0.2,
+                      ease: [0.22, 1, 0.36, 1],
+                    }}
+                  >
+                    {!ready ? (
+                      <div className="loading-page">Carregando…</div>
+                    ) : page === 'home' ? (
+                      <Home />
+                    ) : page === 'explore' ? (
+                      <Explore />
+                    ) : page === 'search' ? (
+                      <Search />
+                    ) : page === 'collection' ? (
+                      <Collection />
+                    ) : page === 'settings' ? (
+                      <Settings />
+                    ) : (
+                      <Library key={page} />
+                    )}
+                  </motion.div>
+                </Suspense>
+              </main>
+            </div>
+            <SidePlayer />
+          </div>
+          <div className="mini-content">
+            <Cover track={track} />
+            <h2>{track?.title || 'Liquid Hub'}</h2>
+            <p>{track?.artist || ''}</p>
+          </div>
+          <LyricsWindowBridge />
+          <JamEngine />
+          <ExpandedPlayer />
+          <Queue />
+          <Lyrics />
+          <Player />
+          <Dialogs />
+          <Welcome />
+          <GlassLaboratory />
+          {toast && (
+            <div className="toast glass" role="status">
+              <span>{toast}</span>
+              <button
+                aria-label="Fechar notificação"
+                onClick={() => useApp.setState({ toast: '' })}
+              >
+                <X size={14} />
+              </button>
+            </div>
+          )}
+        </OpticalEngine>
+      </GlassWindow>
+    </MotionConfig>
+  );
 }
