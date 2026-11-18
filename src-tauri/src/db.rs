@@ -275,7 +275,74 @@ impl Library {
                     .map_err(|e| e.to_string())?;
             }
         }
+        let _ = this.clean_cloned_playlist_covers();
         Ok(this)
+    }
+
+    pub fn clean_cloned_playlist_covers(&self) -> Result<usize> {
+        let mut cleaned = 0usize;
+        // 1. Strip known Spotify playlist-only cover hosts/prefixes from individual link tracks
+        let all_links = self.query(
+            "SELECT data FROM tracks WHERE json_extract(data,'$.source')='link' AND json_extract(data,'$.artwork') IS NOT NULL",
+            [],
+        )?;
+        for t in &all_links {
+            let art = s(t, "artwork");
+            let is_playlist_only_cover = art.contains("://mosaic.scdn.co/")
+                || art.contains("://image-cdn-fa.spotifycdn.com/")
+                || art.contains("://image-cdn-ak.spotifycdn.com/")
+                || art.contains("/image/ab67706");
+            if is_playlist_only_cover {
+                self.db
+                    .execute(
+                        "UPDATE tracks SET data=json_remove(data,'$.artwork') WHERE id=?",
+                        [s(t, "id")],
+                    )
+                    .map_err(|e| e.to_string())?;
+                cleaned += 1;
+            }
+        }
+
+        // 2. Strip playlist cover cloned across multiple artists inside the same playlist
+        let playlists = self.query(
+            "SELECT json_object('id',id,'artwork',(SELECT value FROM settings WHERE key='playlist-artwork:'||playlists.id)) FROM playlists",
+            [],
+        )?;
+        for pl in playlists {
+            let pid = s(&pl, "id");
+            let p_art = s(&pl, "artwork");
+            if pid.is_empty() || p_art.is_empty() {
+                continue;
+            }
+            let members = self.query(
+                "SELECT t.data FROM playlist_tracks pt JOIN tracks t ON t.id=pt.track_id WHERE pt.playlist_id=?",
+                [pid],
+            )?;
+            let matching: Vec<&Value> = members
+                .iter()
+                .filter(|t| s(t, "source") == "link" && s(t, "artwork") == p_art)
+                .collect();
+            if matching.len() < 2 {
+                continue;
+            }
+            let distinct_artists: std::collections::HashSet<String> = matching
+                .iter()
+                .map(|t| s(t, "artist").trim().to_lowercase())
+                .filter(|a| !a.is_empty())
+                .collect();
+            if distinct_artists.len() >= 2 {
+                for t in matching {
+                    self.db
+                        .execute(
+                            "UPDATE tracks SET data=json_remove(data,'$.artwork') WHERE id=?",
+                            [s(t, "id")],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    cleaned += 1;
+                }
+            }
+        }
+        Ok(cleaned)
     }
     fn query<P: rusqlite::Params>(&self, sql: &str, params: P) -> Result<Vec<Value>> {
         let mut stmt = self.db.prepare(sql).map_err(|e| e.to_string())?;
@@ -628,5 +695,36 @@ mod tests {
             db.snapshot().unwrap()["history"].as_array().unwrap().len(),
             500
         );
+    }
+    #[test]
+    fn cleans_cloned_playlist_cover_from_multi_artist_playlist_tracks() {
+        let db = Library::open(Path::new(":memory:")).unwrap();
+        let pl_cover = "https://i.scdn.co/image/ab67616d0000b273playlistcover";
+        let mosaic_cover = "https://mosaic.scdn.co/640/ab67616d00001e02a";
+        let t1 = json!({"id":"link:1","source":"link","sourceId":"1","kind":"track","title":"Song 1","artist":"Artist A","duration":180,"url":"https://open.spotify.com/track/1111111111111111111111","artwork":pl_cover,"addedAt":now()});
+        let t2 = json!({"id":"link:2","source":"link","sourceId":"2","kind":"track","title":"Song 2","artist":"Artist B","duration":200,"url":"https://open.spotify.com/track/2222222222222222222222","artwork":pl_cover,"addedAt":now()});
+        let t3 = json!({"id":"link:3","source":"link","sourceId":"3","kind":"track","title":"Song 3","artist":"Artist C","duration":190,"url":"https://open.spotify.com/track/3333333333333333333333","artwork":mosaic_cover,"addedAt":now()});
+        let pid = db.merge_collection("https://open.spotify.com/playlist/test","Mix",&[t1,t2,t3],false).unwrap();
+        db.collection_artwork(&pid, pl_cover).unwrap();
+
+        // Single-artist album should keep its shared album cover!
+        let album_cover = "https://i.scdn.co/image/ab67616d0000b273albumcover";
+        let a1 = json!({"id":"link:a1","source":"link","sourceId":"a1","kind":"track","title":"Track 1","artist":"Daft Punk","album":"Discovery","duration":200,"url":"https://open.spotify.com/track/4444444444444444444444","artwork":album_cover,"addedAt":now()});
+        let a2 = json!({"id":"link:a2","source":"link","sourceId":"a2","kind":"track","title":"Track 2","artist":"Daft Punk","album":"Discovery","duration":210,"url":"https://open.spotify.com/track/5555555555555555555555","artwork":album_cover,"addedAt":now()});
+        let aid = db.merge_collection("https://open.spotify.com/album/disc","Discovery",&[a1,a2],false).unwrap();
+        db.collection_artwork(&aid, album_cover).unwrap();
+
+        let cleaned = db.clean_cloned_playlist_covers().unwrap();
+        assert_eq!(cleaned, 3);
+        let snap = db.snapshot().unwrap();
+        let tracks = snap["tracks"].as_array().unwrap();
+        for id in ["link:1", "link:2", "link:3"] {
+            let tr = tracks.iter().find(|t| t["id"] == id).unwrap();
+            assert!(tr.get("artwork").is_none(), "{id} should have cloned artwork removed");
+        }
+        for id in ["link:a1", "link:a2"] {
+            let tr = tracks.iter().find(|t| t["id"] == id).unwrap();
+            assert_eq!(tr["artwork"], album_cover, "{id} album artwork must be preserved");
+        }
     }
 }

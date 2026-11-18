@@ -1582,3 +1582,65 @@ html:not([data-ui-style='glass']) .mini .player {
     grid-template-columns: 1fr;
   }
 }
+
+/* --------------------------------------------------------------------------
+   7. UPDATE AVAILABLE BANNER ("Atualizar agora")
+   -------------------------------------------------------------------------- */
+
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 38px;
+  padding: 6px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  font-size: 12.5px;
+  flex: none;
+}
+
+html[data-ui-style='glass'] .update-banner {
+  margin: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 6px 14px;
+}
+
+html:not([data-ui-style='glass']) .update-banner {
+  background: var(--m-surface);
+  border-bottom: 1px solid var(--m-border-subtle);
+}
+
+.update-banner-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-weight: 500;
+}
+
+.update-banner-info > svg {
+  color: var(--accent);
+  flex: none;
+}
+
+.update-banner-info > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.update-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+html:not([data-ui-style='glass']) .update-banner .update-now-btn {
+  min-height: 26px;
+  height: 26px;
+  padding: 0 11px;
+  font-size: 12px;
+}

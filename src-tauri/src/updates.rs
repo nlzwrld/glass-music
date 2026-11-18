@@ -10,6 +10,6 @@ pub async fn status(app:&AppHandle,consent:bool,install:bool)->Result<Value>{
  let url=url::Url::parse(endpoint).map_err(|_|"Canal inválido.")?;if url.scheme()!="https"||url.host_str()!=Some("github.com"){return Err("Canal de atualização inválido.".into());}
  let updater=app.updater_builder().endpoints(vec![url]).map_err(|e|e.to_string())?.timeout(std::time::Duration::from_secs(20)).build().map_err(|e|e.to_string())?;
  let Some(update)=updater.check().await.map_err(|_|"Não foi possível consultar o GitHub agora.")?else{return Ok(json!({"configured":true,"available":false,"version":env!("CARGO_PKG_VERSION"),"message":"O aplicativo está atualizado."}));};
- let version=update.version.clone();if install{update.download_and_install(|_,_|{},||{}).await.map_err(|_|"Não foi possível verificar e instalar a atualização assinada.")?;}
- Ok(json!({"configured":true,"available":true,"version":version,"message":format!("Versão {version} disponível. A atualização automática será instalada quando a reprodução estiver parada.")}))
+ let version=update.version.clone();if install{update.download_and_install(|_,_|{},||{}).await.map_err(|_|"Não foi possível verificar e instalar a atualização assinada.")?;app.restart();}
+ Ok(json!({"configured":true,"available":true,"version":version,"message":format!("Versão {version} disponível.")}))
 }

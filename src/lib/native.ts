@@ -22,4 +22,4 @@ export const glass: GlassAPI = {
   onVisualVisibility: callback => { let disposed=false;let off:(()=>void)|undefined;void listen<boolean>('glass-visual-visible',event=>callback(event.payload)).then(unlisten=>{if(disposed)unlisten();else off=unlisten;});return()=>{disposed=true;off?.();}; },
   onMedia: callback => { let disposed=false;let off:(()=>void)|undefined;void listen<MediaCommand>('media',event=>callback(event.payload)).then(unlisten=>{if(disposed)unlisten();else off=unlisten;});return()=>{disposed=true;off?.();}; }
 };
-window.glass=glass;
+if (typeof window !== 'undefined') window.glass = glass;

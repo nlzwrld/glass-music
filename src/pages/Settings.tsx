@@ -5,6 +5,7 @@ import AccountConnections from '../components/library/AccountConnections';
 import { Toggle } from '../components/glass/controls';
 import { audioOutputDevices, requestAudioOutput } from '../lib/audioGraph';
 import { JamSettings } from '../components/jam/JamSettings';
+import { useUpdateNotice } from '../lib/updates';
 
 function AudioSettings() {
   const p = useApp(s => s.data.preferences),
@@ -293,7 +294,10 @@ export default function Settings() {
               setBusy(true);
               void window.glass
                 .updateStatus(false)
-                .then(v => setMessage(v.message))
+                .then(v => {
+                  setMessage(v.message);
+                  if (v.available && v.version) useUpdateNotice.getState().setAvailable(v.version);
+                })
                 .catch(e => setMessage(cleanError(e)))
                 .finally(() => setBusy(false));
             }}

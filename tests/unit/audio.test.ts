@@ -3,6 +3,7 @@ import {boostedGain,transitionSeconds} from '../../src/lib/audioGraph';
 import {preparePlayback,invalidatePlayback} from '../../src/lib/playback';
 import {detectPlatform} from '../../src/components/glass/controls';
 import {upcomingIndex,useApp} from '../../src/stores/app';
+import {useUpdateNotice} from '../../src/lib/updates';
 import {defaults,type Track} from '../../shared/types';
 afterEach(()=>{invalidatePlayback();vi.unstubAllGlobals();});
 it('keeps zero volume silent with booster and bounds invalid transition values',()=>{
@@ -100,4 +101,16 @@ it('extends finished playlist with outside-playlist style recommendations when a
  useApp.getState().clearQueue();
  expect(useApp.getState().queue.map(t=>t.id)).toEqual(['youtube:v2']);
  expect(useApp.getState().index).toBe(0);
+});
+it('tracks available updates, supports dismissal and triggers immediate install on Atualizar agora',async()=>{
+ const updateStatus=vi.fn(async()=>({configured:true,available:true,version:'2.3.0',message:'Versão 2.3.0 disponível.'}));
+ vi.stubGlobal('window',{glass:{updateStatus,cancelSearch:vi.fn(async()=>{})}});
+ useUpdateNotice.setState({availableVersion:'',dismissedVersion:'',installing:false});
+ useUpdateNotice.getState().setAvailable('2.3.0');
+ expect(useUpdateNotice.getState().availableVersion).toBe('2.3.0');
+ await useUpdateNotice.getState().installNow();
+ expect(updateStatus).toHaveBeenCalledWith(true);
+ useUpdateNotice.setState({installing:false});
+ useUpdateNotice.getState().dismiss();
+ expect(useUpdateNotice.getState().dismissedVersion).toBe('2.3.0');
 });
