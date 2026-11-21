@@ -75,6 +75,7 @@ struct State {
     direct: direct_catalog::DirectCatalog,
     audio: Arc<audio::AudioStreams>,
     accounts: accounts::Accounts,
+    offline: offline::Downloads,
     notifications: Mutex<media::NotificationGate>,
 }
 
@@ -88,7 +89,10 @@ fn status(st: &State) -> Value {
     } else {
         "unavailable"
     };
-    let (offline_tracks, offline_bytes) = offline::stats(&st.data);
+    let (offline_tracks, offline_bytes) = {
+        let db = st.db.lock().unwrap();
+        offline::stats(&st.data, &db)
+    };
     json!({
         "youtube": ready,
         "soundcloud": ready,
@@ -207,18 +211,19 @@ async fn call(
             Ok(data)
         }
         "library" => {
-            let old = if p["action"] == "removeTrack" {
-                st.db.lock().unwrap().offline_path(s(&p, "id"))
-            } else {
-                None
-            };
-            let v = st.db.lock().unwrap().command(&p)?;
-            if let Some((path, _)) = old {
-                if offline::owned_path(&st.data, &path) {
-                    let _ = std::fs::remove_file(path);
+            if p["action"] == "removeTrack" {
+                let _removal = st.offline.removal(s(&p, "id")).await;
+                let old = st.db.lock().unwrap().offline_path(s(&p, "id"));
+                let v = st.db.lock().unwrap().command(&p)?;
+                if let Some((path, _)) = old {
+                    if offline::owned_path(&st.data, &path) {
+                        let _ = std::fs::remove_file(path);
+                    }
                 }
+                Ok(v)
+            } else {
+                st.db.lock().unwrap().command(&p)
             }
-            Ok(v)
         }
         "preferences" => {
             db::validate_prefs(&p)?;
@@ -249,6 +254,7 @@ async fn call(
                 search.cache.clear();
                 st.audio.clear();
                 st.accounts.cancel();
+                st.offline.cancel_all();
                 for token in search.requests.values() {
                     token.cancel();
                 }
@@ -464,33 +470,23 @@ async fn call(
                 .map_err(|_| "Há outra sincronização em andamento.")?;
             let lists = st.accounts.sync(provider).await?;
             st.accounts.ensure_active(provider)?;
-            let pref = st.db.lock().unwrap().pref();
-            if pref["onlineConsent"] != true
-                || pref["catalogConsent"] != true
-                || pref["onboardingDone"] != true
-            {
-                return Err("Sincronização cancelada: acesso online desativado.".into());
-            }
-            let mut count = 0;
-            let mut tracks = 0;
-            for (list, liked) in lists {
-                if list.tracks.is_empty() {
-                    continue;
+            let count = lists.len();
+            let tracks = lists.iter().map(|(list, _)| list.tracks.len()).sum::<usize>();
+            let snapshot = {
+                let db = st.db.lock().unwrap();
+                let pref = db.pref();
+                if pref["onlineConsent"] != true
+                    || pref["catalogConsent"] != true
+                    || pref["onboardingDone"] != true
+                {
+                    return Err("Sincronização cancelada: acesso online desativado.".into());
                 }
-                let pid = st
-                    .db
-                    .lock()
-                    .unwrap()
-                    .merge_collection(&list.key, &list.name, &list.tracks, liked)?;
-                st.db
-                    .lock()
-                    .unwrap()
-                    .collection_artwork(&pid, &list.artwork)?;
-                count += 1;
-                tracks += list.tracks.len();
-            }
+                st.accounts.ensure_active(provider)?;
+                db.merge_account_snapshot(&lists)?;
+                db.snapshot()?
+            };
+            st.accounts.ensure_active(provider)?;
             st.accounts.synced(provider)?;
-            let snapshot = st.db.lock().unwrap().snapshot()?;
             Ok(json!({
                 "snapshot": snapshot,
                 "playlists": count,
@@ -822,11 +818,6 @@ async fn call(
             Ok(Value::Null)
         }
         "downloadOffline" => {
-            static DOWNLOAD: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
-            let _permit = DOWNLOAD
-                .acquire()
-                .await
-                .map_err(|_| "Serviço de download indisponível.")?;
             let pref = st.db.lock().unwrap().pref();
             if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
                 return Err("Ative o acesso online para baixar.".into());
@@ -835,39 +826,64 @@ async fn call(
             if !["youtube", "link"].contains(&s(&p, "source")) {
                 return Err("Esta origem não disponibiliza download neste app.".into());
             }
-            let track = if p["source"] == "link" {
-                links::playback(p.clone(), &st.catalog_url, &st.direct).await?
-            } else {
-                p.clone()
-            };
-            let stream = st
-                .direct
-                .audio(track["playbackId"].as_str().unwrap_or(s(&track, "sourceId")))
-                .await?;
-            let (path, size, duration) = offline::download(&st.data, s(&track, "id"), &stream).await?;
-            let db = st.db.lock().unwrap();
-            if db.pref()["onlineConsent"] != true {
-                let _ = std::fs::remove_file(path);
-                return Err("Download cancelado: acesso online desativado.".into());
+            let id = s(&p, "id").to_string();
+            let operation = st.offline.begin(&id).await;
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online para baixar.".into());
             }
-            db.save(&track, None)?;
-            db.save_offline(
-                s(&track, "id"),
-                path.to_str().ok_or("Pasta inválida.")?,
-                size,
-                duration,
-            )?;
-            db.snapshot()
+            operation.ensure_current()?;
+            {
+                let db = st.db.lock().unwrap();
+                if let Some((path, _)) = db.offline_path(&id) {
+                    if offline::is_cached(&st.data, &path) {
+                        return db.snapshot();
+                    }
+                    db.remove_offline(&id)?;
+                }
+            }
+            static DOWNLOAD: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+            let token = operation.token();
+            let _permit = tokio::select! {
+                biased;
+                _ = token.cancelled() => return Err("Download cancelado.".into()),
+                permit = DOWNLOAD.acquire() => permit.map_err(|_| "Serviço de download indisponível.")?,
+            };
+            let resolved: Result<(Value, offline::PendingDownload)> = tokio::select! {
+                biased;
+                _ = token.cancelled() => Err("Download cancelado.".into()),
+                result = async {
+                    let track = if p["source"] == "link" {
+                        links::playback(p.clone(), &st.catalog_url, &st.direct).await?
+                    } else {
+                        p.clone()
+                    };
+                    db::validate_track(&track)?;
+                    if s(&track, "id") != id {
+                        return Err("A faixa resolvida mudou durante o download.".into());
+                    }
+                    let stream = st
+                        .direct
+                        .audio(track["playbackId"].as_str().unwrap_or(s(&track, "sourceId")))
+                        .await?;
+                    let pending = offline::download(&st.data, &id, &stream, &token).await?;
+                    Ok((track, pending))
+                } => result,
+            };
+            let (track, pending) = resolved?;
+            let db = st.db.lock().unwrap();
+            offline::commit_pending(&db, &st.data, &track, &operation, pending)
         }
         "removeOffline" => {
             let id = p.as_str().ok_or("Faixa inválida.")?;
+            let _removal = st.offline.removal(id).await;
             let db = st.db.lock().unwrap();
             if let Some((path, _)) = db.offline_path(id) {
                 if offline::owned_path(&st.data, &path) {
                     let _ = std::fs::remove_file(path);
                 }
-                db.remove_offline(id)?;
             }
+            db.remove_offline(id)?;
             db.snapshot()
         }
         "importAudio" => {
@@ -1251,27 +1267,19 @@ async fn call(
         }
         "updateStatus" => {
             let pref = st.db.lock().unwrap().pref();
-            if p["install"] == true {
-                let backup = st.data.join("backups");
-                std::fs::create_dir_all(&backup).map_err(|e| e.to_string())?;
-                let path = backup.join(format!("before-update-{}.sqlite", uuid::Uuid::new_v4()));
-                st.db
-                    .lock()
-                    .unwrap()
-                    .db
-                    .execute("VACUUM main INTO ?", [path.to_str().ok_or("Pasta inválida.")?])
-                    .map_err(|e| e.to_string())?;
-            }
+            let db = st.db.clone();
+            let backup = st.data.join("backups");
             updates::status(
                 &app,
                 pref["onlineConsent"] == true && pref["onboardingDone"] == true,
                 p["install"] == true,
+                move || updates::backup_library(&db.lock().unwrap(), &backup).map(|_| ()),
             )
             .await
         }
         "checkUpdates" => {
             let pref = st.db.lock().unwrap().pref();
-            let value = updates::status(&app, pref["onlineConsent"] == true, false).await?;
+            let value = updates::status(&app, pref["onlineConsent"] == true, false, || Ok(())).await?;
             Ok(value["message"].clone())
         }
         "mediaMetadata" => {
@@ -1394,6 +1402,7 @@ fn main() {
             let accounts = accounts::Accounts::load(&data)?;
             app.manage(State {
                 accounts,
+                offline: offline::Downloads::default(),
                 db,
                 secrets: Mutex::new(keys),
                 search: Mutex::new(providers::SearchState::new()),

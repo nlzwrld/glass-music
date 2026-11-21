@@ -1,8 +1,9 @@
 import { test, expect, chromium, type Browser, type Page } from '@playwright/test';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { resolve, join } from 'node:path';
 import { createCatalog } from '../../server/catalog';
+import { navButton } from './ui';
 
 // The desktop and catalog server are real. Only external platform responses are fixtures.
 // This test never sends owner credentials or fixture search terms to a real platform.
@@ -30,9 +31,12 @@ test('shared catalog: consent, discovery, search, pagination and recovery withou
   const server = createCatalog({ YOUTUBE_API_KEY: 'fixture-owner-key', SOUNDCLOUD_CLIENT_ID: 'fixture-owner-id', SOUNDCLOUD_CLIENT_SECRET: 'fixture-owner-secret' }, api as typeof fetch);
   server.on('request', req => traffic.push(req.url || ''));
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
-  await mkdir('../../work/profiles', { recursive: true });
-  const profile = await mkdtemp(resolve('../../work/profiles/catalog-'));
+  await mkdir('.test-data/profiles', { recursive: true });
+  const profile = await mkdtemp(resolve('.test-data/profiles/catalog-'));
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const cargoManifest = await readFile('src-tauri/Cargo.toml', 'utf8');
+  const targetVersion = /^version\s*=\s*"([^"]+)"/m.exec(cargoManifest)?.[1];
+  expect(targetVersion).toBeTruthy();
   let page: Page;
   try {
     processHandle = spawn(process.env.GLASS_EXE || join(process.env.LOCALAPPDATA!, 'Liquid Hub/liquid-hub.exe'), [], { windowsHide: true, env: { ...process.env, GLASS_TEST_DATA: profile, GLASS_TEST_CATALOG_URL: base, WEBVIEW2_USER_DATA_FOLDER: join(profile, 'webview'), WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=9339' } });
@@ -41,8 +45,8 @@ test('shared catalog: consent, discovery, search, pagination and recovery withou
     page = browser.contexts()[0].pages()[0];
     page.on('pageerror', e => errors.push(e.message));
     await expect(page.getByRole('button',{name:'Permitir e continuar'})).toBeVisible({timeout:15000});
-    await expect(page.getByRole('button', { name: 'Ativar acesso online', exact: true })).toBeVisible();
-    expect(await page.evaluate(() => window.glass.integrations())).toMatchObject({ version: '2.0.1', catalogConfigured: true });
+    await expect(page.getByRole('dialog', { name: 'Permitir acesso online?' }).getByRole('button', { name: 'Agora não', exact: true })).toBeVisible();
+    expect(await page.evaluate(() => window.glass.integrations())).toMatchObject({ version: targetVersion, catalogConfigured: true });
     // Opening Home and calling the bridge directly must not access the catalog before consent.
     const denied = await page.evaluate(async () => { try { await window.glass.discover('before-consent'); return false; } catch { return true; } });
     expect(denied).toBe(true); expect(traffic).toEqual([]);
@@ -61,10 +65,10 @@ test('shared catalog: consent, discovery, search, pagination and recovery withou
     await page.keyboard.press('Control+k');
     await page.getByRole('textbox', { name: 'Buscar músicas, artistas e playlists' }).fill('ambient');
     await page.getByRole('button', { name: 'Músicas', exact: true }).click();
-    await expect(page.locator('.results-count')).toHaveText('2 resultados');
-    await page.getByRole('button', { name: 'Carregar mais resultados' }).click();
-    await expect(page.locator('.results-count')).toHaveText('4 resultados');
-    await expect(page.getByRole('button', { name: 'Carregar mais resultados' })).toHaveCount(0);
+    await expect(page.locator('.search-page .track-row')).toHaveCount(2);
+    await page.getByRole('button', { name: 'Carregar mais', exact: true }).click();
+    await expect(page.locator('.search-page .track-row')).toHaveCount(4);
+    await expect(page.getByRole('button', { name: 'Carregar mais', exact: true })).toHaveCount(0);
     failSoundcloud = true;
     const request = { query: 'recover', kind: 'track' as const, source: 'all' as const, requestId: 'recover-one' };
     const partial = await page.evaluate(r => window.glass.search(r), request);
@@ -72,12 +76,13 @@ test('shared catalog: consent, discovery, search, pagination and recovery withou
     failSoundcloud = false;
     const recovered = await page.evaluate(r => window.glass.search(r), { ...request, requestId: 'recover-two' });
     expect(recovered.items.map(t => t.source)).toEqual(['youtube', 'soundcloud']); expect(recovered.notices).toEqual([]);
-    await page.getByRole('button', { name: 'Configurações', exact: true }).click();
+    await navButton(page,'Configurações').click();
     await page.getByRole('switch', { name: 'Acesso online' }).click();
     await expect.poll(() => page.evaluate(async () => (await window.glass.bootstrap()).preferences.catalogConsent)).toBe(false);
     const count = traffic.length;
     await page.getByRole('button', { name: 'Início', exact: true }).click();
     await expect(page.locator('.online-catalog')).toHaveCount(0);
+    await expect(page.locator('.catalog-intro')).toContainText('Acesso online desativado');
     const after = await page.evaluate(r => window.glass.search(r), { ...request, requestId: 'after-revoke' });
     expect(after.items).toEqual([]); expect(after.notices.join()).toContain('Ative as integrações'); expect(traffic).toHaveLength(count);
     expect(errors).toEqual([]);

@@ -7,6 +7,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {PNG} from 'pngjs';
 import {defaults} from '../../shared/types';
 import {opticalDefaults} from '../../src/components/glass/v3/model';
+import {navButton} from './ui';
 
 type Raster={width:number;height:number;data:Uint8Array};
 const sides=['top','bottom','left','right'] as const;
@@ -30,8 +31,8 @@ function sideMean(p:Raster,side:Side,depths:number[]){
 test('the full-window glass reflects on four sides without a white outline; Home has clear section spacing',async()=>{
  test.setTimeout(120000);
  expect(process.env.GLASS_EXE,'GLASS_EXE must point to the desktop executable under test').toBeTruthy();
- await mkdir('../../work/profiles',{recursive:true});await mkdir('test-results',{recursive:true});
- const profile=await mkdtemp(resolve('../../work/profiles/perimeter-203-'));
+ await mkdir('.test-data/profiles',{recursive:true});await mkdir('test-results',{recursive:true});
+ const profile=await mkdtemp(resolve('.test-data/profiles/perimeter-203-'));
  const db=new DatabaseSync(join(profile,'library.sqlite')),now=Date.now();
  db.exec('CREATE TABLE tracks(id TEXT PRIMARY KEY,data TEXT NOT NULL,local_path TEXT,refreshed INTEGER NOT NULL);CREATE TABLE history(track_id TEXT,played INTEGER NOT NULL);CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);');
  for(let i=0;i<3;i++){
@@ -40,7 +41,7 @@ test('the full-window glass reflects on four sides without a white outline; Home
   db.prepare('INSERT INTO history VALUES(?,?)').run(track.id,now-i);
  }
  db.prepare('INSERT INTO settings VALUES(?,?)').run('preferences',JSON.stringify({
-  ...defaults,onboardingDone:true,onlineConsent:false,catalogConsent:false,theme:'dark',volume:0,glass:45,reducedMotion:true,
+  ...defaults,uiStyle:'glass',onboardingDone:true,onlineConsent:false,catalogConsent:false,theme:'dark',volume:0,glass:45,reducedMotion:true,
   appearance:{...opticalDefaults,background:'solid',solidColor:'#101820',quality:'high',material:'floating',specular:0,blur:0}
  }));db.close();
  const port=9359,endpoint=`http://127.0.0.1:${port}`;
@@ -56,7 +57,7 @@ test('the full-window glass reflects on four sides without a white outline; Home
   await expect(page.locator('.welcome-screen')).toHaveCount(0,{timeout:15000});
   const cdp=await context.newCDPSession(page);
   await cdp.send('Emulation.setDeviceMetricsOverride',{width:1280,height:720,deviceScaleFactor:1,mobile:false});
-  await page.getByRole('button',{name:'Configurações',exact:true}).click();
+  await navButton(page,'Configurações').click();
   await expect(page.getByRole('button',{name:'Cor',exact:true})).toHaveAttribute('aria-pressed','true');
   await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
 
@@ -101,10 +102,10 @@ test('the full-window glass reflects on four sides without a white outline; Home
 
   await page.getByRole('button',{name:'Início',exact:true}).click();
   const home=page.locator('.home-page');await expect(home).toBeVisible();
-  await expect(home.locator('.home-heading h1')).toHaveText('Início');
-  await expect(home.locator('.home-heading p,.home-heading .eyebrow,.home-greeting')).toHaveCount(0);
+  await expect(home.locator('.page-heading h1')).toHaveText('Início');
+  await expect(home.locator('.page-heading p,.page-heading .eyebrow,.home-greeting')).toHaveCount(0);
   await expect(home).not.toContainText(/Sua música, em outra atmosfera|Feito para você|Bom dia|Boa tarde|Boa noite/i);
-  await expect(home.locator('#home-recent-title')).toBeVisible();
+  await expect(home.getByRole('region',{name:'Tocadas recentemente',exact:true})).toBeVisible();
   await expect(home.locator('#home-library-title')).toHaveCount(1);
   for(const width of [1280,920]){
    await cdp.send('Emulation.setDeviceMetricsOverride',{width,height:720,deviceScaleFactor:1,mobile:false});
@@ -117,7 +118,7 @@ test('the full-window glass reflects on four sides without a white outline; Home
      return{title:section.querySelector('h2')?.textContent,top:r.top,bottom:r.bottom,cards:section.querySelectorAll('.track-card').length};
     });
     const gaps=boxes.slice(1).map((box,index)=>box.top-boxes[index].bottom);
-    const first=boxes[0],header=el.querySelector('.home-heading')!.getBoundingClientRect();
+    const first=boxes[0],header=el.querySelector('.page-heading')!.getBoundingClientRect();
     return{boxes,gaps,headerGap:first.top-header.bottom,overflow:el.scrollWidth>el.clientWidth+1};
    });
    expect(layout.boxes.filter(section=>section.cards>0).length,'the fixture supplies at least two populated Home sections').toBeGreaterThanOrEqual(2);

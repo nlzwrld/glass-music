@@ -9,7 +9,7 @@ import { resolveLiquidHubExe } from './exe';
 
 test('two actual app windows follow JAM play pause seek and track changes', async () => {
   test.setTimeout(90000);
-  await mkdir('../../work/profiles', { recursive: true });
+  await mkdir('.test-data/profiles', { recursive: true });
   await mkdir('test-results', { recursive: true });
   const exe = resolveLiquidHubExe();
 
@@ -38,7 +38,7 @@ test('two actual app windows follow JAM play pause seek and track changes', asyn
 
   try {
     for (let i = 0; i < 2; i++) {
-      const profile = await mkdtemp(resolve('../../work/profiles/jam-app-220-'));
+      const profile = await mkdtemp(resolve('.test-data/profiles/jam-app-220-'));
       await mkdir(join(profile, 'offline'));
       const path = join(profile, 'offline', 'fixture.wav');
       await copyFile('assets/audio/prisma.wav', path);

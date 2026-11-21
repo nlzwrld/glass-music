@@ -630,6 +630,15 @@ impl Library {
             json!({"tracks":tracks,"playlists":playlists,"likes":likes,"history":history,"preferences":self.pref()}),
         )
     }
+    pub fn backup_to(&self, path: &Path) -> Result<()> {
+        self.db
+            .execute(
+                "VACUUM main INTO ?",
+                [path.to_str().ok_or("Pasta inválida.")?],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
     pub fn transact<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
         self.db
             .execute_batch("BEGIN IMMEDIATE")
@@ -671,6 +680,16 @@ impl Library {
     }
     pub fn offline_path(&self,id:&str)->Option<(String,f64)>{self.db.query_row("SELECT path,duration FROM offline_tracks WHERE track_id=?",[id],|r|Ok((r.get(0)?,r.get(1)?))).optional().ok().flatten()}
     pub fn save_offline(&self,id:&str,path:&str,size:u64,duration:f64)->Result<()>{self.db.execute("INSERT INTO offline_tracks VALUES(?,?,?,?,?) ON CONFLICT(track_id) DO UPDATE SET path=excluded.path,size=excluded.size,duration=excluded.duration,created=excluded.created",params![id,path,size as i64,duration,now()]).map_err(|e|e.to_string())?;Ok(())}
+    pub fn commit_offline(&self, track:&Value, path:&str, size:u64, duration:f64)->Result<()>{
+        validate_track(track)?;
+        if path.is_empty()||path.len()>1024||size<512||size>250_000_000||!duration.is_finite()||!(0.0..=604800.0).contains(&duration){
+            return Err("Metadados offline inválidos.".into());
+        }
+        self.transact(||{
+            self.save(track,None)?;
+            self.save_offline(s(track,"id"),path,size,duration)
+        })
+    }
     pub fn remove_offline(&self,id:&str)->Result<()>{self.db.execute("DELETE FROM offline_tracks WHERE track_id=?",[id]).map_err(|e|e.to_string())?;Ok(())}
     pub fn set_track_artwork(&self,id:&str,url:&str)->Result<()> {
         if !artwork_url(url){return Err("Capa inválida.".into());}
@@ -690,19 +709,39 @@ impl Library {
         }
         Ok(())
     }
-    pub fn merge_collection(&self,key:&str,name:&str,tracks:&[Value],liked:bool)->Result<String>{
+    fn prepare_collection(key:&str,name:&str,tracks:&[Value])->Result<(String,String)>{
         use sha2::{Digest,Sha256};
         if key.len()>2048||name.trim().is_empty()||tracks.len()>1000{return Err("Playlist inválida ou maior que 1000 faixas.".into());}
         for t in tracks{validate_track(t)?;}
-        let id=format!("remote-{:x}",Sha256::digest(key.as_bytes()));let name:String=name.chars().take(100).collect();
+        Ok((format!("remote-{:x}",Sha256::digest(key.as_bytes())),name.chars().take(100).collect()))
+    }
+    fn merge_collection_inner(&self,id:&str,name:&str,tracks:&[Value],liked:bool,artwork:Option<&str>)->Result<()>{
+        self.db.execute("INSERT INTO playlists VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name",params![id,name,now()]).map_err(|e|e.to_string())?;
+        for t in tracks{
+            self.save(t,None)?;
+            self.db.execute("INSERT OR IGNORE INTO playlist_tracks SELECT ?,?,COALESCE(MAX(position),-1)+1 FROM playlist_tracks WHERE playlist_id=?",params![id,s(t,"id"),id]).map_err(|e|e.to_string())?;
+            if liked{self.db.execute("INSERT OR IGNORE INTO likes VALUES(?)",[s(t,"id")]).map_err(|e|e.to_string())?;}
+        }
+        if let Some(artwork)=artwork{self.collection_artwork(id,artwork)?;}
+        Ok(())
+    }
+    pub fn merge_collection(&self,key:&str,name:&str,tracks:&[Value],liked:bool)->Result<String>{
+        let(id,name)=Self::prepare_collection(key,name,tracks)?;
+        self.transact(||self.merge_collection_inner(&id,&name,tracks,liked,None))?;
+        Ok(id)
+    }
+    pub fn merge_account_snapshot(&self,lists:&[(crate::collections::Collection,bool)])->Result<()>{
+        if lists.len()>100{return Err("Número de playlists excede o limite da sincronização.".into());}
+        let prepared=lists.iter().map(|(list,liked)|{
+            let(id,name)=Self::prepare_collection(&list.key,&list.name,&list.tracks)?;
+            Ok((id,name,list,*liked))
+        }).collect::<Result<Vec<_>>>()?;
         self.transact(||{
-            self.db.execute("INSERT INTO playlists VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name",params![id,name,now()]).map_err(|e|e.to_string())?;
-            for t in tracks{
-                self.save(t,None)?;
-                self.db.execute("INSERT OR IGNORE INTO playlist_tracks SELECT ?,?,COALESCE(MAX(position),-1)+1 FROM playlist_tracks WHERE playlist_id=?",params![id,s(t,"id"),id]).map_err(|e|e.to_string())?;
-                if liked{self.db.execute("INSERT OR IGNORE INTO likes VALUES(?)",[s(t,"id")]).map_err(|e|e.to_string())?;}
-            }Ok(())
-        })?;Ok(id)
+            for(id,name,list,liked)in prepared{
+                self.merge_collection_inner(&id,&name,&list.tracks,liked,Some(&list.artwork))?;
+            }
+            Ok(())
+        })
     }
     pub fn export(&self, playlist: Option<&str>) -> Result<Value> {
         let mut snap = self.snapshot()?;
@@ -800,6 +839,9 @@ mod tests {
     fn track(id: &str) -> Value {
         json!({"id":format!("local:{id}"),"source":"local","sourceId":id,"kind":"track","title":id,"artist":"Teste","duration":3,"addedAt":now()})
     }
+    fn collection(key:&str,name:&str,tracks:Vec<Value>)->crate::collections::Collection{
+        crate::collections::Collection{artwork:"https://i.scdn.co/image/account-test".into(),key:key.into(),name:name.into(),tracks,warning:String::new(),skipped:0}
+    }
     #[test]
     fn move_is_atomic_deduplicated_and_preserves_other_tracks(){
       let db=Library::open(Path::new(":memory:")).unwrap();
@@ -822,6 +864,45 @@ mod tests {
         let again=db.merge_collection("remote:test","Lista",&[track("a"),track("c")],true).unwrap();assert_eq!(id,again);
         let snap=db.snapshot().unwrap();assert_eq!(snap["playlists"].as_array().unwrap().len(),1);assert_eq!(snap["playlists"][0]["trackIds"],json!(["local:a","local:b","local:c"]));assert_eq!(snap["likes"].as_array().unwrap().len(),3);
         let mut bad=track("x");bad["source"]=json!("invalid");assert!(db.merge_collection("remote:test","Bad",&[track("d"),bad],false).is_err());assert_eq!(db.snapshot().unwrap(),snap);
+    }
+    #[test]
+    fn account_snapshot_is_additive_supports_empty_lists_and_preserves_local_order(){
+        let db=Library::open(Path::new(":memory:")).unwrap();
+        db.merge_account_snapshot(&[(collection("account:p:user:empty","Vazia",vec![]),false)]).unwrap();
+        let empty=db.snapshot().unwrap();
+        assert_eq!(empty["playlists"][0]["trackIds"],json!([]));
+
+        let id=db.merge_collection("account:p:user:list","Conta",&[track("a"),track("b")],true).unwrap();
+        db.command(&json!({"action":"add","id":id,"track":track("local-extra")})).unwrap();
+        db.command(&json!({"action":"reorder","id":id,"trackIds":["local:b","local:a","local:local-extra"]})).unwrap();
+        db.merge_account_snapshot(&[(collection("account:p:user:list","Conta",vec![track("b")]),false)]).unwrap();
+        let snap=db.snapshot().unwrap();
+        let list=snap["playlists"].as_array().unwrap().iter().find(|p|p["id"]==id).unwrap();
+        assert_eq!(list["trackIds"],json!(["local:b","local:a","local:local-extra"]));
+        assert!(snap["likes"].as_array().unwrap().contains(&json!("local:a")));
+
+        db.merge_account_snapshot(&[(collection("account:p:user:list","Conta",vec![]),false)]).unwrap();
+        assert_eq!(db.snapshot().unwrap()["playlists"].as_array().unwrap().iter().find(|p|p["id"]==id).unwrap()["trackIds"],list["trackIds"]);
+    }
+    #[test]
+    fn account_snapshot_validates_every_list_and_rolls_back_tracks_and_artwork(){
+        let db=Library::open(Path::new(":memory:")).unwrap();
+        let before=db.snapshot().unwrap();
+        let mut bad=track("bad");bad["source"]=json!("invalid");
+        let lists=vec![(collection("account:p:user:good","Boa",vec![track("good")]),true),(collection("account:p:user:bad","Ruim",vec![bad]),false)];
+        assert!(db.merge_account_snapshot(&lists).is_err());
+        assert_eq!(db.snapshot().unwrap(),before);
+    }
+    #[test]
+    fn offline_commit_rolls_back_track_metadata_and_preserves_previous_record(){
+        let db=Library::open(Path::new(":memory:")).unwrap();
+        db.save(&track("a"),None).unwrap();
+        db.save_offline("local:a","C:/old.webm",512,3.0).unwrap();
+        db.db.execute("CREATE TRIGGER reject_offline_update BEFORE UPDATE ON offline_tracks BEGIN SELECT RAISE(ABORT,'blocked'); END",[]).unwrap();
+        let mut replacement=track("a");replacement["title"]=json!("new title");
+        assert!(db.commit_offline(&replacement,"C:/new.webm",1024,3.0).is_err());
+        assert_eq!(db.offline_path("local:a"),Some(("C:/old.webm".into(),3.0)));
+        assert_eq!(db.snapshot().unwrap()["tracks"][0]["title"],"a");
     }
     #[test]
     fn upgrade_preserves_preferences_without_granting_catalog_consent() {

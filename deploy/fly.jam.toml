@@ -10,6 +10,8 @@ primary_region = "gru"
   PORT = "8789"
   JAM_MAX_ROOMS = "2500"
   JAM_STRICT_REPLAY = "1"
+  # Opt-in somente porque este serviço é acessado pelo proxy da Fly.
+  JAM_TRUST_FLY_CLIENT_IP = "1"
 
 [http_service]
   internal_port = 8789

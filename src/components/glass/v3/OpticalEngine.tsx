@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { MotionConfig } from 'motion/react';
-import { useApp } from '../../../stores/app';
+import { useApp, setPreferencesFromUI } from '../../../stores/app';
 import { getAudioReactiveFrame } from '../../../lib/audioGraph';
 import { coverURL } from '../Cover';
 import { CrystalRenderer } from './renderer';
@@ -76,7 +76,7 @@ export function OpticalEngine({ children }: { children: ReactNode }) {
           key => saved[key] !== settings[key as keyof OpticalSettings],
         ))
     ) {
-      void useApp.getState().setPreferences({ appearance: { ...settings } });
+      setPreferencesFromUI({ appearance: { ...settings } });
     }
   }, [booted, saved, settings]);
 
@@ -424,7 +424,7 @@ export function OpticalEngine({ children }: { children: ReactNode }) {
 
   const setSettings = (patch: Partial<OpticalSettings>) => {
     const next = normalizeOptics({ ...settings, ...patch });
-    void useApp.getState().setPreferences({ appearance: { ...next } });
+    setPreferencesFromUI({ appearance: { ...next } });
   };
   const windowPreset = materialPresets[settings.material];
   return (

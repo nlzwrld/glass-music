@@ -2,10 +2,11 @@ import {test,expect,chromium,type Browser} from '@playwright/test';
 import {spawn} from 'node:child_process';
 import {mkdir,mkdtemp,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
+import {activeAudio,chooseSidebarCreation,importUrlInput,openSidebarPlaylist} from './ui';
 
-test('Spotify and Deezer links automatically play matching audio inside Glass, including saved links',async()=>{
- test.setTimeout(180000);await mkdir('../../work/profiles',{recursive:true});await mkdir('test-results',{recursive:true});
- const profile=await mkdtemp(resolve('../../work/profiles/link-playback-'));let browser:Browser|undefined;const errors:string[]=[];
+test('Spotify, Deezer and Apple Music links stay inside Glass, including saved links and invalid hosts',async()=>{
+ test.setTimeout(180000);await mkdir('.test-data/profiles',{recursive:true});await mkdir('test-results',{recursive:true});
+ const profile=await mkdtemp(resolve('.test-data/profiles/link-playback-'));let browser:Browser|undefined;const errors:string[]=[];
  const proc=spawn(process.env.GLASS_EXE||join(process.env.LOCALAPPDATA!,'Liquid Hub/liquid-hub.exe'),[],{windowsHide:true,env:{...process.env,GLASS_TEST_DATA:profile,GLASS_TEST_DISABLE_DIRECT:'0',GLASS_TEST_CATALOG_URL:'',WEBVIEW2_USER_DATA_FOLDER:join(profile,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9350'}});
  try{
   for(let i=0;i<90;i++){try{if((await fetch('http://127.0.0.1:9350/json/version')).ok)break;}catch{}await new Promise(r=>setTimeout(r,200));}
@@ -14,19 +15,23 @@ test('Spotify and Deezer links automatically play matching audio inside Glass, i
   const external=()=>page.evaluate(()=>(window as any).__externalCalls);await page.evaluate(()=>{(window as any).__externalCalls=[];window.glass.external=async url=>{(window as any).__externalCalls.push(url);};});
   const imports=[];
   for(const url of ['https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC','https://www.deezer.com/track/3135556']){
-   await page.getByRole('button',{name:'Adicionar link',exact:true}).first().click();await page.getByRole('textbox',{name:'Link da música'}).fill(url);await page.getByRole('dialog').getByRole('button',{name:'Adicionar',exact:true}).click();await expect(page.getByRole('dialog')).toHaveCount(0,{timeout:30000});
-   await expect.poll(()=>page.locator('audio').evaluate((a:HTMLAudioElement)=>a.currentTime),{timeout:60000}).toBeGreaterThan(.8);
+   await chooseSidebarCreation(page,'Importar por link');await importUrlInput(page).fill(url);await page.getByRole('dialog').getByRole('button',{name:'Adicionar',exact:true}).click();await expect(page.getByRole('dialog')).toHaveCount(0,{timeout:30000});
+   await expect.poll(()=>activeAudio(page).evaluate((a:HTMLAudioElement)=>a.currentTime),{timeout:60000}).toBeGreaterThan(.8);
    const track=(await page.evaluate(()=>window.glass.bootstrap())).tracks.find(t=>t.url===url)!;expect(track.playbackId).toMatch(/^[\w-]{11}$/);expect(track.reason).toBe('Áudio via YouTube');expect(track.source).toBe('link');
-   expect(await page.locator('audio').getAttribute('src')).toMatch(/\/audio\/[a-f0-9]+$/);expect(await external()).toEqual([]);imports.push({url,title:track.title,artist:track.artist,playbackId:track.playbackId});
+   expect(await activeAudio(page).getAttribute('src')).toMatch(/\/audio\/[a-f0-9]+$/);expect(await external()).toEqual([]);imports.push({url,title:track.title,artist:track.artist,playbackId:track.playbackId});
    await page.locator('footer.player').getByRole('button',{name:'Pausar',exact:true}).click();
   }
   const before=await page.evaluate(()=>window.glass.bootstrap()),legacy=before.tracks.find(t=>t.url?.includes('spotify.com'))!;delete legacy.playbackId;delete legacy.reason;
   await page.evaluate(async track=>{await window.glass.library({action:'save',track});await window.glass.library({action:'create',name:'Links antigos'});const s=await window.glass.bootstrap();await window.glass.library({action:'add',id:s.playlists[0].id,track});},legacy);
-  await page.reload();await expect(page.locator('.welcome-screen')).toHaveCount(0,{timeout:15000});await page.evaluate(()=>{(window as any).__externalCalls=[];window.glass.external=async url=>{(window as any).__externalCalls.push(url);};});await page.getByRole('button',{name:'Links antigos',exact:true}).click();await page.getByRole('button',{name:`Reproduzir ${legacy.title}`,exact:true}).click();
-  await expect.poll(()=>page.locator('audio').evaluate((a:HTMLAudioElement)=>a.currentTime),{timeout:60000}).toBeGreaterThan(.8);const after=await page.evaluate(()=>window.glass.bootstrap());expect(after.playlists[0].trackIds).toEqual([legacy.id]);expect(after.tracks.find(t=>t.id===legacy.id)?.playbackId).toBeTruthy();expect(after.history.some(h=>h.id===legacy.id)).toBe(true);expect(await external()).toEqual([]);
+  await page.reload();await expect(page.locator('.welcome-screen')).toHaveCount(0,{timeout:15000});await page.evaluate(()=>{(window as any).__externalCalls=[];window.glass.external=async url=>{(window as any).__externalCalls.push(url);};});await openSidebarPlaylist(page,'Links antigos');await page.getByRole('button',{name:`Reproduzir ${legacy.title}`,exact:true}).click();
+  await expect.poll(()=>activeAudio(page).evaluate((a:HTMLAudioElement)=>a.currentTime),{timeout:60000}).toBeGreaterThan(.8);const after=await page.evaluate(()=>window.glass.bootstrap());expect(after.playlists[0].trackIds).toEqual([legacy.id]);expect(after.tracks.find(t=>t.id===legacy.id)?.playbackId).toBeTruthy();expect(after.history.some(h=>h.id===legacy.id)).toBe(true);expect(await external()).toEqual([]);
   await page.screenshot({path:'test-results/link-playback-inside-glass.png'});await page.locator('footer.player').getByRole('button',{name:'Pausar',exact:true}).click();
-  await page.getByRole('button',{name:'Adicionar link',exact:true}).first().click();await page.getByRole('textbox',{name:'Link da música'}).fill('https://music.apple.com/us/album/discovery/697194953');await page.getByRole('dialog').getByRole('button',{name:'Adicionar',exact:true}).click();await expect(page.getByRole('dialog')).toHaveCount(0,{timeout:25000});await expect(page.getByRole('alert').filter({hasText:'Este link ainda não tem áudio compatível'})).toBeVisible({timeout:10000});expect(await external()).toEqual([]);
+  await chooseSidebarCreation(page,'Importar por link');await importUrlInput(page).fill('https://music.apple.com/br/album/random-access-memories/617154241?i=617154366');await page.getByRole('dialog').getByRole('button',{name:'Adicionar',exact:true}).click();await expect(page.getByRole('dialog')).toHaveCount(0,{timeout:25000});
+  const apple=(await page.evaluate(()=>window.glass.bootstrap())).tracks.find(t=>t.url?.includes('music.apple.com')&&t.kind==='track');expect(apple).toBeTruthy();expect(apple?.source).toBe('link');expect(await external()).toEqual([]);
+  await page.locator('footer.player').getByRole('button',{name:'Pausar',exact:true}).click();
+  const direct=page.getByRole('textbox',{name:'Buscar músicas, artistas e playlists'});await direct.fill('https://music.apple.com/us/album/discovery/697194953');await direct.press('Enter');await expect(page.getByRole('heading',{name:'Discovery',exact:true})).toBeVisible({timeout:25000});await expect(page.locator('.playlist-page .track-row').first()).toBeVisible();expect(await external()).toEqual([]);
+  await chooseSidebarCreation(page,'Importar por link');await importUrlInput(page).fill('https://example.com/music/not-a-supported-provider');await page.getByRole('dialog').getByRole('button',{name:'Adicionar',exact:true}).click();await expect(page.getByRole('alert').filter({hasText:'Este link ainda não tem áudio compatível'})).toBeVisible({timeout:10000});expect(await external()).toEqual([]);
   await expect(page.locator('video,iframe[src*="youtube"]')).toHaveCount(0);expect(errors).toEqual([]);
-  await writeFile('test-results/link-playback-validation.json',JSON.stringify({version:'2.0.1',imports,automaticPlayback:true,legacyLinksWork:true,preservesPlaylistIds:true,noBrowserOnPlay:true,unsupportedStaysInside:true,noVideo:true,errors},null,2));
+  await writeFile('test-results/link-playback-validation.json',JSON.stringify({version:'2.0.1',imports,automaticPlayback:true,legacyLinksWork:true,preservesPlaylistIds:true,noBrowserOnPlay:true,appleTrackSupported:true,appleAlbumOpenedAsCollection:true,invalidHostStaysInside:true,noVideo:true,errors},null,2));
  }finally{proc.kill();await browser?.close().catch(()=>{});}
 });

@@ -8,6 +8,7 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import {
+  argon2,
   argon2Sync,
   createHash,
   createPrivateKey,
@@ -92,51 +93,194 @@ const ARGON2_DEFAULTS = {
   tagLength: 32,
 };
 
-export function hashPasswordArgon2id(
-  password: string,
-  params: Partial<typeof ARGON2_DEFAULTS> = {},
-): string {
-  const memory = params.memory ?? ARGON2_DEFAULTS.memory;
-  const passes = params.passes ?? ARGON2_DEFAULTS.passes;
-  const parallelism = params.parallelism ?? ARGON2_DEFAULTS.parallelism;
-  const tagLength = params.tagLength ?? ARGON2_DEFAULTS.tagLength;
+export type Argon2Params = Partial<typeof ARGON2_DEFAULTS>;
+
+type NativeArgon2Params = {
+  message: Buffer;
+  nonce: Buffer;
+  memory: number;
+  passes: number;
+  parallelism: number;
+  tagLength: number;
+};
+
+function deriveArgon2id(params: NativeArgon2Params): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    argon2('argon2id', params, (error, tag) => {
+      if (error) reject(error);
+      else resolve(tag);
+    });
+  });
+}
+
+function completeArgon2Params(params: Argon2Params) {
+  return {
+    memory: params.memory ?? ARGON2_DEFAULTS.memory,
+    passes: params.passes ?? ARGON2_DEFAULTS.passes,
+    parallelism: params.parallelism ?? ARGON2_DEFAULTS.parallelism,
+    tagLength: params.tagLength ?? ARGON2_DEFAULTS.tagLength,
+  };
+}
+
+function encodedArgon2id(passwordHash: string) {
+  const parts = passwordHash.split('$');
+  if (parts.length !== 6 || parts[1] !== 'argon2id' || parts[2] !== 'v=19') return undefined;
+  const kv = Object.fromEntries(
+    parts[3].split(',').map(pair => {
+      const [k, v] = pair.split('=');
+      return [k, Number(v)];
+    }),
+  );
+  if (!kv.m || !kv.t || !kv.p) return undefined;
+  const nonce = Buffer.from(parts[4], 'base64');
+  const expected = Buffer.from(parts[5], 'base64');
+  if (nonce.length < 8 || expected.length < 16) return undefined;
+  return {
+    nonce,
+    expected,
+    memory: kv.m,
+    passes: kv.t,
+    parallelism: kv.p,
+  };
+}
+
+export function hashPasswordArgon2id(password: string, params: Argon2Params = {}): string {
+  const complete = completeArgon2Params(params);
   const salt = randomBytes(16);
   const tag = argon2Sync('argon2id', {
     message: Buffer.from(password, 'utf8'),
     nonce: salt,
-    memory,
-    passes,
-    parallelism,
-    tagLength,
+    ...complete,
   });
-  return `$argon2id$v=19$m=${memory},t=${passes},p=${parallelism}$${salt.toString('base64')}$${tag.toString('base64')}`;
+  return `$argon2id$v=19$m=${complete.memory},t=${complete.passes},p=${complete.parallelism}$${salt.toString('base64')}$${tag.toString('base64')}`;
+}
+
+export async function hashPasswordArgon2idAsync(
+  password: string,
+  params: Argon2Params = {},
+): Promise<string> {
+  const complete = completeArgon2Params(params);
+  const salt = randomBytes(16);
+  const tag = await deriveArgon2id({
+    message: Buffer.from(password, 'utf8'),
+    nonce: salt,
+    ...complete,
+  });
+  return `$argon2id$v=19$m=${complete.memory},t=${complete.passes},p=${complete.parallelism}$${salt.toString('base64')}$${tag.toString('base64')}`;
 }
 
 export function verifyPasswordArgon2id(password: string, encoded: string): boolean {
   try {
-    const parts = encoded.split('$');
-    if (parts.length !== 6 || parts[1] !== 'argon2id' || parts[2] !== 'v=19') return false;
-    const kv = Object.fromEntries(
-      parts[3].split(',').map(pair => {
-        const [k, v] = pair.split('=');
-        return [k, Number(v)];
-      }),
-    );
-    if (!kv.m || !kv.t || !kv.p) return false;
-    const salt = Buffer.from(parts[4], 'base64');
-    const expected = Buffer.from(parts[5], 'base64');
-    if (salt.length < 8 || expected.length < 16) return false;
+    const parsed = encodedArgon2id(encoded);
+    if (!parsed) return false;
     const computed = argon2Sync('argon2id', {
       message: Buffer.from(password, 'utf8'),
-      nonce: salt,
-      memory: kv.m,
-      passes: kv.t,
-      parallelism: kv.p,
-      tagLength: expected.length,
+      nonce: parsed.nonce,
+      memory: parsed.memory,
+      passes: parsed.passes,
+      parallelism: parsed.parallelism,
+      tagLength: parsed.expected.length,
     });
-    return computed.length === expected.length && timingSafeEqual(computed, expected);
+    return computed.length === parsed.expected.length && timingSafeEqual(computed, parsed.expected);
   } catch {
     return false;
+  }
+}
+
+export async function verifyPasswordArgon2idAsync(
+  password: string,
+  encoded: string,
+): Promise<boolean> {
+  try {
+    const parsed = encodedArgon2id(encoded);
+    if (!parsed) return false;
+    const computed = await deriveArgon2id({
+      message: Buffer.from(password, 'utf8'),
+      nonce: parsed.nonce,
+      memory: parsed.memory,
+      passes: parsed.passes,
+      parallelism: parsed.parallelism,
+      tagLength: parsed.expected.length,
+    });
+    return computed.length === parsed.expected.length && timingSafeEqual(computed, parsed.expected);
+  } catch {
+    return false;
+  }
+}
+
+export interface Argon2AsyncAdapter {
+  hash(password: string, params: Argon2Params): Promise<string>;
+  verify(password: string, encoded: string): Promise<boolean>;
+}
+
+const nativeArgon2Adapter: Argon2AsyncAdapter = {
+  hash: hashPasswordArgon2idAsync,
+  verify: verifyPasswordArgon2idAsync,
+};
+
+class Argon2Queue {
+  private active = 0;
+  private readonly waiting: Array<() => void> = [];
+  private readonly concurrency: number;
+  private readonly maxWaiting: number;
+
+  constructor(
+    private readonly adapter: Argon2AsyncAdapter,
+    concurrency = 2,
+    maxWaiting = 32,
+  ) {
+    this.concurrency = Number.isFinite(concurrency)
+      ? Math.max(1, Math.min(4, Math.floor(concurrency)))
+      : 2;
+    this.maxWaiting = Number.isFinite(maxWaiting)
+      ? Math.max(0, Math.min(128, Math.floor(maxWaiting)))
+      : 32;
+  }
+
+  hash(password: string, params: Argon2Params): Promise<string> {
+    return this.run(adapter => adapter.hash(password, params));
+  }
+
+  verify(password: string, encoded: string): Promise<boolean> {
+    return this.run(adapter => adapter.verify(password, encoded));
+  }
+
+  private run<T>(operation: (adapter: Argon2AsyncAdapter) => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const start = () => {
+        this.active++;
+        let pending: Promise<T>;
+        try {
+          pending = operation(this.adapter);
+        } catch (error) {
+          this.finish();
+          reject(error);
+          return;
+        }
+        pending.then(
+          value => {
+            this.finish();
+            resolve(value);
+          },
+          error => {
+            this.finish();
+            reject(error);
+          },
+        );
+      };
+      if (this.active < this.concurrency) {
+        start();
+      } else if (this.waiting.length >= this.maxWaiting) {
+        reject(new BrokerHttpError('Serviço ocupado.', 503, 'service_busy'));
+      } else {
+        this.waiting.push(start);
+      }
+    });
+  }
+
+  private finish() {
+    this.active--;
+    this.waiting.shift()?.();
   }
 }
 
@@ -155,6 +299,15 @@ function constantTimeStringEqual(a: string, b: string): boolean {
   return timingSafeEqual(ba, bb);
 }
 
+export interface ZeroTrustAuthEngineOptions {
+  privateKeyPem?: string;
+  clock?: () => number;
+  argon2Params?: Argon2Params;
+  argon2Adapter?: Argon2AsyncAdapter;
+  argon2Concurrency?: number;
+  argon2QueueSize?: number;
+}
+
 export class ZeroTrustAuthEngine {
   private readonly privateKey: KeyObject;
   readonly publicKey: KeyObject;
@@ -165,17 +318,17 @@ export class ZeroTrustAuthEngine {
   private readonly refreshTokens = new Map<string, RefreshRecord>();
   private readonly revokedFamilies = new Set<string>();
   private readonly dummyHash: string;
-  private readonly argon2Params: Partial<typeof ARGON2_DEFAULTS>;
+  private readonly argon2Params: Argon2Params;
+  private readonly argon2: Argon2Queue;
 
-  constructor(
-    options: {
-      privateKeyPem?: string;
-      clock?: () => number;
-      argon2Params?: Partial<typeof ARGON2_DEFAULTS>;
-    } = {},
-  ) {
+  constructor(options: ZeroTrustAuthEngineOptions = {}) {
     this.clock = options.clock ?? Date.now;
     this.argon2Params = options.argon2Params ?? { memory: 19456, passes: 2, parallelism: 1 };
+    this.argon2 = new Argon2Queue(
+      options.argon2Adapter ?? nativeArgon2Adapter,
+      options.argon2Concurrency,
+      options.argon2QueueSize,
+    );
     if (options.privateKeyPem) {
       this.privateKey = createPrivateKey(options.privateKeyPem);
       this.publicKey = createPublicKey(this.privateKey);
@@ -213,18 +366,22 @@ export class ZeroTrustAuthEngine {
     }
   }
 
-  registerUser(username: string, password: string): StoredUser {
-    const normalized = username.trim().toLowerCase();
+  private ensureCanRegister(normalized: string) {
     if (this.usersByName.has(normalized)) {
       throw new BrokerHttpError('Usuário já registrado.', 409, 'user_exists');
     }
     if (this.usersByName.size >= 10_000) {
       throw new BrokerHttpError('Capacidade de contas atingida.', 503, 'capacity_exceeded');
     }
+  }
+
+  private commitRegisteredUser(normalized: string, passwordHash: string): StoredUser {
+    // Async registration must recheck after Argon2: another request may have committed meanwhile.
+    this.ensureCanRegister(normalized);
     const user: StoredUser = {
       id: `usr_${randomBytes(12).toString('hex')}`,
       username: normalized,
-      passwordHash: hashPasswordArgon2id(password, this.argon2Params),
+      passwordHash,
       createdAt: this.clock(),
     };
     this.usersByName.set(normalized, user);
@@ -232,7 +389,23 @@ export class ZeroTrustAuthEngine {
     return user;
   }
 
-  authenticateCredentials(raw: unknown, autoRegister = false) {
+  registerUser(username: string, password: string): StoredUser {
+    const normalized = username.trim().toLowerCase();
+    this.ensureCanRegister(normalized);
+    return this.commitRegisteredUser(
+      normalized,
+      hashPasswordArgon2id(password, this.argon2Params),
+    );
+  }
+
+  private async registerUserAsync(username: string, password: string): Promise<StoredUser> {
+    const normalized = username.trim().toLowerCase();
+    this.ensureCanRegister(normalized);
+    const passwordHash = await this.argon2.hash(password, this.argon2Params);
+    return this.commitRegisteredUser(normalized, passwordHash);
+  }
+
+  async authenticateCredentials(raw: unknown, autoRegister = false) {
     this.prune();
     const parsed = (autoRegister ? credentialRegisterSchema : credentialLoginSchema).safeParse(raw);
     if (!parsed.success) {
@@ -242,12 +415,12 @@ export class ZeroTrustAuthEngine {
     const normalized = username.trim().toLowerCase();
     let user = this.usersByName.get(normalized);
     if (autoRegister) {
-      user = this.registerUser(normalized, password);
+      user = await this.registerUserAsync(normalized, password);
     } else if (!user) {
       // Constant-time dummy Argon2id verification prevents username enumeration
-      verifyPasswordArgon2id(password, this.dummyHash);
+      await this.argon2.verify(password, this.dummyHash);
       throw new BrokerHttpError('Credenciais inválidas.', 401, 'invalid_credentials');
-    } else if (!verifyPasswordArgon2id(password, user.passwordHash)) {
+    } else if (!(await this.argon2.verify(password, user.passwordHash))) {
       throw new BrokerHttpError('Credenciais inválidas.', 401, 'invalid_credentials');
     }
 
@@ -543,6 +716,7 @@ export function createBroker(
   env: NodeJS.ProcessEnv = process.env,
   request: typeof fetch = fetch,
   clock: () => number = Date.now,
+  authOptions: Omit<ZeroTrustAuthEngineOptions, 'privateKeyPem' | 'clock'> = {},
 ) {
   const secret = env.BROKER_ACCESS_TOKEN || '';
   if (secret.length < 24 || !env.SOUNDCLOUD_CLIENT_ID || !env.SOUNDCLOUD_CLIENT_SECRET) {
@@ -554,6 +728,7 @@ export function createBroker(
   const auth = new ZeroTrustAuthEngine({
     privateKeyPem: env.BROKER_ED25519_PRIVATE_KEY,
     clock,
+    ...authOptions,
   });
 
   if (env.BROKER_ADMIN_USER && env.BROKER_ADMIN_PASSWORD && env.BROKER_ADMIN_PASSWORD.length >= 12) {
@@ -684,7 +859,7 @@ export function createBroker(
           throw new BrokerHttpError('Registro público desativado.', 403, 'registration_disabled');
         }
         const body = await readJsonBody(req);
-        const result = auth.authenticateCredentials(body, true);
+        const result = await auth.authenticateCredentials(body, true);
         send(201, result);
         return;
       }
@@ -694,10 +869,10 @@ export function createBroker(
         const body = await readJsonBody(req);
         const maybeUser =
           body && typeof body === 'object' && 'username' in body
-            ? String((body as Record<string, unknown>).username).toLowerCase().slice(0, 80)
+            ? String((body as Record<string, unknown>).username).trim().toLowerCase().slice(0, 80)
             : '';
         if (maybeUser) enforceRateLimit(`acct:${maybeUser}:auth`, authLimit);
-        const result = auth.authenticateCredentials(body, false);
+        const result = await auth.authenticateCredentials(body, false);
         send(200, result);
         return;
       }

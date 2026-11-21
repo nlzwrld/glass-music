@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createJam } from '../../server/jam';
+import {
+  createJam,
+  handleCloudflareJamFetch,
+  JamRoomDO,
+  type CfDurableObjectState,
+  type CfJamEnv,
+} from '../../server/jam';
 import { computeBackoffMs, JamClient, JamClock, type JamSend } from '../../src/lib/jam';
 import { canJam, jamDriftMs, jamPosition, type JamRoom } from '../../shared/jam';
 import type { Track } from '../../shared/types';
@@ -16,19 +22,30 @@ const song: Track = {
   addedAt: 0,
 };
 
+// A late heartbeat pong can refresh lastSeen to the already-advanced fake clock; re-advance until the stale socket is reaped.
+async function advanceUntilClosed(clock: { now: number }, ws: WebSocket, step: number) {
+  for (let i = 0; i < 25 && ws.readyState !== WebSocket.CLOSED; i++) {
+    clock.now += step;
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  await nodeWebSocketClosed(ws);
+}
+
 async function withServer(
   run: (
     send: JamSend,
     raw: (body: unknown, headers?: Record<string, string>) => Promise<Response>,
     clock: { now: number },
+    context: { port: number },
   ) => Promise<void>,
   env: NodeJS.ProcessEnv = {},
 ) {
   const clock = { now: Date.now() },
     server = createJam(env, () => clock.now);
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
   const raw = (body: unknown, headers: Record<string, string> = {}) =>
-    fetch(`http://127.0.0.1:${(server.address() as { port: number }).port}/v1/jam`, {
+    fetch(`http://127.0.0.1:${port}/v1/jam`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...headers },
       body: JSON.stringify(body),
@@ -40,11 +57,218 @@ async function withServer(
     return value as T;
   };
   try {
-    await run(send, raw, clock);
+    await run(send, raw, clock, { port });
   } finally {
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
+}
+
+async function openNodeWebSocket(port: number, code: string, token: string) {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/v1/jam/ws?code=${code}&token=${token}`);
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('WebSocket open timeout')), 2000);
+    ws.addEventListener(
+      'open',
+      () => {
+        clearTimeout(timeout);
+        resolve();
+      },
+      { once: true },
+    );
+    ws.addEventListener(
+      'error',
+      () => {
+        clearTimeout(timeout);
+        reject(new Error('WebSocket rejected'));
+      },
+      { once: true },
+    );
+  });
+  return ws;
+}
+
+function nodeWebSocketClosed(ws: WebSocket) {
+  if (ws.readyState === WebSocket.CLOSED) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('WebSocket close timeout')), 2000);
+    ws.addEventListener(
+      'close',
+      () => {
+        clearTimeout(timeout);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+}
+
+async function closeNodeWebSocket(ws: WebSocket) {
+  const closed = nodeWebSocketClosed(ws);
+  ws.close();
+  await closed;
+}
+
+class MockCloudflareWebSocket {
+  readyState: number = WebSocket.OPEN;
+  sent: string[] = [];
+  closeCode: number | undefined;
+  closeReason: string | undefined;
+  private attachment: { token: string; code: string; ip?: string } | undefined;
+
+  send(value: string) {
+    if (this.readyState !== WebSocket.OPEN) throw new Error('Socket closed');
+    this.sent.push(value);
+  }
+
+  close(code = 1000, reason = '') {
+    this.readyState = WebSocket.CLOSED;
+    this.closeCode = code;
+    this.closeReason = reason;
+  }
+
+  serializeAttachment(value: { token: string; code: string; ip?: string }) {
+    this.attachment = value;
+  }
+
+  deserializeAttachment() {
+    return this.attachment;
+  }
+}
+
+let workerNonceSequence = 0;
+let cloudSimulatorSequence = 0;
+function workerJamRequest(
+  body: Record<string, unknown>,
+  contentType = 'application/json',
+  automaticReplayFields = true,
+) {
+  const needsReplay = ['create', 'join', 'sync', 'leave'].includes(String(body.action || ''));
+  const payload =
+    automaticReplayFields && needsReplay && body.nonce === undefined
+      ? {
+          ...body,
+          nonce: `worker_test_nonce_${++workerNonceSequence}`,
+          timestamp: body.timestamp ?? Date.now(),
+        }
+      : body;
+  return new Request('https://jam.test/v1/jam', {
+    method: 'POST',
+    headers: { 'Content-Type': contentType },
+    body: JSON.stringify(payload),
+  });
+}
+
+function createCloudflareJamSimulator(envOverrides: Partial<CfJamEnv> = {}) {
+  const stores = new Map<string, CfDurableObjectState>();
+  const rooms = new Map<string, JamRoomDO>();
+  const forwarded: { code: string; headers: Headers }[] = [];
+  const socketStates = new Map<string, { ws: WebSocket; tags: string[] }[]>();
+  const clock = { now: Date.now() };
+  const clientIp = `198.51.100.${++cloudSimulatorSequence}`;
+
+  const storageFor = (code: string) => {
+    const existing = stores.get(code);
+    if (existing) return existing;
+    const data = new Map<string, unknown>();
+    const sockets: { ws: WebSocket; tags: string[] }[] = [];
+    socketStates.set(code, sockets);
+    // Yield in every storage operation so Promise.all exercises DO interleaving.
+    const yieldToOtherRequests = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+    const state: CfDurableObjectState = {
+      storage: {
+        get: async <T>(key: string) => {
+          await yieldToOtherRequests();
+          const value = data.get(key);
+          return value === undefined ? undefined : (structuredClone(value) as T);
+        },
+        put: async <T>(key: string, value: T) => {
+          await yieldToOtherRequests();
+          data.set(key, structuredClone(value));
+        },
+        deleteAll: async () => {
+          data.clear();
+        },
+        setAlarm: async () => {},
+      },
+      acceptWebSocket: (ws, tags = []) => {
+        sockets.push({ ws, tags });
+      },
+      getWebSockets: tag =>
+        sockets
+          .filter(
+            ({ ws, tags }) => ws.readyState !== WebSocket.CLOSED && (!tag || tags.includes(tag)),
+          )
+          .map(({ ws }) => ws),
+    };
+    stores.set(code, state);
+    return state;
+  };
+
+  const roomFor = (code: string) => {
+    let room = rooms.get(code);
+    if (!room) {
+      room = new JamRoomDO(storageFor(code), env, () => clock.now);
+      rooms.set(code, room);
+    }
+    return room;
+  };
+  const env: CfJamEnv = {
+    JAM_ROOMS: {
+      idFromName: name => name,
+      get: id => ({
+        fetch: request => {
+          forwarded.push({ code: String(id), headers: new Headers(request.headers) });
+          return roomFor(String(id)).fetch(request);
+        },
+      }),
+    },
+    ...envOverrides,
+  };
+
+  return {
+    fetch: (request: Request) => {
+      const headers = new Headers(request.headers);
+      if (!headers.has('CF-Connecting-IP')) headers.set('CF-Connecting-IP', clientIp);
+      return handleCloudflareJamFetch(new Request(request, { headers }), env);
+    },
+    room: roomFor,
+    clock,
+    forwarded,
+    sockets: (code: string) =>
+      (socketStates.get(code) || []).map(({ ws }) => ws as unknown as MockCloudflareWebSocket),
+    restart: (code: string) => {
+      rooms.delete(code);
+    },
+  };
+}
+
+function installCloudflareSocketRuntime() {
+  const NativeResponse = globalThis.Response;
+  class LocalCloudflareResponse extends NativeResponse {
+    constructor(body?: BodyInit | null, init: ResponseInit = {}) {
+      if (init.status === 101) super(null, { ...init, status: 200 });
+      else super(body, init);
+    }
+  }
+  class LocalWebSocketPair {
+    0 = new MockCloudflareWebSocket();
+    1 = new MockCloudflareWebSocket();
+  }
+  vi.stubGlobal('Response', LocalCloudflareResponse);
+  vi.stubGlobal('WebSocketPair', LocalWebSocketPair);
+}
+
+function upgradeCloudflareWebSocket(
+  cloud: ReturnType<typeof createCloudflareJamSimulator>,
+  code: string,
+  token: string,
+) {
+  return cloud.fetch(
+    new Request(`https://jam.test/v1/jam/ws?code=${code}&token=${token}`, {
+      headers: { Upgrade: 'websocket' },
+    }),
+  );
 }
 
 describe('JAM coordinator and two independent clients', () => {
@@ -172,6 +396,73 @@ describe('JAM coordinator and two independent clients', () => {
     });
   });
 
+  it('charges authenticated IP activity once and permits a legitimate retry after the window', async () => {
+    await withServer(
+      async (send, raw, clock) => {
+        const host = new JamClient(send);
+        const session = await host.enter('create', 'Host');
+        for (let i = 0; i < 4; i++) {
+          expect(
+            (await raw({ action: 'poll', code: session.code, token: session.token })).status,
+          ).toBe(200);
+        }
+        expect(
+          (await raw({ action: 'poll', code: session.code, token: session.token })).status,
+        ).toBe(429);
+        clock.now += 60001;
+        expect(
+          (await raw({ action: 'poll', code: session.code, token: session.token })).status,
+        ).toBe(200);
+      },
+      { JAM_ACTIVE_REQUESTS_PER_MINUTE: '4' },
+    );
+  });
+
+  it('ignores spoofed forwarding headers on direct connections and trusts only configured proxies', async () => {
+    await withServer(async (_send, raw) => {
+      for (let i = 0; i < 30; i++) {
+        const response = await raw(
+          { action: 'join', code: '0000000000' },
+          { 'x-liquid-client-ip': `203.0.113.${i + 1}` },
+        );
+        expect(response.status).toBe(410);
+      }
+      const limited = await raw(
+        { action: 'join', code: '0000000000' },
+        { 'x-liquid-client-ip': '203.0.113.250' },
+      );
+      expect(limited.status).toBe(429);
+    });
+
+    await withServer(
+      async (_send, raw) => {
+        for (let i = 0; i < 30; i++) {
+          await raw(
+            { action: 'join', code: '0000000000' },
+            { 'x-liquid-client-ip': '198.51.100.10' },
+          );
+        }
+        expect(
+          (
+            await raw(
+              { action: 'join', code: '0000000000' },
+              { 'x-liquid-client-ip': '198.51.100.10' },
+            )
+          ).status,
+        ).toBe(429);
+        expect(
+          (
+            await raw(
+              { action: 'join', code: '0000000000' },
+              { 'x-liquid-client-ip': '198.51.100.11' },
+            )
+          ).status,
+        ).toBe(410);
+      },
+      { JAM_TRUSTED_PROXY_IPS: '127.0.0.1' },
+    );
+  });
+
   it('blocks replay attacks (nonce + timestamp), supports RTT ping/pong and delta sinceSequence compression', async () => {
     await withServer(
       async (send, raw, clock) => {
@@ -235,6 +526,95 @@ describe('JAM coordinator and two independent clients', () => {
       },
       { JAM_STRICT_REPLAY: '1' },
     );
+  });
+
+  it('enforces independent global, IP, member and room WebSocket quotas and releases them on close', async () => {
+    const cases: { env: NodeJS.ProcessEnv; duplicateMember: boolean }[] = [
+      { env: { JAM_WS_MAX_CONNECTIONS: '1' }, duplicateMember: false },
+      { env: { JAM_WS_MAX_PER_IP: '1' }, duplicateMember: false },
+      { env: { JAM_WS_MAX_PER_MEMBER: '1' }, duplicateMember: true },
+      { env: { JAM_WS_MAX_PER_ROOM: '1' }, duplicateMember: true },
+    ];
+    for (const testCase of cases) {
+      await withServer(
+        async (send, _raw, _clock, { port }) => {
+          const host = await new JamClient(send).enter('create', 'Host');
+          const guest = await new JamClient(send).enter('join', 'Guest', host.code);
+          const first = await openNodeWebSocket(port, host.code, host.token);
+          const secondToken = testCase.duplicateMember ? host.token : guest.token;
+          await expect(openNodeWebSocket(port, host.code, secondToken)).rejects.toThrow(
+            'WebSocket rejected',
+          );
+          if (testCase.duplicateMember && testCase.env.JAM_WS_MAX_PER_MEMBER === '1') {
+            const otherMember = await openNodeWebSocket(port, host.code, guest.token);
+            await closeNodeWebSocket(otherMember);
+          }
+          await closeNodeWebSocket(first);
+          const retry = await openNodeWebSocket(port, host.code, host.token);
+          await closeNodeWebSocket(retry);
+        },
+        testCase.env,
+      );
+    }
+  });
+
+  it('keeps heartbeat clients alive, times out stale sockets and closes oversized input buffers', async () => {
+    await withServer(
+      async (send, _raw, clock, { port }) => {
+        const host = await new JamClient(send).enter('create', 'Host');
+        const ws = await openNodeWebSocket(port, host.code, host.token);
+        await new Promise(resolve => setTimeout(resolve, 70));
+        expect(ws.readyState).toBe(WebSocket.OPEN);
+        await advanceUntilClosed(clock, ws, 1000);
+
+        const oversized = await openNodeWebSocket(port, host.code, host.token);
+        const closed = nodeWebSocketClosed(oversized);
+        oversized.send('x'.repeat(40000));
+        await closed;
+
+        const expired = await openNodeWebSocket(port, host.code, host.token);
+        await advanceUntilClosed(clock, expired, 900001);
+      },
+      { JAM_WS_HEARTBEAT_MS: '10', JAM_WS_TIMEOUT_MS: '40' },
+    );
+  });
+
+  it('revokes sockets on guest leave, stale-member prune and host close without broadcasting to removals', async () => {
+    await withServer(async (send, raw, clock, { port }) => {
+      const host = await new JamClient(send).enter('create', 'Host');
+      const firstGuest = await new JamClient(send).enter('join', 'First', host.code);
+      const secondGuest = await new JamClient(send).enter('join', 'Second', host.code);
+      const hostWs = await openNodeWebSocket(port, host.code, host.token);
+      const firstWs = await openNodeWebSocket(port, host.code, firstGuest.token);
+      const secondWs = await openNodeWebSocket(port, host.code, secondGuest.token);
+      const removedMessages: string[] = [];
+      firstWs.addEventListener('message', event => removedMessages.push(String(event.data)));
+
+      const leaveClosed = nodeWebSocketClosed(firstWs);
+      expect(
+        (await raw({ action: 'leave', code: host.code, token: firstGuest.token })).status,
+      ).toBe(200);
+      await leaveClosed;
+      expect(secondWs.readyState).toBe(WebSocket.OPEN);
+      const messagesAfterLeave = removedMessages.length;
+      await raw({
+        action: 'sync',
+        code: host.code,
+        token: host.token,
+        playback: { track: song, playing: true, position: 2 },
+      });
+      expect(removedMessages).toHaveLength(messagesAfterLeave);
+
+      const pruneClosed = nodeWebSocketClosed(secondWs);
+      clock.now += 36000;
+      expect((await raw({ action: 'poll', code: host.code, token: host.token })).status).toBe(200);
+      await pruneClosed;
+      expect(hostWs.readyState).toBe(WebSocket.OPEN);
+
+      const hostClosed = nodeWebSocketClosed(hostWs);
+      expect((await raw({ action: 'leave', code: host.code, token: host.token })).status).toBe(200);
+      await hostClosed;
+    });
   });
 
   it('migrates seamlessly from Cloud to local LAN on network failure for both Host and Guest', async () => {
@@ -330,6 +710,420 @@ describe('JAM coordinator and two independent clients', () => {
     expect(migratedGuest?.mode).toBe('lan-fallback');
     expect(migratedGuest?.endpoint).toBe(lanEndpoint);
     expect(migratedGuest?.members).toHaveLength(2);
+  });
+});
+
+describe('JAM P0 Cloudflare room ownership regressions', () => {
+  const code = 'AABBCCDDEE';
+
+  it('rejects creation over a rehydrated room and keeps the original host token authorized', async () => {
+    const cloud = createCloudflareJamSimulator();
+    const first = await cloud.fetch(
+      workerJamRequest({ action: 'create', name: 'Original', preferredCode: code }),
+    );
+    expect(first.status).toBe(201);
+    const original = (await first.json()) as { token: string };
+
+    // Simulate DO hibernation/restart while retaining only durable storage.
+    cloud.restart(code);
+    const takeover = await cloud.fetch(
+      workerJamRequest({ action: 'create', name: 'Attacker', preferredCode: code }),
+    );
+    expect(takeover.status).toBe(409);
+
+    const poll = await cloud.fetch(
+      workerJamRequest({ action: 'poll', code, token: original.token }),
+    );
+    expect(poll.status).toBe(200);
+    const room = (await poll.json()) as JamRoom;
+    expect(room.members).toEqual([expect.objectContaining({ name: 'Original', host: true })]);
+  });
+
+  it('allows exactly one of two simultaneous creates to reserve and persist the room', async () => {
+    const cloud = createCloudflareJamSimulator();
+    const names = ['Primeiro', 'Segundo'];
+    const responses = await Promise.all(
+      names.map(name =>
+        cloud.fetch(workerJamRequest({ action: 'create', name, preferredCode: code })),
+      ),
+    );
+    expect(responses.map(response => response.status).sort()).toEqual([201, 409]);
+
+    const winnerIndex = responses.findIndex(response => response.status === 201);
+    const winner = (await responses[winnerIndex].json()) as { token: string; code: string };
+    const rejected = (await responses[1 - winnerIndex].json()) as Record<string, unknown>;
+    expect(winner.code).toBe(code);
+    expect(rejected.token).toBeUndefined();
+
+    const poll = await cloud.fetch(workerJamRequest({ action: 'poll', code, token: winner.token }));
+    expect(poll.status).toBe(200);
+    const room = (await poll.json()) as JamRoom;
+    expect(room.members).toEqual([
+      expect.objectContaining({ name: names[winnerIndex], host: true }),
+    ]);
+  });
+
+  it('returns 415 for plain text without breaking internal JSON WebSocket messages', async () => {
+    const cloud = createCloudflareJamSimulator();
+    const plainText = await cloud.fetch(
+      new Request('https://jam.test/v1/jam', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: 'plain text',
+      }),
+    );
+    expect(plainText.status).toBe(415);
+
+    const created = await cloud.fetch(
+      workerJamRequest({ action: 'create', name: 'Original', preferredCode: code }),
+    );
+    expect(created.status).toBe(201);
+    const session = (await created.json()) as { token: string };
+
+    const directPlainText = await cloud.room(code).fetch(
+      new Request('https://jam.internal/v1/jam', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: 'plain text',
+      }),
+    );
+    expect(directPlainText.status).toBe(415);
+
+    let internalMessage = '';
+    const ws = {
+      deserializeAttachment: () => ({ token: session.token, code, ip: '198.51.100.10' }),
+      send: (value: string) => {
+        internalMessage = value;
+      },
+    } as unknown as Parameters<JamRoomDO['webSocketMessage']>[0];
+    await cloud.room(code).webSocketMessage(ws, JSON.stringify({ action: 'poll', code }));
+    expect(JSON.parse(internalMessage)).toMatchObject({ code });
+  });
+
+  it('keeps Node JSON creation, media-type validation and host authorization unchanged', async () => {
+    await withServer(async (_send, raw) => {
+      const created = await raw(
+        { action: 'create', name: 'Node' },
+        { 'content-type': 'application/json; charset=utf-8' },
+      );
+      expect(created.status).toBe(201);
+      const session = (await created.json()) as { code: string; token: string };
+
+      const plainText = await raw('plain text', { 'content-type': 'text/plain' });
+      expect(plainText.status).toBe(415);
+
+      const poll = await raw({ action: 'poll', code: session.code, token: session.token });
+      expect(poll.status).toBe(200);
+    });
+  });
+});
+
+describe('JAM P1 Cloudflare HTTP security', () => {
+  const code = '1122334455';
+
+  it('requires replay fields, returns 400 for malformed JSON and enforces 16KB without Content-Length', async () => {
+    const cloud = createCloudflareJamSimulator();
+    const missing = await cloud.fetch(
+      workerJamRequest(
+        { action: 'create', name: 'Host', preferredCode: code },
+        'application/json',
+        false,
+      ),
+    );
+    expect(missing.status).toBe(401);
+
+    // A rejected attempt neither creates the room nor prevents a valid retry.
+    expect(
+      (await cloud.fetch(workerJamRequest({ action: 'create', name: 'Host', preferredCode: code })))
+        .status,
+    ).toBe(201);
+
+    const malformed = await cloud.fetch(
+      new Request('https://jam.test/v1/jam', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{',
+      }),
+    );
+    expect(malformed.status).toBe(400);
+
+    const oversizedRequest = workerJamRequest({
+      action: 'create',
+      name: 'x'.repeat(17000),
+      preferredCode: 'AABBCCDDEE',
+    });
+    expect(oversizedRequest.headers.has('Content-Length')).toBe(false);
+    expect((await cloud.fetch(oversizedRequest)).status).toBe(413);
+  });
+
+  it('rejects stale and replayed nonces, allows a corrected retry and prunes/expires bounded state', async () => {
+    const cloud = createCloudflareJamSimulator({ JAM_NONCE_LIMIT: '2' });
+    const created = await cloud.fetch(
+      workerJamRequest({ action: 'create', name: 'Host', preferredCode: code }),
+    );
+    const session = (await created.json()) as { token: string };
+    const stale = {
+      action: 'sync',
+      code,
+      token: session.token,
+      nonce: 'correctable_nonce_123456',
+      timestamp: cloud.clock.now - 180000,
+      playback: { track: song, playing: true, position: 1 },
+    };
+    expect((await cloud.fetch(workerJamRequest(stale))).status).toBe(401);
+
+    const corrected = { ...stale, timestamp: cloud.clock.now };
+    expect((await cloud.fetch(workerJamRequest(corrected))).status).toBe(200);
+    expect((await cloud.fetch(workerJamRequest(corrected))).status).toBe(409);
+
+    const stampedPoll = (nonce: string) =>
+      cloud.fetch(
+        workerJamRequest({ action: 'poll', code, token: session.token, nonce, timestamp: cloud.clock.now }),
+      );
+    expect((await stampedPoll('bounded_nonce_aaaaaa')).status).toBe(200);
+    expect((await stampedPoll('bounded_nonce_bbbbbb')).status).toBe(200);
+    expect((await stampedPoll('bounded_nonce_cccccc')).status).toBe(200);
+    // This nonce was evicted by the bounded FIFO cache and can be used with a fresh timestamp.
+    expect((await stampedPoll('bounded_nonce_aaaaaa')).status).toBe(200);
+    const latest = 'bounded_nonce_aaaaaa';
+    expect(
+      (
+        await cloud.fetch(
+          workerJamRequest({ action: 'poll', code, token: session.token, nonce: latest, timestamp: cloud.clock.now }),
+        )
+      ).status,
+    ).toBe(409);
+
+    expect((await stampedPoll('bounded_nonce_dddddd')).status).toBe(200);
+    cloud.clock.now += 120001;
+    expect((await stampedPoll('bounded_nonce_dddddd')).status).toBe(200);
+  });
+
+  it('uses CF-Connecting-IP only at the Worker and overwrites spoofed internal headers', async () => {
+    const cloud = createCloudflareJamSimulator();
+    const request = workerJamRequest({ action: 'create', name: 'Host', preferredCode: code });
+    request.headers.set('CF-Connecting-IP', '203.0.113.44');
+    request.headers.set('X-Liquid-Client-IP', '203.0.113.99');
+    expect((await cloud.fetch(request)).status).toBe(201);
+    const internal = cloud.forwarded[0].headers;
+    expect(internal.get('X-Liquid-Client-IP')).toBe('203.0.113.44');
+    expect(internal.has('CF-Connecting-IP')).toBe(false);
+  });
+
+  it('enforces DO IP/member quotas once and permits retries after the rate window', async () => {
+    const cloud = createCloudflareJamSimulator({ JAM_ACTIVE_REQUESTS_PER_MINUTE: '4' });
+    const created = await cloud.fetch(
+      workerJamRequest({ action: 'create', name: 'Host', preferredCode: code }),
+    );
+    const session = (await created.json()) as { token: string };
+    for (let i = 0; i < 4; i++) {
+      expect(
+        (await cloud.fetch(workerJamRequest({ action: 'poll', code, token: session.token }))).status,
+      ).toBe(200);
+    }
+    expect(
+      (await cloud.fetch(workerJamRequest({ action: 'poll', code, token: session.token }))).status,
+    ).toBe(429);
+    cloud.clock.now += 60001;
+    expect(
+      (await cloud.fetch(workerJamRequest({ action: 'poll', code, token: session.token }))).status,
+    ).toBe(200);
+  });
+
+  it('shares a room quota across members and bounds Worker entry/capacity by isolate namespace', async () => {
+    const cloud = createCloudflareJamSimulator({
+      JAM_ACTIVE_REQUESTS_PER_MINUTE: '100',
+      JAM_ROOM_REQUESTS_PER_MINUTE: '8',
+    });
+    const hostResponse = await cloud.fetch(
+      workerJamRequest({ action: 'create', name: 'Host', preferredCode: code }),
+    );
+    const host = (await hostResponse.json()) as { token: string };
+    const guestResponse = await cloud.fetch(workerJamRequest({ action: 'join', code, name: 'Guest' }));
+    const guest = (await guestResponse.json()) as { token: string };
+    for (let i = 0; i < 8; i++) {
+      const token = i % 2 ? guest.token : host.token;
+      expect((await cloud.fetch(workerJamRequest({ action: 'poll', code, token }))).status).toBe(200);
+    }
+    expect(
+      (await cloud.fetch(workerJamRequest({ action: 'poll', code, token: host.token }))).status,
+    ).toBe(429);
+
+    const capacity = createCloudflareJamSimulator({ JAM_MAX_ROOMS_PER_ISOLATE: '1' });
+    expect(
+      (
+        await capacity.fetch(
+          workerJamRequest({ action: 'create', name: 'One', preferredCode: 'AAAAAAAAAA' }),
+        )
+      ).status,
+    ).toBe(201);
+    expect(
+      (
+        await capacity.fetch(
+          workerJamRequest({ action: 'create', name: 'Two', preferredCode: 'BBBBBBBBBB' }),
+        )
+      ).status,
+    ).toBe(503);
+  });
+
+  it('releases Worker create capacity when the host leaves', async () => {
+    const capacity = createCloudflareJamSimulator({ JAM_MAX_ROOMS_PER_ISOLATE: '1' });
+    const created = await capacity.fetch(
+      workerJamRequest({ action: 'create', name: 'One', preferredCode: 'AAAAAAAAAA' }),
+    );
+    expect(created.status).toBe(201);
+    const host = (await created.json()) as { token: string };
+    expect(
+      (await capacity.fetch(workerJamRequest({ action: 'leave', code: 'AAAAAAAAAA', token: host.token })))
+        .status,
+    ).toBe(200);
+    expect(
+      (
+        await capacity.fetch(
+          workerJamRequest({ action: 'create', name: 'Two', preferredCode: 'BBBBBBBBBB' }),
+        )
+      ).status,
+    ).toBe(201);
+  });
+
+  it('keeps per-IP entry flood protection across different room objects', async () => {
+    const cloud = createCloudflareJamSimulator();
+    for (let i = 0; i < 30; i++) {
+      const preferredCode = i.toString(16).toUpperCase().padStart(10, '0');
+      expect((await cloud.fetch(workerJamRequest({ action: 'create', preferredCode }))).status).toBe(201);
+    }
+    expect(
+      (await cloud.fetch(workerJamRequest({ action: 'create', preferredCode: 'FFFFFFFFFF' }))).status,
+    ).toBe(429);
+  });
+});
+
+describe('JAM P1 Cloudflare WebSocket security', () => {
+  const code = '5566778899';
+
+  it('enforces per-member, per-room and per-IP connection quotas', async () => {
+    installCloudflareSocketRuntime();
+    try {
+      const cases: { env: Partial<CfJamEnv>; duplicateMember: boolean }[] = [
+        { env: { JAM_WS_MAX_PER_MEMBER: '1' }, duplicateMember: true },
+        { env: { JAM_WS_MAX_PER_ROOM: '1' }, duplicateMember: true },
+        { env: { JAM_WS_MAX_PER_IP: '1' }, duplicateMember: false },
+      ];
+      for (const testCase of cases) {
+        const cloud = createCloudflareJamSimulator(testCase.env);
+        const hostResponse = await cloud.fetch(
+          workerJamRequest({ action: 'create', name: 'Host', preferredCode: code }),
+        );
+        const host = (await hostResponse.json()) as { token: string };
+        const guestResponse = await cloud.fetch(
+          workerJamRequest({ action: 'join', code, name: 'Guest' }),
+        );
+        const guest = (await guestResponse.json()) as { token: string };
+        expect((await upgradeCloudflareWebSocket(cloud, code, host.token)).status).toBe(200);
+        const secondToken = testCase.duplicateMember ? host.token : guest.token;
+        expect((await upgradeCloudflareWebSocket(cloud, code, secondToken)).status).toBe(429);
+        if (testCase.env.JAM_WS_MAX_PER_MEMBER === '1') {
+          expect((await upgradeCloudflareWebSocket(cloud, code, guest.token)).status).toBe(200);
+        }
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('closes revoked tags on leave, prune and alarm and broadcasts only to current members', async () => {
+    installCloudflareSocketRuntime();
+    try {
+      const cloud = createCloudflareJamSimulator();
+      const hostResponse = await cloud.fetch(
+        workerJamRequest({ action: 'create', name: 'Host', preferredCode: code }),
+      );
+      const host = (await hostResponse.json()) as { token: string };
+      const guestResponse = await cloud.fetch(
+        workerJamRequest({ action: 'join', code, name: 'Guest' }),
+      );
+      const guest = (await guestResponse.json()) as { token: string };
+      await upgradeCloudflareWebSocket(cloud, code, host.token);
+      await upgradeCloudflareWebSocket(cloud, code, guest.token);
+      const [hostWs, guestWs] = cloud.sockets(code);
+
+      expect((await cloud.fetch(workerJamRequest({ action: 'leave', code, token: guest.token }))).status).toBe(200);
+      expect(guestWs.readyState).toBe(WebSocket.CLOSED);
+      expect(guestWs.closeCode).toBe(1008);
+      expect(hostWs.readyState).toBe(WebSocket.OPEN);
+      expect(guestWs.sent).toHaveLength(0);
+      expect(JSON.parse(hostWs.sent.at(-1) || '{}').members).toHaveLength(1);
+
+      await cloud.fetch(
+        workerJamRequest({
+          action: 'sync',
+          code,
+          token: host.token,
+          playback: { track: song, playing: true, position: 3 },
+        }),
+      );
+      expect(guestWs.sent).toHaveLength(0);
+      expect(JSON.parse(hostWs.sent.at(-1) || '{}').playback.position).toBe(3);
+
+      expect((await cloud.fetch(workerJamRequest({ action: 'leave', code, token: host.token }))).status).toBe(200);
+      expect(hostWs.readyState).toBe(WebSocket.CLOSED);
+
+      const pruning = createCloudflareJamSimulator();
+      const prunedHostResponse = await pruning.fetch(
+        workerJamRequest({ action: 'create', name: 'Host', preferredCode: code }),
+      );
+      const prunedHost = (await prunedHostResponse.json()) as { token: string };
+      const prunedGuestResponse = await pruning.fetch(
+        workerJamRequest({ action: 'join', code, name: 'Guest' }),
+      );
+      const prunedGuest = (await prunedGuestResponse.json()) as { token: string };
+      await upgradeCloudflareWebSocket(pruning, code, prunedHost.token);
+      await upgradeCloudflareWebSocket(pruning, code, prunedGuest.token);
+      const [prunedHostWs, prunedGuestWs] = pruning.sockets(code);
+      pruning.clock.now += 36000;
+      await pruning.fetch(workerJamRequest({ action: 'poll', code, token: prunedHost.token }));
+      expect(prunedGuestWs.readyState).toBe(WebSocket.CLOSED);
+      expect(prunedHostWs.readyState).toBe(WebSocket.OPEN);
+      pruning.clock.now += 900001;
+      await pruning.room(code).alarm();
+      expect(prunedHostWs.readyState).toBe(WebSocket.CLOSED);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('applies strict replay validation to internal WebSocket JSON commands', async () => {
+    installCloudflareSocketRuntime();
+    try {
+      const cloud = createCloudflareJamSimulator();
+      const created = await cloud.fetch(
+        workerJamRequest({ action: 'create', name: 'Host', preferredCode: code }),
+      );
+      const host = (await created.json()) as { token: string };
+      await upgradeCloudflareWebSocket(cloud, code, host.token);
+      const [ws] = cloud.sockets(code);
+      await cloud.room(code).webSocketMessage(
+        ws as unknown as Parameters<JamRoomDO['webSocketMessage']>[0],
+        JSON.stringify({
+          action: 'sync',
+          playback: { track: song, playing: true, position: 4 },
+        }),
+      );
+      expect(JSON.parse(ws.sent.at(-1) || '{}').error).toMatch(/Nonce e timestamp/);
+
+      await cloud.room(code).webSocketMessage(
+        ws as unknown as Parameters<JamRoomDO['webSocketMessage']>[0],
+        JSON.stringify({
+          action: 'sync',
+          nonce: 'websocket_nonce_123456789',
+          timestamp: cloud.clock.now,
+          playback: { track: song, playing: true, position: 4 },
+        }),
+      );
+      expect(JSON.parse(ws.sent.at(-1) || '{}').playback.position).toBe(4);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

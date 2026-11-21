@@ -20,12 +20,41 @@ type Driver = {
 };
 let driver: Driver | undefined;
 
+export function shouldStartPreparedPlayback(cancelled: boolean, playbackIntent: boolean): boolean {
+  return !cancelled && playbackIntent;
+}
+
+export function handlePlaybackStartError(error: unknown): boolean {
+  if ((error as { name?: unknown } | null)?.name !== 'NotAllowedError') return false;
+  useApp.setState({ playing: false, playbackIntent: false, status: 'Pausado' });
+  return true;
+}
+
+function setPlaybackIntent(intended: boolean): boolean {
+  if (!currentTrack()) return false;
+  useApp.setState(
+    intended
+      ? { playbackIntent: true }
+      : { playbackIntent: false, playing: false, status: 'Pausado' },
+  );
+  return true;
+}
+
 export const transport = {
   toggle: () => {
-    if (!currentTrack()) return;
-    useApp.getState().playing ? driver?.pause() : driver?.play();
+    const s = useApp.getState();
+    const intended = !(s.playbackIntent || s.playing);
+    if (!setPlaybackIntent(intended)) return;
+    if (intended) driver?.play();
+    else driver?.pause();
   },
-  pause: () => driver?.pause(),
+  play: () => {
+    if (setPlaybackIntent(true)) driver?.play();
+  },
+  pause: () => {
+    setPlaybackIntent(false);
+    driver?.pause();
+  },
   seek: (n: number) => driver?.seek(n),
   volume: (n: number) => driver?.volume(n),
   rate: (r: number) => driver?.rate?.(Math.min(1.05, Math.max(0.95, Number.isFinite(r) ? r : 1))),
@@ -186,7 +215,7 @@ export function PlayerEngine() {
     };
     const fail = (message: string) => {
       stopOutgoing();
-      update({ error: message, playing: false, status: 'Indisponível' });
+      update({ error: message, playing: false, playbackIntent: false, status: 'Indisponível' });
     };
 
     // Safety ramp: if outgoing is active while incoming prepares, gently fade outgoing over its remaining tail
@@ -200,6 +229,10 @@ export function PlayerEngine() {
 
     const onPlay = () => {
       if (cancelled) return;
+      if (!useApp.getState().playbackIntent) {
+        el.pause();
+        return;
+      }
       if (!started) {
         started = true;
         const p = useApp.getState().data.preferences,
@@ -233,7 +266,7 @@ export function PlayerEngine() {
           }
         } else stopOutgoing();
       }
-      update({ playing: true, status: 'Reproduzindo', error: '' });
+      update({ playing: true, playbackIntent: true, status: 'Reproduzindo', error: '' });
       if ('mediaSession' in navigator) {
         try {
           navigator.mediaSession.playbackState = 'playing';
@@ -273,7 +306,11 @@ export function PlayerEngine() {
 
     const onPause = () => {
       if (!cancelled && !advanced) {
-        update({ playing: false, status: 'Pausado' });
+        update({
+          playing: false,
+          ...(started ? { playbackIntent: false } : {}),
+          ...(started || !useApp.getState().playbackIntent ? { status: 'Pausado' } : {}),
+        });
         if ('mediaSession' in navigator) {
           try {
             navigator.mediaSession.playbackState = 'paused';
@@ -349,6 +386,7 @@ export function PlayerEngine() {
     const onEnded = () => {
       if (!advanced) {
         advanced = true;
+        update({ playing: false, playbackIntent: false });
         useApp.getState().next(false);
       }
     };
@@ -382,7 +420,13 @@ export function PlayerEngine() {
             useApp.getState().applyResolvedTrack(rematched, false);
             update({ duration: source.duration || rematched.duration });
             el.src = source.url;
-            if (!pausedDuringPreparation) {
+            if (
+              shouldStartPreparedPlayback(
+                cancelled,
+                useApp.getState().playbackIntent,
+              ) &&
+              !pausedDuringPreparation
+            ) {
               setupGraph();
               void el.play().catch(() =>
                 fail('O áudio não pôde ser carregado. Tente reproduzir novamente.'),
@@ -409,11 +453,17 @@ export function PlayerEngine() {
       )
         return;
       const d = e.data;
-      if (d.type === 'playing') onPlay();
+      if (d.type === 'playing') {
+        if (useApp.getState().playbackIntent) onPlay();
+        else driver?.pause();
+      }
       if (d.type === 'paused') onPause();
       if (d.type === 'ended') onEnded();
       if (d.type === 'buffering') update({ status: 'Carregando' });
-      if (d.type === 'ready') driver?.volume(useApp.getState().data.preferences.volume);
+      if (d.type === 'ready') {
+        driver?.volume(useApp.getState().data.preferences.volume);
+        if (!useApp.getState().playbackIntent) driver?.pause();
+      }
       if (d.type === 'time' && Number.isFinite(d.position) && Number.isFinite(d.duration)) {
         update({ position: Math.max(0, d.position), duration: Math.max(0, d.duration) });
         notifier.current?.onPlaybackUpdate({
@@ -428,6 +478,11 @@ export function PlayerEngine() {
         if (track && consent && !cancelled) {
           frame.src = 'about:blank';
           const playFallback = () => {
+            if (!shouldStartPreparedPlayback(cancelled, useApp.getState().playbackIntent)) {
+              pausedDuringPreparation = true;
+              return;
+            }
+            pausedDuringPreparation = false;
             if (!el.hasAttribute('src')) return;
             setupGraph();
             void el.play().catch(() => fail(String(d.message || 'Faixa indisponível.')));
@@ -436,7 +491,10 @@ export function PlayerEngine() {
           setupGraph().level(el, 0);
           driver = {
             play: playFallback,
-            pause: () => all.forEach(deck => deck.pause()),
+            pause: () => {
+              pausedDuringPreparation = true;
+              all.forEach(deck => deck.pause());
+            },
             seek: n => {
               if (Number.isFinite(el.duration)) el.currentTime = Math.max(0, Math.min(n, el.duration));
             },
@@ -481,12 +539,15 @@ export function PlayerEngine() {
         (['youtube', 'link'].includes(track.source) && playbackAllowed)
       ) {
         const play = () => {
+          if (!shouldStartPreparedPlayback(cancelled, useApp.getState().playbackIntent)) {
+            pausedDuringPreparation = true;
+            return;
+          }
           pausedDuringPreparation = false;
           if (!el.hasAttribute('src')) return;
           setupGraph();
           void el.play().catch(e => {
-            if (e.name === 'NotAllowedError') {
-              onPause();
+            if (handlePlaybackStartError(e)) {
               useApp.getState().message('Clique em reproduzir para iniciar o áudio.');
             } else if (e.name !== 'AbortError') fail('Falha ao reproduzir o áudio.');
           });
@@ -560,8 +621,14 @@ export function PlayerEngine() {
               }
               update({ duration: source.duration || track.duration });
               el.src = source.url;
-              if (!pausedDuringPreparation) play();
-              else stopOutgoing();
+              if (
+                shouldStartPreparedPlayback(cancelled, useApp.getState().playbackIntent) &&
+                !pausedDuringPreparation
+              ) {
+                play();
+              } else {
+                stopOutgoing();
+              }
             })
             .catch(error => {
               if (!cancelled) fail(cleanError(error));
@@ -582,8 +649,14 @@ export function PlayerEngine() {
                 );
             };
             driver = {
-              play: () => send('play'),
-              pause: () => send('pause'),
+              play: () => {
+                pausedDuringPreparation = false;
+                send('play');
+              },
+              pause: () => {
+                pausedDuringPreparation = true;
+                send('pause');
+              },
               seek: n => send('seek', n),
               volume: n => send('volume', n),
             };
@@ -692,6 +765,7 @@ export function PlayerEngine() {
     shuffleNext,
     queue.length,
     consent,
+    preferences.autoplay,
     preferences.repeat,
     preferences.shuffle,
   ]);
@@ -718,6 +792,7 @@ export function PlayerEngine() {
   useEffect(() => {
     const off = window.glass.onMedia(command => {
       if (command === 'playPause') transport.toggle();
+      if (command === 'pauseVideo') transport.pause();
       if (command === 'next') useApp.getState().next();
       if (command === 'previous') useApp.getState().previous();
     });
@@ -753,8 +828,8 @@ export function PlayerEngine() {
       artwork: art ? [{ src: art, sizes: '512x512' }] : undefined,
     });
     const actions: [MediaSessionAction, MediaSessionActionHandler][] = [
-      ['play', () => driver?.play()],
-      ['pause', () => driver?.pause()],
+      ['play', () => transport.play()],
+      ['pause', () => transport.pause()],
       ['nexttrack', () => useApp.getState().next()],
       ['previoustrack', () => useApp.getState().previous()],
       [

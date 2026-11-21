@@ -4,14 +4,52 @@ on:
     branches: [main]
     paths-ignore: ['README.md', 'docs/**/*.md', 'deploy/**/*.md']
   workflow_dispatch:
+
 permissions:
-  contents: write
+  contents: read
+
 concurrency:
   group: liquid-hub-release
   cancel-in-progress: false
+
 jobs:
-  release:
+  validate:
+    name: Reusable release validation
+    uses: ./.github/workflows/ci.yml
+
+  prepare:
+    name: Resolve immutable release metadata
+    needs: validate
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - id: metadata
+        name: Resolve version and commit timestamp once
+        shell: pwsh
+        run: |
+          $version = (node scripts/prepare-release.mjs --print-version).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $version) { throw 'Could not resolve release version.' }
+          $timestamp = (git log -1 --format=%cI $env:GITHUB_SHA).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $timestamp) { throw 'Could not resolve commit timestamp.' }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "timestamp=$timestamp" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+  publish:
+    name: Build, reconcile and publish
+    needs: [validate, prepare]
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      CI: 'true'
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_TIMESTAMP: ${{ needs.prepare.outputs.timestamp }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,23 +61,49 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Provision verified catalog binaries
+      - name: Provision and verify every declared catalog resource
         run: node scripts/configure-catalog.mjs --ensure-binaries
-      - name: Prepare release version and channel
-        run: node scripts/prepare-release.mjs
-      - name: Validate
-        run: pnpm test
+      - name: Apply resolved release version and channel
+        run: node scripts/prepare-release.mjs --version "$env:RELEASE_VERSION"
       - name: Build signed Windows update
         run: pnpm dist
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-      - name: Publish installer and update manifest
+      - name: Stage exact artifacts and generate deterministic manifest
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node scripts/update-manifest.mjs
-          $version = (Get-Content package.json | ConvertFrom-Json).version
-          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
-          gh release create "v$version" $setup.FullName "$($setup.FullName).sig" latest.json --title "Liquid Hub $version" --notes-file release-notes.md --latest
+          $bundle = Join-Path $env:GITHUB_WORKSPACE 'src-tauri/target/release/bundle/nsis'
+          $setups = @(Get-ChildItem -LiteralPath $bundle -Filter "*_$($env:RELEASE_VERSION)_*-setup.exe" -File)
+          if ($setups.Count -ne 1) { throw "Expected exactly one installer for $env:RELEASE_VERSION; found $($setups.Count)." }
+          $setup = $setups[0]
+          if (-not (Test-Path -LiteralPath "$($setup.FullName).sig" -PathType Leaf)) { throw "Installer signature missing: $($setup.FullName).sig" }
+
+          $assetDir = Join-Path $env:RUNNER_TEMP 'liquid-hub-release'
+          New-Item -ItemType Directory -Path $assetDir -Force | Out-Null
+          $installer = Join-Path $assetDir $setup.Name.Replace(' ', '.')
+          Copy-Item -LiteralPath $setup.FullName -Destination $installer -Force
+          Copy-Item -LiteralPath "$($setup.FullName).sig" -Destination "$installer.sig" -Force
+
+          $manifest = Join-Path $assetDir 'latest.json'
+          $notes = Join-Path $assetDir 'release-notes.md'
+          $inventory = Join-Path $env:RUNNER_TEMP 'liquid-hub-release-artifacts.json'
+          node scripts/update-manifest.mjs --installer $installer --version $env:RELEASE_VERSION --timestamp $env:RELEASE_TIMESTAMP --output $manifest --notes-output $notes --inventory $inventory
+          if ($LASTEXITCODE -ne 0) { throw 'Manifest generation failed.' }
+      - name: Reconcile draft and missing assets without clobbering
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/publish-release.mjs --inventory "$env:RUNNER_TEMP/liquid-hub-release-artifacts.json" --repository "$env:GITHUB_REPOSITORY" --commit "$env:GITHUB_SHA"
+      - name: Upload release diagnostics after failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-diagnostics-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/liquid-hub-release/latest.json
+            ${{ runner.temp }}/liquid-hub-release/release-notes.md
+            ${{ runner.temp }}/liquid-hub-release-artifacts.json
+          if-no-files-found: ignore
+          retention-days: 7

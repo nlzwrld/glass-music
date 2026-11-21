@@ -2,17 +2,19 @@ import {test,expect,chromium,type Browser} from '@playwright/test';
 import {spawn} from 'node:child_process';
 import {mkdir,mkdtemp,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
+import {navButton,selectGlass} from './ui';
 
 test('desktop transparency survives theme changes and window states without a system backdrop outside the region',async()=>{
- test.setTimeout(90000);await mkdir('../../work/profiles',{recursive:true});
- const profile=await mkdtemp(resolve('../../work/profiles/desktop-corners-'));
+ test.setTimeout(90000);await mkdir('.test-data/profiles',{recursive:true});
+ const profile=await mkdtemp(resolve('.test-data/profiles/desktop-corners-'));
  const proc=spawn(process.env.GLASS_EXE!,[],{windowsHide:true,env:{...process.env,GLASS_TEST_DATA:profile,GLASS_TEST_DISABLE_DIRECT:'1',WEBVIEW2_USER_DATA_FOLDER:join(profile,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9365'}});
  let browser:Browser|undefined;const states:unknown[]=[];
  try{
   for(let i=0;i<100;i++){try{if((await fetch('http://127.0.0.1:9365/json/version')).ok)break;}catch{}await new Promise(r=>setTimeout(r,200));}
   browser=await chromium.connectOverCDP('http://127.0.0.1:9365');const page=browser.contexts()[0].pages()[0];
   await page.getByRole('button',{name:'Agora não',exact:true}).click();
-  await page.getByRole('button',{name:'Configurações',exact:true}).click();
+  await navButton(page,'Configurações').click();
+  await selectGlass(page);
   const check=async(label:string,desktop:boolean)=>{
    await expect.poll(()=>page.evaluate(async()=>{
     const shape=await window.glass.windowShape();

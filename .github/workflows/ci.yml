@@ -1,0 +1,66 @@
+name: Liquid Hub CI
+on:
+  pull_request:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: TypeScript, build, unit and Rust
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: TypeScript and frontend build
+        run: pnpm build
+      - name: Unit tests
+        run: pnpm test
+      - name: Rust tests
+        run: pnpm test:native
+
+  e2e-deterministic:
+    name: Deterministic local desktop E2E
+    needs: validate
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build current frontend and unsigned debug executable
+        env:
+          LIQUID_SKIP_YTDLP_DOWNLOAD: '1'
+        run: node scripts/tauri.mjs build --debug --no-bundle
+      - name: Run offline local and fixture-backed catalog E2E
+        shell: pwsh
+        run: |
+          $env:GLASS_EXE = Join-Path $env:GITHUB_WORKSPACE 'src-tauri/target/debug/liquid-hub.exe'
+          if (-not (Test-Path -LiteralPath $env:GLASS_EXE -PathType Leaf)) {
+            throw "Debug executable not found: $env:GLASS_EXE"
+          }
+          pnpm exec playwright test tests/e2e/local.spec.ts tests/e2e/catalog.spec.ts --workers=1
+      - name: Upload deterministic E2E diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deterministic-e2e-${{ github.run_id }}
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7

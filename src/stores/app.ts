@@ -60,6 +60,7 @@ interface State {
   shuffleNext: number | null;
   autoAdvance: boolean;
   playing: boolean;
+  playbackIntent: boolean;
   position: number;
   duration: number;
   status: string;
@@ -179,15 +180,42 @@ export function upcomingIndex(
     }
     return -1;
   }
-  const next = s.index + 1;
-  if (next < s.queue.length) return next;
-  if (p.repeat === 'all' || manual) return 0;
+  for (let index = s.index + 1; index < s.queue.length; index++) {
+    if (s.queue[index]?.available !== false) return index;
+  }
+  if (p.repeat === 'all' || manual) {
+    for (let index = 0; index <= s.index && index < s.queue.length; index++) {
+      if (s.queue[index]?.available !== false) return index;
+    }
+  }
   return -1;
 }
 
 let toastTimer: ReturnType<typeof setTimeout>;
 let preferenceWrites = Promise.resolve();
-let autoplayBusy = false;
+let preferenceWriteId = 0;
+let canonicalPreferences: Preferences | null = null;
+const pendingPreferenceWrites = new Map<
+  number,
+  { patch: Partial<Preferences>; permissionChange: boolean; failed: boolean }
+>();
+type AutoplayContext = {
+  revision: number;
+  index: number;
+  trackId: string | undefined;
+};
+
+function sameAutoplaySelection(s: State, context: AutoplayContext): boolean {
+  return (
+    s.revision === context.revision &&
+    s.index === context.index &&
+    s.queue[s.index]?.id === context.trackId
+  );
+}
+
+let autoplayFlight: { context: AutoplayContext; promise: Promise<boolean> } | null = null;
+let autoplayContinuation: Promise<boolean> | null = null;
+let collectionPreviewGeneration = 0;
 let lyricsProbeSeq = 0;
 
 export const useApp = create<State>((set, get) => ({
@@ -208,6 +236,7 @@ export const useApp = create<State>((set, get) => ({
   shuffleNext: null,
   autoAdvance: false,
   playing: false,
+  playbackIntent: false,
   position: 0,
   duration: 0,
   status: '',
@@ -284,6 +313,27 @@ export const useApp = create<State>((set, get) => ({
     const permissionChange = ['onlineConsent', 'catalogConsent', 'onboardingDone'].some(
       key => key in patch,
     );
+    if (pendingPreferenceWrites.size === 0) canonicalPreferences = prev.data.preferences;
+    const operation = {
+      id: ++preferenceWriteId,
+      patch: { ...patch },
+      permissionChange,
+      failed: false,
+    };
+    pendingPreferenceWrites.set(operation.id, operation);
+    const projectPreferences = () => {
+      let preferences = canonicalPreferences ?? get().data.preferences;
+      for (const pending of pendingPreferenceWrites.values()) {
+        if (!pending.permissionChange && !pending.failed) {
+          preferences = { ...preferences, ...pending.patch };
+        }
+      }
+      return preferences;
+    };
+    const syncPreferences = (extra: Partial<State> = {}) => {
+      const preferences = projectPreferences();
+      set(curr => ({ ...extra, data: { ...curr.data, preferences } }));
+    };
     const needShuffleRecompute = 'shuffle' in patch || 'repeat' in patch;
     const shufflePatch = needShuffleRecompute
       ? (() => {
@@ -297,22 +347,52 @@ export const useApp = create<State>((set, get) => ({
           return { shufflePlayed: step.played, shuffleNext: step.next };
         })()
       : {};
-    if (!permissionChange)
-      set({ data: { ...prev.data, preferences: next }, ...shufflePatch });
-    preferenceWrites = preferenceWrites.catch(() => {}).then(async () => {
+    if (!permissionChange) syncPreferences(shufflePatch);
+    const write = preferenceWrites.catch(() => {}).then(async () => {
+      // A full snapshot is required by GlassAPI, but it must be based on the last
+      // completed write, never on state captured before this operation was queued.
+      const snapshot = {
+        ...(canonicalPreferences ?? get().data.preferences),
+        ...operation.patch,
+      };
       try {
-        await window.glass.preferences(next);
+        await window.glass.preferences(snapshot);
+        canonicalPreferences = snapshot;
+        pendingPreferenceWrites.delete(operation.id);
+        syncPreferences(permissionChange ? shufflePatch : {});
         if (permissionChange) {
-          set({ data: { ...get().data, preferences: next }, ...shufflePatch });
           void get().probeLyrics(get().queue[get().index] || null);
         }
       } catch (e) {
+        operation.failed = true;
+        syncPreferences();
         get().message(cleanError(e));
-        const data = await window.glass.bootstrap();
-        set({ data });
+        let recovered: Snapshot | undefined;
+        let recoveryError: unknown;
+        try {
+          recovered = await window.glass.bootstrap();
+          canonicalPreferences = recovered.preferences;
+        } catch (bootstrapError) {
+          recoveryError = bootstrapError;
+        }
+        pendingPreferenceWrites.delete(operation.id);
+        if (recovered) {
+          const preferences = projectPreferences();
+          set({ data: { ...recovered, preferences } });
+        } else {
+          syncPreferences();
+        }
+        if (recoveryError) {
+          throw new AggregateError(
+            [e, recoveryError],
+            `${cleanError(e)} (também falhou ao recuperar as preferências: ${cleanError(recoveryError)})`,
+          );
+        }
+        throw e;
       }
     });
-    await preferenceWrites;
+    preferenceWrites = write;
+    await write;
   },
   importAudio: async () => {
     get().setDialog({ type: 'link' });
@@ -343,7 +423,9 @@ export const useApp = create<State>((set, get) => ({
     }
   },
   openCollection: async (url, fallbackTitle) => {
+    const generation = ++collectionPreviewGeneration;
     if (!get().data.preferences.onlineConsent) {
+      set({ previewBusy: false });
       get().setPage('settings');
       get().message('Ative o acesso online nas configurações para abrir esta coleção.');
       return;
@@ -357,8 +439,9 @@ export const useApp = create<State>((set, get) => ({
     get().setPage('collection');
     try {
       const preview = await window.glass.previewCollection(url);
-      set({ preview, previewBusy: false });
+      if (generation === collectionPreviewGeneration) set({ preview, previewBusy: false });
     } catch (e) {
+      if (generation !== collectionPreviewGeneration) return;
       set({ previewBusy: false });
       get().message(cleanError(e));
     }
@@ -525,6 +608,7 @@ export const useApp = create<State>((set, get) => ({
       shuffleNext: step.next,
       autoAdvance: false,
       playing: false,
+      playbackIntent: true,
       position: 0,
       duration: track.duration,
       error: '',
@@ -600,6 +684,8 @@ export const useApp = create<State>((set, get) => ({
       shufflePlayed: step.played,
       shuffleNext: step.next,
       autoAdvance: false,
+      playing: false,
+      playbackIntent: true,
       position: 0,
       duration: target.duration,
       error: '',
@@ -618,25 +704,47 @@ export const useApp = create<State>((set, get) => ({
         revision: s.revision + 1,
         position: 0,
         autoAdvance: true,
+        playbackIntent: true,
       });
       return;
     }
     const index = upcomingIndex(s, manual);
     if (index < 0 || index >= s.queue.length) {
       if (!manual && p.autoplay && p.onlineConsent && p.onboardingDone) {
-        set({ status: 'Buscando recomendações no seu estilo…' });
-        void get()
-          .extendWithRecommendations()
-          .then(added => {
-            if (added) {
-              get().next(false);
+        set({ status: 'Buscando recomendações no seu estilo…', playbackIntent: true });
+        const context: AutoplayContext = {
+          revision: s.revision,
+          index: s.index,
+          trackId: s.queue[s.index]?.id,
+        };
+        const flight = get().extendWithRecommendations();
+        if (autoplayContinuation !== flight) {
+          autoplayContinuation = flight;
+          void flight.then(added => {
+            if (autoplayContinuation === flight) autoplayContinuation = null;
+            const latest = get();
+            if (!sameAutoplaySelection(latest, context)) return;
+            const canAdvance = added || upcomingIndex(latest, false) >= 0;
+            if (canAdvance) {
+              if (latest.playbackIntent) latest.next(false);
             } else {
-              set({ playing: false, autoAdvance: false, status: 'Fim da fila' });
+              set({
+                playing: false,
+                playbackIntent: false,
+                autoAdvance: false,
+                status: 'Fim da fila',
+              });
             }
           });
+        }
         return;
       }
-      set({ playing: false, autoAdvance: false, status: 'Fim da fila' });
+      set({
+        playing: false,
+        playbackIntent: false,
+        autoAdvance: false,
+        status: 'Fim da fila',
+      });
       return;
     }
     const nextTrack = s.queue[index]!;
@@ -655,6 +763,7 @@ export const useApp = create<State>((set, get) => ({
       shuffleNext: step.next,
       autoAdvance: !manual,
       playing: !manual && s.playing,
+      playbackIntent: true,
       position: 0,
       duration: nextTrack.duration,
       error: '',
@@ -668,7 +777,13 @@ export const useApp = create<State>((set, get) => ({
     const s = get();
     if (!s.queue.length) return;
     if (s.position > 4) {
-      set({ revision: s.revision + 1, position: 0, autoAdvance: false, error: '' });
+      set({
+        revision: s.revision + 1,
+        position: 0,
+        autoAdvance: false,
+        playbackIntent: true,
+        error: '',
+      });
       return;
     }
     if (s.data.preferences.shuffle && s.shufflePlayed.length > 1) {
@@ -684,6 +799,7 @@ export const useApp = create<State>((set, get) => ({
           position: 0,
           duration: prevTrack.duration,
           playing: false,
+          playbackIntent: true,
           error: '',
           revision: s.revision + 1,
           lyricsAvailable: false,
@@ -712,6 +828,7 @@ export const useApp = create<State>((set, get) => ({
       position: 0,
       duration: targetTrack.duration,
       playing: false,
+      playbackIntent: true,
       error: '',
       revision: s.revision + 1,
       ...(sameTrack ? {} : { lyricsAvailable: false, currentLyrics: null }),
@@ -811,6 +928,8 @@ export const useApp = create<State>((set, get) => ({
       set({
         queue: [],
         index: -1,
+        playing: false,
+        playbackIntent: false,
         shufflePlayed: [],
         shuffleNext: null,
         lyricsAvailable: false,
@@ -827,50 +946,72 @@ export const useApp = create<State>((set, get) => ({
     });
     s.message('Próximas músicas removidas da fila.');
   },
-  extendWithRecommendations: async () => {
-    if (autoplayBusy || !window.glass?.recommendations) return false;
+  extendWithRecommendations: () => {
     const s = get();
     const p = s.data.preferences;
-    if (!p.onlineConsent || !p.onboardingDone || !s.queue.length || s.index < 0) return false;
-    autoplayBusy = true;
-    try {
-      const current = s.queue[s.index];
-      const recentInQueue = s.queue
-        .slice(Math.max(0, s.index - 2), s.index + 1)
-        .reverse()
-        .filter(Boolean);
-      const seeds = recentInQueue.length ? recentInQueue : current ? [current] : [];
-      const excludeIds = Array.from(
-        new Set([
-          ...s.queue.map(t => t.id),
-          ...s.data.history.slice(0, 30).map(h => h.id),
-        ]),
-      );
-      const recs = await window.glass.recommendations(seeds, excludeIds);
-      const valid = (recs || []).filter(canPlay);
-      if (!valid.length) return false;
-      const latest = get();
-      const existing = new Set(latest.queue.map(t => t.id));
-      const fresh = valid
-        .filter(t => !existing.has(t.id))
-        .slice(0, 6)
-        .map(t => ({ ...t, recommended: true }));
-      if (!fresh.length) return false;
-      const firstNewIdx = latest.queue.length;
-      const nextQueue = [...latest.queue, ...fresh];
-      set({
-        queue: nextQueue,
-        shuffleNext:
-          latest.data.preferences.shuffle && latest.shuffleNext === null
-            ? firstNewIdx
-            : latest.shuffleNext,
-      });
-      return true;
-    } catch {
-      return false;
-    } finally {
-      autoplayBusy = false;
+    if (!window.glass?.recommendations || !p.onlineConsent || !p.onboardingDone || !s.queue.length || s.index < 0) {
+      return Promise.resolve(false);
     }
+    const context: AutoplayContext = {
+      revision: s.revision,
+      index: s.index,
+      trackId: s.queue[s.index]?.id,
+    };
+    if (autoplayFlight && sameAutoplaySelection(s, autoplayFlight.context)) {
+      return autoplayFlight.promise;
+    }
+    const flight = (async () => {
+      try {
+        const current = s.queue[s.index];
+        const recentInQueue = s.queue
+          .slice(Math.max(0, s.index - 2), s.index + 1)
+          .reverse()
+          .filter(Boolean);
+        const seeds = recentInQueue.length ? recentInQueue : current ? [current] : [];
+        const excludeIds = Array.from(
+          new Set([
+            ...s.queue.map(t => t.id),
+            ...s.data.history.slice(0, 30).map(h => h.id),
+          ]),
+        );
+        const recs = await window.glass.recommendations(seeds, excludeIds);
+        const latest = get();
+        const latestPreferences = latest.data.preferences;
+        if (
+          !sameAutoplaySelection(latest, context) ||
+          !latestPreferences.autoplay ||
+          !latestPreferences.onlineConsent ||
+          !latestPreferences.onboardingDone
+        ) {
+          return false;
+        }
+        const valid = (recs || []).filter(t => canPlay(t) && t.available !== false);
+        if (!valid.length) return false;
+        const existing = new Set(latest.queue.map(t => t.id));
+        const fresh = valid
+          .filter(t => !existing.has(t.id))
+          .slice(0, 6)
+          .map(t => ({ ...t, recommended: true }));
+        if (!fresh.length) return false;
+        const firstNewIdx = latest.queue.length;
+        const nextQueue = [...latest.queue, ...fresh];
+        set({
+          queue: nextQueue,
+          shuffleNext:
+            latest.data.preferences.shuffle && latest.shuffleNext === null
+              ? firstNewIdx
+              : latest.shuffleNext,
+        });
+        return sameAutoplaySelection(get(), context);
+      } catch {
+        return false;
+      }
+    })();
+    autoplayFlight = { context, promise: flight };
+    void flight.finally(() => {
+      if (autoplayFlight?.promise === flight) autoplayFlight = null;
+    });
+    return flight;
   },
   startStyleRadio: async seed => {
     const s = get();
@@ -898,6 +1039,13 @@ export const useApp = create<State>((set, get) => ({
     }
   },
 }));
+
+/** Fire-and-forget UI path; awaited callers still receive the original rejection. */
+export function setPreferencesFromUI(patch: Partial<Preferences>): void {
+  void useApp.getState().setPreferences(patch).catch(() => {
+    // Persistence failures are already reported and recovered by setPreferences.
+  });
+}
 
 export function cleanError(e: unknown): string {
   return (e instanceof Error ? e.message : String(e))

@@ -5,20 +5,22 @@ import { join,resolve } from 'node:path';
 // @ts-expect-error pngjs exposes a CommonJS runtime without declarations.
 import { PNG } from 'pngjs';
 import pixelmatch from 'pixelmatch';
+import { navButton, selectGlass } from './ui';
 
 test('Liquid Glass V3: live backdrop, edge refraction, idle rendering, fallback and resize',async()=>{
- test.setTimeout(150000);await mkdir('../../work/profiles',{recursive:true});await mkdir('test-results',{recursive:true});
- const profile=await mkdtemp(resolve('../../work/profiles/optics-v3-'));let browser:Browser|undefined;const errors:string[]=[];
+ test.setTimeout(150000);await mkdir('.test-data/profiles',{recursive:true});await mkdir('test-results',{recursive:true});
+ const profile=await mkdtemp(resolve('.test-data/profiles/optics-v3-'));let browser:Browser|undefined;const errors:string[]=[];
  const proc=spawn(process.env.GLASS_EXE||join(process.env.LOCALAPPDATA!,'Liquid Hub/liquid-hub.exe'),[],{windowsHide:true,env:{...process.env,GLASS_TEST_DATA:profile,GLASS_TEST_DISABLE_DIRECT:'1',WEBVIEW2_USER_DATA_FOLDER:join(profile,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9346'}});
  try{
   for(let i=0;i<90;i++){try{if((await fetch('http://127.0.0.1:9346/json/version')).ok)break;}catch{}await new Promise(r=>setTimeout(r,200));}
   browser=await chromium.connectOverCDP('http://127.0.0.1:9346');const context=browser.contexts()[0],page=context.pages()[0];page.on('pageerror',e=>errors.push(e.message));
   await expect(page.getByRole('button',{name:'Agora não',exact:true})).toBeVisible({timeout:15000});
   await page.getByRole('button',{name:'Agora não',exact:true}).click();
+  await navButton(page,'Configurações').click();await selectGlass(page);await page.reload();
   await expect(page.locator('.welcome-screen')).toBeVisible();await expect(page.locator('.welcome-screen time')).toHaveText(/\d{2}:\d{2}/);
   await page.screenshot({path:'test-results/glass-v3-startup-clock.png'});await expect(page.locator('.welcome-screen')).toHaveCount(0);
   await page.evaluate(()=>window.glass.window('restore'));await expect.poll(()=>page.evaluate(()=>window.glass.visualState())).toBe(true);
-  await page.getByRole('button',{name:'Configurações',exact:true}).click();
+  await navButton(page,'Configurações').click();
   await page.getByRole('slider',{name:'Movimento do fundo',exact:true}).fill('0');await page.getByRole('button',{name:'Área de trabalho',exact:true}).click();await expect(page.locator('html')).toHaveAttribute('data-optical-engine','css');await expect(page.getByRole('button',{name:'Área de trabalho',exact:true})).toHaveClass(/selected/);const windowShape=await page.evaluate(()=>window.glass.windowShape());expect(windowShape.nativeRegion).toBe(true);expect(windowShape.clientInsets).toEqual([0,0,0,0]);expect(windowShape.corners).toEqual([false,false,false,false]);expect(windowShape.center).toBe(true);expect(windowShape.sideMidpoints.every(Boolean)).toBe(true);await page.screenshot({path:'test-results/glass-v3-desktop-transparent.png',omitBackground:true});await page.evaluate(()=>window.glass.window('mini'));await expect.poll(()=>page.evaluate(async()=>(await window.glass.windowShape()).width)).toBeLessThan(windowShape.width);const miniShape=await page.evaluate(()=>window.glass.windowShape());expect(miniShape.nativeRegion).toBe(true);expect(miniShape.clientInsets).toEqual([0,0,0,0]);expect(miniShape.corners).toEqual([false,false,false,false]);await page.evaluate(()=>window.glass.window('restore'));await expect.poll(()=>page.evaluate(async()=>(await window.glass.windowShape()).width)).toBeGreaterThan(miniShape.width);await page.getByRole('button',{name:'Ambiente',exact:true}).click();await expect(page.locator('html')).toHaveAttribute('data-optical-engine','webgl');
   await expect(page.locator('canvas')).toHaveCount(2);
   await page.getByRole('switch',{name:'Reduzir animações',exact:true}).setChecked(true);await expect(page.getByRole('switch',{name:'Reduzir animações',exact:true})).toBeChecked();await expect(page.locator('html')).toHaveAttribute('data-motion','reduced');
@@ -50,7 +52,7 @@ test('Liquid Glass V3: live backdrop, edge refraction, idle rendering, fallback 
   const cdp=await context.newCDPSession(page);await cdp.send('Performance.enable');await page.waitForTimeout(1000);
   const beforeIdle=await page.evaluate(()=>(window as any).__glassOptics.draws);await page.waitForTimeout(1400);const afterIdle=await page.evaluate(()=>(window as any).__glassOptics.draws);expect(afterIdle-beforeIdle).toBeLessThanOrEqual(2);
   await cdp.send('HeapProfiler.collectGarbage');const beforeDom=await cdp.send('Memory.getDOMCounters');
-  for(let i=0;i<8;i++){await page.getByRole('button',{name:'Biblioteca',exact:true}).click();await page.getByRole('button',{name:'Configurações',exact:true}).click();}
+  for(let i=0;i<8;i++){await page.getByRole('button',{name:'Biblioteca',exact:true}).click();await navButton(page,'Configurações').click();}
   await page.waitForTimeout(3000);await cdp.send('HeapProfiler.collectGarbage');await page.waitForTimeout(500);await cdp.send('HeapProfiler.collectGarbage');const afterDom=await cdp.send('Memory.getDOMCounters');expect(afterDom.jsEventListeners-beforeDom.jsEventListeners).toBeLessThan(25);
   const glInfo=await page.evaluate(()=>{const gl=document.querySelector<HTMLCanvasElement>('.optical-surfaces')!.getContext('webgl2')!,ext=gl.getExtension('WEBGL_debug_renderer_info');return{version:gl.getParameter(gl.VERSION),renderer:ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):'unavailable'};});
   await page.evaluate(()=>{const ext=document.querySelector<HTMLCanvasElement>('.optical-surfaces')!.getContext('webgl2')!.getExtension('WEBGL_lose_context')!;(window as any).__loss=ext;ext.loseContext();});
@@ -70,7 +72,7 @@ test('Liquid Glass V3: live backdrop, edge refraction, idle rendering, fallback 
   const frames=await page.evaluate(()=>new Promise(resolve=>{const el=document.querySelector('.main-scroll')!,values:number[]=[];let start=performance.now(),last=start;const tick=(now:number)=>{values.push(now-last);last=now;el.scrollTop=(Math.sin((now-start)/300)+1)*Math.max(0,el.scrollHeight-el.clientHeight)/2;if(now-start<1800)requestAnimationFrame(tick);else{el.scrollTop=0;values.sort((a,b)=>a-b);resolve({samples:values.length,p95ms:values[Math.floor(values.length*.95)],over33ms:values.filter(t=>t>33.4).length});}};requestAnimationFrame(tick);}));
   await page.locator('.advanced-appearance').evaluate((el:HTMLDetailsElement)=>el.open=true);await page.getByRole('button',{name:'Glass Laboratory',exact:true}).click();await page.waitForTimeout(500);
   await page.evaluate(()=>window.glass.window('minimize'));await expect(page.locator('html')).toHaveAttribute('data-optical-visible','false');expect(await page.evaluate(()=>window.glass.visualState())).toBe(false);await page.waitForTimeout(200);const minimizedBefore=await page.evaluate(()=>(window as any).__glassOptics.draws);await page.waitForTimeout(500);expect(await page.evaluate(()=>(window as any).__glassOptics.draws)).toBe(minimizedBefore);await page.evaluate(()=>window.glass.window('restore'));await expect(page.locator('html')).toHaveAttribute('data-optical-visible','true');await expect.poll(()=>page.evaluate(()=>(window as any).__glassOptics.draws)).toBeGreaterThan(minimizedBefore);await page.getByRole('button',{name:'Fechar laboratório',exact:true}).click();
-  await page.reload();await expect(page.locator('.welcome-screen')).toHaveCount(0,{timeout:15000});await page.getByRole('button',{name:'Configurações',exact:true}).click();await expect(page.getByRole('button',{name:'Ambiente',exact:true})).toHaveClass(/selected/);
+  await page.reload();await expect(page.locator('.welcome-screen')).toHaveCount(0,{timeout:15000});await navButton(page,'Configurações').click();await expect(page.getByRole('button',{name:'Ambiente',exact:true})).toHaveClass(/selected/);
   expect(errors).toEqual([]);
   await writeFile('test-results/glass-v3-validation.json',JSON.stringify({version:'2.0.1',windowShape,miniShape,transparentDefault:true,oneSharedContext:true,glInfo,liveBackdrop:true,threeMethods:true,cssVsWebglDifference:comparison,refraction:{edgeChangedRatio:edge/edgeTotal,centerChangedRatio:center/Math.max(1,centerTotal)},movingPixels,labFps,idleDraws:afterIdle-beforeIdle,contextLossFallback:true,contextRestore:true,performanceFallback:true,desktopMode:true,minimizedStopsRendering:true,layouts,navigation:{cycles:8,before:beforeDom,after:afterDom},scroll:frames,performance:await cdp.send('Performance.getMetrics'),errors},null,2));
  }finally{proc.kill();await browser?.close().catch(()=>{});}

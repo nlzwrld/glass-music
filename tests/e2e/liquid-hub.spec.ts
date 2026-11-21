@@ -12,7 +12,7 @@ const activeAudio = (p: Page) => p.locator('audio[data-active="true"]');
 
 test('Liquid Hub rebranding, Zero-Trust PKCE+Ed25519+DPAPI login, Shuffle Play and conditional Lyrics UI', async () => {
   test.setTimeout(120000);
-  await mkdir('../../work/profiles', { recursive: true });
+  await mkdir('.test-data/profiles', { recursive: true });
   await mkdir('test-results', { recursive: true });
 
   // Start an in-process Zero-Trust Hub Broker on loopback for real desktop E2E authentication
@@ -25,7 +25,7 @@ test('Liquid Hub rebranding, Zero-Trust PKCE+Ed25519+DPAPI login, Shuffle Play a
   const brokerPort = (brokerServer.address() as { port: number }).port;
   const brokerUrl = `http://127.0.0.1:${brokerPort}`;
 
-  const profile = await mkdtemp(resolve('../../work/profiles/liquid-hub-220-'));
+  const profile = await mkdtemp(resolve('.test-data/profiles/liquid-hub-220-'));
   const db = new DatabaseSync(join(profile, 'library.sqlite'));
   db.exec(
     'CREATE TABLE tracks(id TEXT PRIMARY KEY,data TEXT NOT NULL,local_path TEXT,refreshed INTEGER NOT NULL);CREATE TABLE offline_tracks(track_id TEXT PRIMARY KEY REFERENCES tracks(id),path TEXT NOT NULL,size INTEGER NOT NULL,duration REAL NOT NULL,created INTEGER NOT NULL);CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);CREATE TABLE playlists(id TEXT PRIMARY KEY,name TEXT NOT NULL,created INTEGER NOT NULL);CREATE TABLE playlist_tracks(playlist_id TEXT REFERENCES playlists(id) ON DELETE CASCADE,track_id TEXT REFERENCES tracks(id) ON DELETE CASCADE,position INTEGER NOT NULL,PRIMARY KEY(playlist_id,track_id));',

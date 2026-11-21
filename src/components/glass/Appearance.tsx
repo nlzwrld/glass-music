@@ -1,6 +1,6 @@
 import { useRef } from 'react';
 import { ImagePlus, RotateCcw } from 'lucide-react';
-import { useApp, cleanError } from '../../stores/app';
+import { useApp, cleanError, setPreferencesFromUI } from '../../stores/app';
 import { Toggle } from './controls';
 import { useOptics } from './v3/OpticalEngine';
 import { opticalDefaults, type OpticalSettings } from './v3/model';
@@ -9,8 +9,8 @@ import { readBackground } from './v3/ambient';
 export default function Appearance() {
   const { settings: s, setSettings, setLab } = useOptics(),
     p = useApp(v => v.data.preferences),
-    pref = useApp(v => v.setPreferences),
     file = useRef<HTMLInputElement>(null);
+  const pref = setPreferencesFromUI;
 
   const uiStyle = p.uiStyle ?? 'matte';
   const isGlass = uiStyle === 'glass';
@@ -46,7 +46,7 @@ export default function Appearance() {
         <button
           className="text-button"
           onClick={() => {
-            void pref({
+            pref({
               uiStyle: 'matte',
               theme: 'dark',
               accent: '#52b79a',
@@ -77,7 +77,7 @@ export default function Appearance() {
               key={mode}
               aria-pressed={uiStyle === mode}
               className={uiStyle === mode ? 'selected' : ''}
-              onClick={() => void pref({ uiStyle: mode })}
+              onClick={() => pref({ uiStyle: mode })}
             >
               {label}
             </button>
@@ -99,7 +99,7 @@ export default function Appearance() {
               key={theme}
               aria-pressed={p.theme === theme}
               className={p.theme === theme ? 'selected' : ''}
-              onClick={() => void pref({ theme })}
+              onClick={() => pref({ theme })}
             >
               {label}
             </button>
@@ -114,13 +114,13 @@ export default function Appearance() {
             type="color"
             aria-label="Cor de destaque"
             value={p.accent || '#52b79a'}
-            onChange={e => void pref({ accent: e.target.value })}
+            onChange={e => pref({ accent: e.target.value })}
           />
           {p.accent && p.accent.toLowerCase() !== '#52b79a' && (
             <button
               type="button"
               className="text-button"
-              onClick={() => void pref({ accent: '#52b79a' })}
+              onClick={() => pref({ accent: '#52b79a' })}
             >
               Padrão
             </button>
@@ -151,7 +151,7 @@ export default function Appearance() {
       <Toggle
         label="Reduzir animações"
         checked={p.reducedMotion}
-        onChange={reducedMotion => void pref({ reducedMotion })}
+        onChange={reducedMotion => pref({ reducedMotion })}
       />
 
       {isGlass && (
@@ -234,7 +234,7 @@ export default function Appearance() {
                   min={0}
                   max={100}
                   value={p.glass}
-                  onChange={e => void pref({ glass: Number(e.target.value) })}
+                  onChange={e => pref({ glass: Number(e.target.value) })}
                 />
                 <output>{p.glass}%</output>
               </span>
@@ -309,7 +309,7 @@ export default function Appearance() {
             <Toggle
               label="Modo de desempenho"
               checked={p.performance}
-              onChange={performance => void pref({ performance })}
+              onChange={performance => pref({ performance })}
             />
           </div>
 

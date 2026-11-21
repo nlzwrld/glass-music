@@ -7,16 +7,17 @@ import {DatabaseSync} from 'node:sqlite';
 import {PNG} from 'pngjs';
 import {defaults} from '../../shared/types';
 import {opticalDefaults} from '../../src/components/glass/v3/model';
+import {chooseSidebarCreation,navButton} from './ui';
 test('themes cover the entire client area without a transparent perimeter',async()=>{
- test.setTimeout(120000);await mkdir('../../work/profiles',{recursive:true});await mkdir('test-results',{recursive:true});
- const profile=await mkdtemp(resolve('../../work/profiles/edges-201-')),db=new DatabaseSync(join(profile,'library.sqlite'));
- db.exec('CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);');db.prepare('INSERT INTO settings VALUES(?,?)').run('preferences',JSON.stringify({...defaults,onboardingDone:true,reducedMotion:true,appearance:{...opticalDefaults,background:'ambient',quality:'balanced'}}));db.close();
+ test.setTimeout(120000);await mkdir('.test-data/profiles',{recursive:true});await mkdir('test-results',{recursive:true});
+ const profile=await mkdtemp(resolve('.test-data/profiles/edges-201-')),db=new DatabaseSync(join(profile,'library.sqlite'));
+ db.exec('CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);');db.prepare('INSERT INTO settings VALUES(?,?)').run('preferences',JSON.stringify({...defaults,uiStyle:'glass',onboardingDone:true,reducedMotion:true,appearance:{...opticalDefaults,background:'ambient',quality:'balanced'}}));db.close();
  const proc=spawn(process.env.GLASS_EXE!,[],{windowsHide:true,env:{...process.env,GLASS_TEST_DATA:profile,GLASS_TEST_DISABLE_DIRECT:'1',WEBVIEW2_USER_DATA_FOLDER:join(profile,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9357'}});
  let browser:Browser|undefined;const errors:string[]=[],checks:unknown[]=[];
  try{
   for(let i=0;i<100;i++){try{if((await fetch('http://127.0.0.1:9357/json/version')).ok)break;}catch{}await new Promise(r=>setTimeout(r,200));}
   browser=await chromium.connectOverCDP('http://127.0.0.1:9357');const context=browser.contexts()[0],page=context.pages()[0];page.on('pageerror',e=>errors.push(e.message));
-  await expect(page.locator('.welcome-screen')).toHaveCount(0,{timeout:15000});await page.getByRole('button',{name:'Configurações',exact:true}).click();
+  await expect(page.locator('.welcome-screen')).toHaveCount(0,{timeout:15000});await navButton(page,'Configurações').click();
   const cdp=await context.newCDPSession(page);await cdp.send('Emulation.setDeviceMetricsOverride',{width:1280,height:720,deviceScaleFactor:1,mobile:false});
   const img=new PNG({width:8,height:8});for(let n=0;n<img.data.length;n+=4){img.data[n]=60;img.data[n+1]=150;img.data[n+2]=110;img.data[n+3]=255;}
   await page.getByRole('button',{name:'Personalizado',exact:true}).click();await page.locator('[data-background-upload]').setInputFiles({name:'ambient.png',mimeType:'image/png',buffer:PNG.sync.write(img)});await expect(page.locator('.custom-background-preview')).toBeVisible();
@@ -41,8 +42,9 @@ test('themes cover the entire client area without a transparent perimeter',async
   }
   await page.getByRole('button',{name:'Ambiente',exact:true}).click();await page.getByRole('button',{name:'Escuro',exact:true}).click();
   await page.locator('.advanced-appearance').evaluate((el:HTMLDetailsElement)=>el.open=true);await page.getByRole('button',{name:'Glass Laboratory',exact:true}).click();await expect(page.getByRole('dialog',{name:'Glass Laboratory'})).toBeVisible();await page.screenshot({path:'test-results/edges-laboratory.png'});await page.getByRole('button',{name:'Fechar laboratório',exact:true}).click();
-  await page.getByRole('button',{name:'Criar playlist',exact:true}).click();await page.getByRole('textbox',{name:'Nome da playlist',exact:true}).fill('Validação de margens');await page.getByRole('dialog').getByRole('button',{name:'Criar playlist',exact:true}).click();await expect(page.getByRole('dialog')).toHaveCount(0);
-  await page.locator('.playlist-row').getByRole('button',{name:'Opções de Validação de margens'}).click();await expect(page.getByRole('menu')).toBeVisible();const menu=await page.getByRole('menu').boundingBox();expect(menu!.x).toBeGreaterThanOrEqual(0);expect(menu!.x+menu!.width).toBeLessThanOrEqual(1280);await page.keyboard.press('Escape');
+  await chooseSidebarCreation(page,'Nova playlist');await page.getByRole('textbox',{name:'Nome da playlist',exact:true}).fill('Validação de margens');await page.getByRole('dialog').getByRole('button',{name:'Criar playlist',exact:true}).click();await expect(page.getByRole('dialog')).toHaveCount(0);
+  await navButton(page,'Biblioteca').click();
+  await page.locator('.playlist-row').filter({hasText:'Validação de margens'}).getByRole('button',{name:'Opções de Validação de margens',exact:true}).click();await expect(page.getByRole('menu')).toBeVisible();const menu=await page.getByRole('menu').boundingBox();expect(menu!.x).toBeGreaterThanOrEqual(0);expect(menu!.x+menu!.width).toBeLessThanOrEqual(1280);await page.keyboard.press('Escape');
   expect(errors).toEqual([]);await writeFile('test-results/edges-validation.json',JSON.stringify({version:'2.0.1',checks,desktopTransparencyPreserved:true,menuAndLaboratory:true,errors},null,2));
  }finally{proc.kill();await browser?.close().catch(()=>{});}
 });

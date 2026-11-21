@@ -22,7 +22,7 @@ import {
   LoaderCircle,
   Radio,
 } from 'lucide-react';
-import { useApp, formatTime, cleanError } from '../../stores/app';
+import { useApp, formatTime, cleanError, setPreferencesFromUI } from '../../stores/app';
 import { useJam } from '../jam/state';
 import { PlayerEngine, transport } from './engine';
 import Cover from '../glass/Cover';
@@ -66,9 +66,15 @@ export function PlaybackControls({
   const active = useApp(s => s.queue[s.index]),
     track = useDisplayTrack(),
     playing = useApp(s => s.playing),
+    playbackIntent = useApp(s => s.playbackIntent),
     status = useApp(s => s.status),
     p = useApp(s => s.data.preferences);
   const isGlass = (p.uiStyle ?? 'matte') === 'glass';
+  const wantsPlayback = playing || playbackIntent;
+  const preparing =
+    !playing &&
+    playbackIntent &&
+    (status === 'Carregando' || status === 'Sincronizando fonte de áudio...');
 
   return (
     <div className={`transport ${large ? 'large' : ''}`}>
@@ -76,7 +82,7 @@ export function PlaybackControls({
         label="Aleatório"
         active={p.shuffle}
         aria-pressed={p.shuffle}
-        onClick={() => void useApp.getState().setPreferences({ shuffle: !p.shuffle })}
+        onClick={() => setPreferencesFromUI({ shuffle: !p.shuffle })}
       >
         <Shuffle size={15} />
       </IconButton>
@@ -92,8 +98,8 @@ export function PlaybackControls({
         data-optic={!isGlass || localSurface ? 'css' : 'auto'}
         data-crystal="thin"
         data-material="clear"
-        title={playing ? 'Pausar' : 'Reproduzir'}
-        aria-label={playing ? 'Pausar' : 'Reproduzir'}
+        title={wantsPlayback ? 'Pausar' : 'Reproduzir'}
+        aria-label={wantsPlayback ? 'Pausar' : 'Reproduzir'}
         disabled={!track}
         onClick={() => {
           if (active) transport.toggle();
@@ -104,9 +110,9 @@ export function PlaybackControls({
         }}
       >
         {isGlass && <LiquidLens />}
-        {status === 'Carregando' && !playing ? (
+        {preparing ? (
           <LoaderCircle className="spinner" size={16} />
-        ) : playing ? (
+        ) : wantsPlayback ? (
           <Pause size={16} fill="currentColor" />
         ) : (
           <Play size={16} fill="currentColor" />
@@ -123,11 +129,9 @@ export function PlaybackControls({
         label={`Repetir: ${p.repeat === 'off' ? 'desligado' : p.repeat === 'all' ? 'fila' : 'uma faixa'}`}
         active={p.repeat !== 'off'}
         onClick={() =>
-          void useApp
-            .getState()
-            .setPreferences({
-              repeat: p.repeat === 'off' ? 'all' : p.repeat === 'all' ? 'one' : 'off',
-            })
+          setPreferencesFromUI({
+            repeat: p.repeat === 'off' ? 'all' : p.repeat === 'all' ? 'one' : 'off',
+          })
         }
       >
         {p.repeat === 'one' ? <Repeat1 size={15} /> : <Repeat size={15} />}
@@ -180,7 +184,7 @@ function VolumeControl() {
     <div className="volume-control">
       <IconButton
         label={volume ? 'Silenciar' : 'Ativar som'}
-        onClick={() => void useApp.getState().setPreferences({ volume: volume ? 0 : 65 })}
+        onClick={() => setPreferencesFromUI({ volume: volume ? 0 : 65 })}
       >
         {volume ? <Volume2 size={16} /> : <VolumeX size={16} />}
       </IconButton>
@@ -190,7 +194,7 @@ function VolumeControl() {
         max={100}
         value={volume}
         style={{ '--progress': `${volume}%` } as React.CSSProperties}
-        onChange={e => void useApp.getState().setPreferences({ volume: Number(e.target.value) })}
+        onChange={e => setPreferencesFromUI({ volume: Number(e.target.value) })}
       />
     </div>
   );

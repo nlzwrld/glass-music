@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import Appearance from '../components/glass/Appearance';
-import { useApp, cleanError } from '../stores/app';
+import { useApp, cleanError, setPreferencesFromUI } from '../stores/app';
 import { resolveNotificationMode, type NotificationMode } from '../../shared/types';
 import AccountConnections from '../components/library/AccountConnections';
 import { Toggle } from '../components/glass/controls';
@@ -10,7 +10,8 @@ import { useUpdateNotice } from '../lib/updates';
 
 function AudioSettings() {
   const p = useApp(s => s.data.preferences),
-    pref = useApp(s => s.setPreferences);
+    pref = useApp(s => s.setPreferences),
+    prefUI = setPreferencesFromUI;
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
 
   useEffect(() => {
@@ -23,7 +24,7 @@ function AudioSettings() {
     return () => navigator.mediaDevices?.removeEventListener('devicechange', refresh);
   }, []);
 
-  const preset = (eq: number[]) => void pref({ eq });
+  const preset = (eq: number[]) => prefUI({ eq });
 
   return (
     <section className="settings-section">
@@ -38,7 +39,7 @@ function AudioSettings() {
             max={100}
             value={p.volume}
             style={{ '--progress': `${p.volume}%` } as React.CSSProperties}
-            onChange={e => void pref({ volume: Number(e.target.value) })}
+            onChange={e => prefUI({ volume: Number(e.target.value) })}
           />
           <output>{p.volume}%</output>
         </span>
@@ -54,7 +55,7 @@ function AudioSettings() {
             step={0.5}
             value={p.volumeBoost}
             style={{ '--progress': `${(p.volumeBoost / 12) * 100}%` } as React.CSSProperties}
-            onChange={e => void pref({ volumeBoost: Number(e.target.value) })}
+            onChange={e => prefUI({ volumeBoost: Number(e.target.value) })}
           />
           <output>+{p.volumeBoost} dB</output>
         </span>
@@ -62,7 +63,7 @@ function AudioSettings() {
       <Toggle
         label="Proteção contra distorção"
         checked={p.limiter}
-        onChange={limiter => void pref({ limiter })}
+        onChange={limiter => prefUI({ limiter })}
       />
 
       <div className="setting-subsection">
@@ -98,7 +99,7 @@ function AudioSettings() {
                 onChange={e => {
                   const eq = [...p.eq];
                   eq[i] = Number(e.target.value);
-                  void pref({ eq });
+                  prefUI({ eq });
                 }}
               />
               <output>
@@ -116,7 +117,7 @@ function AudioSettings() {
           <select
             aria-label="Dispositivo de saída"
             value={p.outputDevice}
-            onChange={e => void pref({ outputDevice: e.target.value })}
+            onChange={e => prefUI({ outputDevice: e.target.value })}
           >
             <option value="default">Padrão do Windows</option>
             {devices
@@ -179,7 +180,7 @@ function OfflineSettings() {
 export default function Settings() {
   const p = useApp(s => s.data.preferences),
     integration = useApp(s => s.integrations),
-    pref = useApp(s => s.setPreferences);
+    prefUI = setPreferencesFromUI;
   const [busy, setBusy] = useState(false),
     [message, setMessage] = useState('');
 
@@ -201,7 +202,7 @@ export default function Settings() {
           <select
             aria-label="Transição entre músicas"
             value={p.transition}
-            onChange={e => void pref({ transition: e.target.value as typeof p.transition })}
+            onChange={e => prefUI({ transition: e.target.value as typeof p.transition })}
           >
             <option value="off">Sem transição</option>
             <option value="fade">Fade suave</option>
@@ -224,7 +225,7 @@ export default function Settings() {
                     '--progress': `${((p.transitionSeconds - 0.5) / 9.5) * 100}%`,
                   } as React.CSSProperties
                 }
-                onChange={e => void pref({ transitionSeconds: Number(e.target.value) })}
+                onChange={e => prefUI({ transitionSeconds: Number(e.target.value) })}
               />
               <output>{p.transitionSeconds}s</output>
             </span>
@@ -234,7 +235,7 @@ export default function Settings() {
           label="Continuar ouvindo automaticamente"
           description="Reproduz faixas semelhantes ao terminar a fila"
           checked={p.autoplay !== false}
-          onChange={autoplay => void pref({ autoplay })}
+          onChange={autoplay => prefUI({ autoplay })}
         />
       </section>
 
@@ -249,10 +250,10 @@ export default function Settings() {
         <Toggle
           label="Acesso online"
           checked={p.onlineConsent && p.catalogConsent}
-          onChange={v => void pref({ onlineConsent: v, catalogConsent: v })}
+          onChange={v => prefUI({ onlineConsent: v, catalogConsent: v })}
         />
         <div className="settings-actions-row">
-          <button className="text-button" onClick={() => void pref({ onboardingDone: false })}>
+          <button className="text-button" onClick={() => prefUI({ onboardingDone: false })}>
             Termos e privacidade
           </button>
         </div>
@@ -265,17 +266,17 @@ export default function Settings() {
         <Toggle
           label="Iniciar com o Windows"
           checked={p.startup}
-          onChange={v => void pref({ startup: v })}
+          onChange={v => prefUI({ startup: v })}
         />
         <Toggle
           label="Fechar para a bandeja"
           checked={p.tray}
-          onChange={v => void pref({ tray: v })}
+          onChange={v => prefUI({ tray: v })}
         />
         <Toggle
           label="Teclas multimídia"
           checked={p.globalShortcuts}
-          onChange={v => void pref({ globalShortcuts: v })}
+          onChange={v => prefUI({ globalShortcuts: v })}
         />
         <label className="setting-row">
           <span>
@@ -287,7 +288,7 @@ export default function Settings() {
             value={resolveNotificationMode(p)}
             onChange={e => {
               const mode = e.target.value as NotificationMode;
-              void pref({
+              prefUI({
                 notificationMode: mode,
                 notifications: mode !== 'off',
               });
@@ -301,7 +302,7 @@ export default function Settings() {
         <Toggle
           label="Atualizar automaticamente"
           checked={p.autoUpdate}
-          onChange={autoUpdate => void pref({ autoUpdate })}
+          onChange={autoUpdate => prefUI({ autoUpdate })}
         />
         <div className="settings-actions-row">
           <button

@@ -5,17 +5,17 @@ import {join,resolve} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {defaults} from '../../shared/types';
 import {opticalDefaults} from '../../src/components/glass/v3/model';
+import {navButton,selectGlass} from './ui';
 
 async function appearance(page:Page){
- await page.getByRole('button',{name:'Configurações',exact:true}).click();
- const category=page.getByRole('button',{name:'Aparência',exact:true});
- await category.click();
+ await navButton(page,'Configurações').click();
+ await selectGlass(page);
  await expect(page.getByRole('slider',{name:'Intensidade do gradiente',exact:true})).toBeVisible();
 }
 
 test('recent sidebar fits, vivid gradients remain tonal, desktop blur stays neutral and motion honors preference',async()=>{
- test.setTimeout(150000);await mkdir('../../work/profiles',{recursive:true});await mkdir('test-results',{recursive:true});
- const profile=await mkdtemp(resolve('../../work/profiles/visual-220-')),db=new DatabaseSync(join(profile,'library.sqlite'));
+ test.setTimeout(150000);await mkdir('.test-data/profiles',{recursive:true});await mkdir('test-results',{recursive:true});
+ const profile=await mkdtemp(resolve('.test-data/profiles/visual-220-')),db=new DatabaseSync(join(profile,'library.sqlite'));
  db.exec('CREATE TABLE tracks(id TEXT PRIMARY KEY,data TEXT NOT NULL,local_path TEXT,refreshed INTEGER NOT NULL);CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);CREATE TABLE history(track_id TEXT REFERENCES tracks(id) ON DELETE CASCADE,played INTEGER NOT NULL);');
  for(let i=0;i<36;i++){
   const track={id:`local:recent-${i}`,source:'local',kind:'track',sourceId:`recent-${i}`,title:`Música ${i} com um título extenso para testar a barra lateral`,artist:'Artista com nome extenso de validação',artwork:'/covers/prisma.svg',duration:20,addedAt:Date.now()};
@@ -30,8 +30,8 @@ test('recent sidebar fits, vivid gradients remain tonal, desktop blur stays neut
   for(let i=0;i<100;i++){try{if((await fetch('http://127.0.0.1:9384/json/version')).ok)break;}catch{}await new Promise(r=>setTimeout(r,200));}
   browser=await chromium.connectOverCDP('http://127.0.0.1:9384');const context=browser.contexts()[0],page=context.pages()[0];page.on('pageerror',e=>errors.push(e.message));
   await expect(page.locator('.welcome-screen')).toHaveCount(0,{timeout:15000});
-  await expect(page.locator('.sidebar .recent-track')).toHaveCount(30);
-  await expect(page.locator('.sidebar .playlist-row')).toHaveCount(0);
+  await expect(page.locator('.sidebar .recent-track')).toHaveCount(20);
+  await expect(page.locator('.sidebar-recents')).toHaveAttribute('aria-label','Músicas recentes');
   const cdp=await context.newCDPSession(page);
   for(const width of [1000,1280,1920]){
    await cdp.send('Emulation.setDeviceMetricsOverride',{width,height:768,deviceScaleFactor:1,mobile:false});
@@ -51,14 +51,14 @@ test('recent sidebar fits, vivid gradients remain tonal, desktop blur stays neut
   const spread=(points:number[][])=>Math.max(...points[0].map((_,i)=>Math.max(...points.map(p=>p[i]))-Math.min(...points.map(p=>p[i]))));
   const settle=()=>page.evaluate(()=>new Promise<void>(done=>requestAnimationFrame(()=>requestAnimationFrame(()=>done()))));
   for(const color of ['#ff0000','#00ff00','#0000ff','#ffffff','#000000']){
-   await page.locator('input[type=color]').fill(color);await page.getByRole('slider',{name:'Intensidade do gradiente',exact:true}).fill('1');
+   await page.getByLabel('Cor do fundo',{exact:true}).fill(color);await page.getByRole('slider',{name:'Intensidade do gradiente',exact:true}).fill('1');
    await settle();
    await expect.poll(async()=>spread(await sample())).toBeGreaterThan(16);
    const strong=await sample();await page.getByRole('slider',{name:'Intensidade do gradiente',exact:true}).fill('.1');await settle();
    await expect.poll(async()=>JSON.stringify(await sample())).not.toBe(JSON.stringify(strong));
    const weak=await sample();expect(spread(strong),color).toBeGreaterThan(spread(weak));gradients.push({color,strong,weak});
   }
-  await page.locator('input[type=color]').fill('#ff3333');await page.getByRole('slider',{name:'Intensidade do gradiente',exact:true}).fill('.8');
+  await page.getByLabel('Cor do fundo',{exact:true}).fill('#ff3333');await page.getByRole('slider',{name:'Intensidade do gradiente',exact:true}).fill('.8');
   await page.screenshot({path:'test-results/visual-220-gradient.png'});
   await page.getByRole('button',{name:'Área de trabalho',exact:true}).click();
   for(const value of ['0','24']){

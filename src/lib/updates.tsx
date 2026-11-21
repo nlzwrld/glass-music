@@ -4,6 +4,16 @@ import { ArrowUpCircle, LoaderCircle, X } from 'lucide-react';
 import { useApp, cleanError } from '../stores/app';
 import { transport } from '../components/player/engine';
 import { IconButton } from '../components/glass/controls';
+import type { Preferences } from '../../shared/types';
+
+export function shouldCheckAutomatically(
+  ready: boolean,
+  preferences: Pick<Preferences, 'autoUpdate' | 'onlineConsent' | 'onboardingDone'>,
+): boolean {
+  return Boolean(
+    ready && preferences.autoUpdate && preferences.onlineConsent && preferences.onboardingDone,
+  );
+}
 
 interface UpdateState {
   availableVersion: string;
@@ -41,7 +51,10 @@ export function AutoUpdates() {
     installing = useUpdateNotice(s => s.installing);
 
   useEffect(() => {
-    if (!ready || !p.onlineConsent || !p.onboardingDone) return;
+    if (!shouldCheckAutomatically(ready, p)) {
+      if (ready && !p.autoUpdate) useUpdateNotice.getState().setAvailable('');
+      return;
+    }
     let stopped = false,
       busy = false;
     const check = async () => {
@@ -69,7 +82,7 @@ export function AutoUpdates() {
       clearInterval(timer);
       window.removeEventListener('online', check);
     };
-  }, [ready, p.onlineConsent, p.onboardingDone]);
+  }, [ready, p.autoUpdate, p.onlineConsent, p.onboardingDone]);
 
   if (!availableVersion || availableVersion === dismissedVersion) return null;
 

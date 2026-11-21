@@ -3,8 +3,8 @@ import {spawn} from 'node:child_process';
 import {mkdir,mkdtemp,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 test('external HWND has rounded client corners and no native frame in every window state',async()=>{
- test.setTimeout(100000);await mkdir('../../work/profiles',{recursive:true});await mkdir('test-results',{recursive:true});
- const profile=await mkdtemp(resolve('../../work/profiles/window-190-'));let browser:Browser|undefined;
+ test.setTimeout(100000);await mkdir('.test-data/profiles',{recursive:true});await mkdir('test-results',{recursive:true});
+ const profile=await mkdtemp(resolve('.test-data/profiles/window-190-'));let browser:Browser|undefined;
  const proc=spawn(process.env.GLASS_EXE||join(process.env.LOCALAPPDATA!,'Liquid Hub/liquid-hub.exe'),[],{windowsHide:!process.env.GLASS_WINDOW_PREVIEW,env:{...process.env,GLASS_TEST_DATA:profile,GLASS_TEST_DISABLE_DIRECT:'1',WEBVIEW2_USER_DATA_FOLDER:join(profile,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9352'}});
  try{
   for(let i=0;i<90;i++){try{if((await fetch('http://127.0.0.1:9352/json/version')).ok)break;}catch{}await new Promise(r=>setTimeout(r,200));}

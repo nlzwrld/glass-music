@@ -5,7 +5,32 @@ import {
   createBroker,
   hashPasswordArgon2id,
   verifyPasswordArgon2id,
+  verifyPasswordArgon2idAsync,
+  ZeroTrustAuthEngine,
+  type Argon2AsyncAdapter,
 } from '../../server/broker';
+
+const TEST_ARGON2 = { memory: 1024, passes: 1, parallelism: 1, tagLength: 16 };
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function credentialPayload(username: string, password: string) {
+  return {
+    username,
+    password,
+    client_id: 'liquid-hub-desktop',
+    code_challenge: computePkceS256Challenge(randomBytes(48).toString('base64url')),
+    code_challenge_method: 'S256',
+  };
+}
 
 function mockSoundcloudFetch() {
   return vi
@@ -79,6 +104,8 @@ describe('Zero-Trust Broker & Auth Engine', () => {
     expect(encoded.startsWith('$argon2id$v=19$')).toBe(true);
     expect(verifyPasswordArgon2id('StrongPassword#2026!', encoded)).toBe(true);
     expect(verifyPasswordArgon2id('WrongPassword#2026!', encoded)).toBe(false);
+    expect(await verifyPasswordArgon2idAsync('StrongPassword#2026!', encoded)).toBe(true);
+    expect(await verifyPasswordArgon2idAsync('WrongPassword#2026!', encoded)).toBe(false);
 
     const api = mockSoundcloudFetch();
     let now = Date.now();
@@ -351,6 +378,209 @@ describe('Zero-Trust Broker & Auth Engine', () => {
       expect(limited.headers.get('retry-after')).toBe('60');
     } finally {
       await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('keeps health responsive while an HTTP login awaits Argon2', async () => {
+    const started = deferred<void>();
+    const release = deferred<boolean>();
+    const adapter: Argon2AsyncAdapter = {
+      hash: async () => {
+        throw new Error('O login não deve gerar um hash novo.');
+      },
+      verify: vi.fn(() => {
+        started.resolve(undefined);
+        return release.promise;
+      }),
+    };
+    const server = createBroker(
+      {
+        BROKER_ACCESS_TOKEN: 'owner-static-broker-secret-token-9999',
+        SOUNDCLOUD_CLIENT_ID: 'client-id',
+        SOUNDCLOUD_CLIENT_SECRET: 'client-secret',
+        BROKER_ADMIN_USER: 'responsive_user',
+        BROKER_ADMIN_PASSWORD: 'ResponsiveStrongPassword!99',
+      },
+      mockSoundcloudFetch() as typeof fetch,
+      Date.now,
+      { argon2Params: TEST_ARGON2, argon2Adapter: adapter, argon2Concurrency: 1 },
+    );
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    let login: Promise<Response> | undefined;
+    try {
+      login = fetch(`${base}/v1/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(credentialPayload('responsive_user', 'ResponsiveStrongPassword!99')),
+      });
+      await started.promise;
+
+      const health = await fetch(`${base}/health`);
+      expect(health.status).toBe(200);
+      expect(await health.json()).toMatchObject({ service: 'liquid-hub-broker', version: 2 });
+      expect(adapter.verify).toHaveBeenCalledTimes(1);
+
+      release.resolve(true);
+      expect((await login).status).toBe(200);
+    } finally {
+      release.resolve(false);
+      if (login) await login.catch(() => undefined);
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('limits concurrent Argon2 operations without blocking queued authentication', async () => {
+    const count = 5;
+    const started = Array.from({ length: count }, () => deferred<void>());
+    const gates: Array<ReturnType<typeof deferred<boolean>>> = [];
+    let active = 0;
+    let maxActive = 0;
+    const adapter: Argon2AsyncAdapter = {
+      hash: async () => {
+        throw new Error('O login não deve gerar um hash novo.');
+      },
+      verify: vi.fn(() => {
+        const index = gates.length;
+        const gate = deferred<boolean>();
+        gates.push(gate);
+        active++;
+        maxActive = Math.max(maxActive, active);
+        started[index].resolve(undefined);
+        return gate.promise.finally(() => {
+          active--;
+        });
+      }),
+    };
+    const password = 'LimitedStrongPassword!99';
+    const engine = new ZeroTrustAuthEngine({
+      argon2Params: TEST_ARGON2,
+      argon2Adapter: adapter,
+      argon2Concurrency: 2,
+    });
+    engine.registerUser('limited_user', password);
+    const requests = Array.from({ length: count }, () =>
+      engine.authenticateCredentials(credentialPayload('limited_user', password)),
+    );
+    try {
+      await Promise.all([started[0].promise, started[1].promise]);
+      expect(gates).toHaveLength(2);
+      expect(maxActive).toBe(2);
+
+      for (let i = 0; i < count; i++) {
+        gates[i].resolve(true);
+        if (i + 2 < count) await started[i + 2].promise;
+      }
+      const issued = await Promise.all(requests);
+      expect(issued.every(result => typeof result.code === 'string')).toBe(true);
+      expect(adapter.verify).toHaveBeenCalledTimes(count);
+      expect(maxActive).toBe(2);
+    } finally {
+      for (const gate of gates) gate.resolve(false);
+    }
+  });
+
+  it('bounds the Argon2 waiting queue and accepts new work after it drains', async () => {
+    const started = Array.from({ length: 3 }, () => deferred<void>());
+    const gates: Array<ReturnType<typeof deferred<boolean>>> = [];
+    const adapter: Argon2AsyncAdapter = {
+      hash: async () => {
+        throw new Error('O login não deve gerar um hash novo.');
+      },
+      verify: vi.fn(() => {
+        const index = gates.length;
+        const gate = deferred<boolean>();
+        gates.push(gate);
+        started[index].resolve(undefined);
+        return gate.promise;
+      }),
+    };
+    const password = 'BoundedStrongPassword!99';
+    const engine = new ZeroTrustAuthEngine({
+      argon2Params: TEST_ARGON2,
+      argon2Adapter: adapter,
+      argon2Concurrency: 1,
+      argon2QueueSize: 1,
+    });
+    engine.registerUser('bounded_user', password);
+    const first = engine.authenticateCredentials(credentialPayload('bounded_user', password));
+    const second = engine.authenticateCredentials(credentialPayload('bounded_user', password));
+    try {
+      await started[0].promise;
+      await expect(
+        engine.authenticateCredentials(credentialPayload('bounded_user', password)),
+      ).rejects.toMatchObject({ status: 503, code: 'service_busy' });
+      expect(adapter.verify).toHaveBeenCalledTimes(1);
+
+      gates[0].resolve(true);
+      await started[1].promise;
+      const recovered = engine.authenticateCredentials(credentialPayload('bounded_user', password));
+      gates[1].resolve(true);
+      await started[2].promise;
+      gates[2].resolve(true);
+
+      const recoveredResults = await Promise.all([first, second, recovered]);
+      expect(recoveredResults.every(result => typeof result.code === 'string')).toBe(true);
+      expect(adapter.verify).toHaveBeenCalledTimes(3);
+    } finally {
+      for (const gate of gates) gate.resolve(false);
+    }
+  });
+
+  it('rechecks a username after async hashing and never overwrites a simultaneous registration', async () => {
+    const firstPassword = 'FirstStrongPassword!99';
+    const secondPassword = 'SecondStrongPassword!99';
+    const firstHash = hashPasswordArgon2id(firstPassword, TEST_ARGON2);
+    const secondHash = hashPasswordArgon2id(secondPassword, TEST_ARGON2);
+    const firstStarted = deferred<void>();
+    const secondStarted = deferred<void>();
+    const firstRelease = deferred<string>();
+    const secondRelease = deferred<string>();
+    const adapter: Argon2AsyncAdapter = {
+      hash: vi.fn((password: string) => {
+        if (password === firstPassword) {
+          firstStarted.resolve(undefined);
+          return firstRelease.promise;
+        }
+        secondStarted.resolve(undefined);
+        return secondRelease.promise;
+      }),
+      verify: verifyPasswordArgon2idAsync,
+    };
+    const engine = new ZeroTrustAuthEngine({
+      argon2Params: TEST_ARGON2,
+      argon2Adapter: adapter,
+      argon2Concurrency: 2,
+    });
+    const firstRegistration = engine.authenticateCredentials(
+      credentialPayload('race_user', firstPassword),
+      true,
+    );
+    const secondRegistration = engine.authenticateCredentials(
+      credentialPayload('race_user', secondPassword),
+      true,
+    );
+    const registrations = Promise.allSettled([firstRegistration, secondRegistration]);
+    try {
+      await Promise.all([firstStarted.promise, secondStarted.promise]);
+      firstRelease.resolve(firstHash);
+      await expect(firstRegistration).resolves.toMatchObject({ code: expect.any(String) });
+      secondRelease.resolve(secondHash);
+
+      const [, second] = await registrations;
+      expect(second.status).toBe('rejected');
+      if (second.status === 'rejected') {
+        expect(second.reason).toMatchObject({ status: 409, code: 'user_exists' });
+      }
+      await expect(
+        engine.authenticateCredentials(credentialPayload('race_user', firstPassword)),
+      ).resolves.toMatchObject({ code: expect.any(String) });
+      await expect(
+        engine.authenticateCredentials(credentialPayload('race_user', secondPassword)),
+      ).rejects.toMatchObject({ status: 401, code: 'invalid_credentials' });
+    } finally {
+      firstRelease.resolve(firstHash);
+      secondRelease.resolve(secondHash);
     }
   });
 });

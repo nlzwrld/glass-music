@@ -11,9 +11,9 @@ const active = (p: Page) => p.locator('audio[data-active="true"]');
 
 test('real playback latency, crossfade, offline download, detached lyrics and two-client LAN JAM', async () => {
   test.setTimeout(210000);
-  await mkdir('../../work/profiles', { recursive: true });
+  await mkdir('.test-data/profiles', { recursive: true });
   await mkdir('test-results', { recursive: true });
-  const profile = await mkdtemp(resolve('../../work/profiles/features-220-')),
+  const profile = await mkdtemp(resolve('.test-data/profiles/features-220-')),
     db = new DatabaseSync(join(profile, 'library.sqlite'));
   db.exec(
     'CREATE TABLE tracks(id TEXT PRIMARY KEY,data TEXT NOT NULL,local_path TEXT,refreshed INTEGER NOT NULL);CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);CREATE TABLE playlists(id TEXT PRIMARY KEY,name TEXT NOT NULL,created INTEGER NOT NULL);CREATE TABLE playlist_tracks(playlist_id TEXT REFERENCES playlists(id) ON DELETE CASCADE,track_id TEXT REFERENCES tracks(id) ON DELETE CASCADE,position INTEGER NOT NULL,PRIMARY KEY(playlist_id,track_id));',

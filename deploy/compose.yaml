@@ -25,6 +25,7 @@ services:
       PORT: 8789
       JAM_MAX_ROOMS: 2500
       JAM_STRICT_REPLAY: "1"
+      JAM_TRUSTED_PROXY_IPS: 172.30.0.2
     restart: unless-stopped
     read_only: true
     tmpfs: [/tmp]

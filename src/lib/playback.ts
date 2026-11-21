@@ -5,7 +5,7 @@ import {
   type StreamProvider,
   type Track,
 } from '../../shared/types';
-import { useApp } from '../stores/app';
+import { setPreferencesFromUI, useApp } from '../stores/app';
 
 export const NOW_PLAYING_NOTIFICATION_TAG = 'liquid-hub-now-playing';
 export const TRACK_NOTIFY_DEBOUNCE_MS = 3000;
@@ -175,7 +175,7 @@ export function shufflePlay(tracks: readonly Track[], rng: () => number = Math.r
   const first = shuffled[0]!;
   const app = useApp.getState();
   if (!app.data.preferences.shuffle) {
-    void app.setPreferences({ shuffle: true });
+    setPreferencesFromUI({ shuffle: true });
   }
   app.play(first, shuffled);
   return first;

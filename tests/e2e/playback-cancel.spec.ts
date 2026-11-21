@@ -1,0 +1,141 @@
+import { test, expect, chromium, type Browser } from '@playwright/test';
+import { spawn } from 'node:child_process';
+import { copyFile, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { defaults, type Track } from '../../shared/types';
+import { opticalDefaults } from '../../src/components/glass/v3/model';
+import { activeAudio, navButton } from './ui';
+
+test('pause holds pending remote-track preparation; release stays paused and resume plays offline', async () => {
+  test.setTimeout(45000);
+  await mkdir('.test-data/profiles', { recursive: true });
+  await mkdir('test-results', { recursive: true });
+  const profile = await mkdtemp(resolve('.test-data/profiles/playback-cancel-'));
+  await mkdir(join(profile, 'offline'), { recursive: true });
+  const offlinePath = join(profile, 'offline', 'fixture.wav');
+  await copyFile('assets/audio/prisma.wav', offlinePath);
+
+  const track: Track = {
+    id: 'youtube:dQw4w9WgXcQ',
+    source: 'youtube',
+    sourceId: 'dQw4w9WgXcQ',
+    kind: 'track',
+    title: 'Preparação pausada',
+    artist: 'Fixture local sem rede',
+    duration: 20,
+    offline: true,
+    url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+    addedAt: Date.now(),
+  };
+  const db = new DatabaseSync(join(profile, 'library.sqlite'));
+  db.exec('CREATE TABLE tracks(id TEXT PRIMARY KEY,data TEXT NOT NULL,local_path TEXT,refreshed INTEGER NOT NULL);CREATE TABLE offline_tracks(track_id TEXT PRIMARY KEY REFERENCES tracks(id),path TEXT NOT NULL,size INTEGER NOT NULL,duration REAL NOT NULL,created INTEGER NOT NULL);CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);');
+  db.prepare('INSERT INTO tracks VALUES(?,?,NULL,?)').run(track.id, JSON.stringify(track), Date.now());
+  db.prepare('INSERT INTO offline_tracks VALUES(?,?,?,?,?)').run(track.id, offlinePath, 1, 20, Date.now());
+  db.prepare('INSERT INTO settings VALUES(?,?)').run(
+    'preferences',
+    JSON.stringify({
+      ...defaults,
+      onboardingDone: true,
+      onlineConsent: true,
+      catalogConsent: false,
+      autoUpdate: false,
+      autoplay: false,
+      volume: 0,
+      reducedMotion: true,
+      appearance: { ...opticalDefaults, background: 'solid', backgroundMotion: 0 },
+    }),
+  );
+  db.close();
+
+  const proc = spawn(process.env.GLASS_EXE!, [], {
+    windowsHide: true,
+    env: {
+      ...process.env,
+      GLASS_TEST_DATA: profile,
+      GLASS_TEST_DISABLE_DIRECT: '1',
+      GLASS_TEST_CATALOG_URL: '',
+      WEBVIEW2_USER_DATA_FOLDER: join(profile, 'webview'),
+      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=9391',
+    },
+  });
+  let browser: Browser | undefined;
+  const errors: string[] = [];
+  try {
+    for (let i = 0; i < 100; i++) {
+      try {
+        if ((await fetch('http://127.0.0.1:9391/json/version')).ok) break;
+      } catch {}
+      await new Promise(r => setTimeout(r, 200));
+    }
+    browser = await chromium.connectOverCDP('http://127.0.0.1:9391');
+    const page = browser.contexts()[0].pages()[0];
+    page.on('pageerror', e => errors.push(e.message));
+
+    // Install the update spy before application modules assign window.glass.
+    // The stub itself never performs update traffic.
+    await page.addInitScript(() => {
+      const w = window as any;
+      let api: any;
+      w.__updateStatusCalls = [];
+      Object.defineProperty(w, 'glass', {
+        configurable: true,
+        get: () => api,
+        set: value => {
+          api = value;
+          api.updateStatus = async (...args: unknown[]) => {
+            w.__updateStatusCalls.push(args);
+            return { configured: false, available: false, version: '0.0.0', message: 'Unexpected E2E update call' };
+          };
+        },
+      });
+    });
+    await page.reload();
+    await expect(page.locator('.welcome-screen')).toHaveCount(0, { timeout: 15000 });
+    await navButton(page, 'Biblioteca').click();
+    await page.evaluate(() => {
+      const w = window as any;
+      const original = window.glass.offlineSource.bind(window.glass);
+      let release!: () => void;
+      const pending = new Promise<Awaited<ReturnType<typeof original>>>(done => {
+        release = () => done(original('youtube:dQw4w9WgXcQ'));
+      });
+      w.__offlineCalls = 0;
+      w.__remoteCalls = [];
+      w.__releaseOffline = () => release();
+      window.glass.offlineSource = async () => {
+        w.__offlineCalls++;
+        return pending;
+      };
+      window.glass.lyrics = async () => null;
+      for (const key of ['audioSource', 'linkPlayback', 'resolveStream'] as const) {
+        (window.glass as any)[key] = async (...args: unknown[]) => {
+          w.__remoteCalls.push({ key, args });
+          throw new Error(`Unexpected remote call: ${key}`);
+        };
+      }
+    });
+
+    await page.getByRole('button', { name: `Reproduzir ${track.title}`, exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__offlineCalls)).toBe(1);
+    await page.locator('footer.player').getByRole('button', { name: 'Pausar', exact: true }).click();
+    await page.evaluate(() => (window as any).__releaseOffline());
+    await expect(activeAudio(page)).toHaveAttribute('src', /\/offline\//);
+
+    // This observation window also crosses the 3.5 s automatic-update scheduling point.
+    await page.waitForTimeout(3800);
+    expect(await activeAudio(page).evaluate((a: HTMLAudioElement) => ({ paused: a.paused, time: a.currentTime }))).toEqual({ paused: true, time: 0 });
+    expect(await page.evaluate(() => (window as any).__updateStatusCalls)).toEqual([]);
+    expect(await page.evaluate(() => (window as any).__remoteCalls)).toEqual([]);
+
+    await page.locator('footer.player').getByRole('button', { name: 'Reproduzir', exact: true }).click();
+    await expect.poll(() => activeAudio(page).evaluate((a: HTMLAudioElement) => a.currentTime)).toBeGreaterThan(0.2);
+    expect(await page.evaluate(() => (window as any).__offlineCalls)).toBe(1);
+    expect(await page.evaluate(() => (window as any).__remoteCalls)).toEqual([]);
+    expect(errors).toEqual([]);
+    await writeFile('test-results/playback-cancel.json', JSON.stringify({ pauseWhilePending: true, latePreparationDidNotPlay: true, resumePlayed: true, offlineCalls: 1, remoteCalls: 0, autoUpdateCalls: 0, errors }, null, 2));
+  } finally {
+    proc.kill();
+    await browser?.close().catch(() => {});
+  }
+});
