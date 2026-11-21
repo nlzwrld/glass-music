@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
+  AudioLines,
   CheckCircle2,
   LoaderCircle,
   Mail,
@@ -20,16 +21,18 @@ import { IconButton } from '../glass/controls';
 import { DiscordIcon, GitHubIcon } from './ProviderIcons';
 import './auth.css';
 
-export function AuthModal() {
+export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
   const open = useAccounts(s => s.authModalOpen),
-    view = useAccounts(s => s.authModalView),
+    storeView = useAccounts(s => s.authModalView),
     hub = useAccounts(s => s.hub),
     oauthPending = useAccounts(s => s.oauthPending),
     postAuthJamInvite = useAccounts(s => s.postAuthJamInvite),
+    preferredBrokerUrl = useAccounts(s => s.preferredBrokerUrl),
     authError = useAccounts(s => s.authError),
     busy = useAccounts(s => s.busy),
     closeAuthModal = useAccounts(s => s.closeAuthModal),
     setView = useAccounts(s => s.setAuthModalView),
+    setPreferredBrokerUrl = useAccounts(s => s.setPreferredBrokerUrl),
     ensureLegalConsent = useAccounts(s => s.ensureLegalConsent),
     loginHub = useAccounts(s => s.loginHub),
     oauthHub = useAccounts(s => s.oauthHub),
@@ -45,6 +48,8 @@ export function AuthModal() {
   const prefs = useApp(s => s.data.preferences);
   const alreadyConsented =
     prefs.onlineConsent && prefs.onboardingDone && hasAcceptedCurrentLegal(prefs);
+  const effectiveOpen = mandatory || open;
+  const view = hub.authenticated && hub.needsTermsAcceptance ? 'terms' : storeView;
 
   const [termsChecked, setTermsChecked] = useState(alreadyConsented);
   const [localError, setLocalError] = useState('');
@@ -56,14 +61,14 @@ export function AuthModal() {
   const [newPassword, setNewPassword] = useState('');
 
   useEffect(() => {
-    if (open) {
+    if (effectiveOpen) {
       setTermsChecked(alreadyConsented);
       setLocalError('');
     }
-  }, [open, alreadyConsented]);
+  }, [effectiveOpen, alreadyConsented]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!effectiveOpen || mandatory) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && view !== 'terms' && !busy) {
         closeAuthModal();
@@ -71,11 +76,12 @@ export function AuthModal() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, view, busy, closeAuthModal]);
+  }, [effectiveOpen, mandatory, view, busy, closeAuthModal]);
 
-  if (!open) return null;
+  if (!effectiveOpen) return null;
 
   const isMustAcceptTerms = view === 'terms';
+  const hideClose = mandatory || isMustAcceptTerms;
   const displayedError = localError || authError;
 
   const requireTerms = async () => {
@@ -102,9 +108,9 @@ export function AuthModal() {
 
   return (
     <div
-      className="modal-backdrop"
+      className={mandatory ? 'auth-gate' : 'modal-backdrop'}
       onMouseDown={e => {
-        if (e.target === e.currentTarget && !isMustAcceptTerms && !busy) {
+        if (e.target === e.currentTarget && !hideClose && !busy) {
           closeAuthModal();
         }
       }}
@@ -138,7 +144,10 @@ export function AuthModal() {
                 Voltar
               </button>
             )}
-            <span className="collection-type-label">Liquid Hub</span>
+            <span className="collection-type-label auth-brand-row">
+              {mandatory && <AudioLines size={14} />}
+              Liquid Hub
+            </span>
             <h2 id="auth-modal-title">
               {view === 'terms'
                 ? 'Termos e Privacidade'
@@ -155,7 +164,7 @@ export function AuthModal() {
                           : 'Entrar no Liquid Hub'}
             </h2>
           </div>
-          {!isMustAcceptTerms && (
+          {!hideClose && (
             <IconButton label="Fechar login" onClick={closeAuthModal} disabled={!!busy && !oauthPending}>
               <X size={16} />
             </IconButton>
@@ -165,7 +174,7 @@ export function AuthModal() {
         {postAuthJamInvite && (
           <div className="auth-jam-banner" role="status">
             <Radio size={15} />
-            <span>Entre na sua conta para continuar para o convite da JAM.</span>
+            <span>Você recebeu um convite de JAM — entre na sua conta para continuar.</span>
           </div>
         )}
 
@@ -262,6 +271,23 @@ export function AuthModal() {
                 </ul>
               </details>
             </div>
+
+            {mandatory && (
+              <details className="auth-legal-details auth-server-details">
+                <summary>Servidor de autenticação</summary>
+                <label className="field-label" style={{ marginTop: 4 }}>
+                  URL do servidor HTTPS (ou loopback)
+                  <input
+                    type="url"
+                    className="input"
+                    aria-label="Servidor de autenticação"
+                    placeholder="https://api.liquidhub.app"
+                    value={preferredBrokerUrl}
+                    onChange={e => setPreferredBrokerUrl(e.target.value)}
+                  />
+                </label>
+              </details>
+            )}
           </>
         )}
 

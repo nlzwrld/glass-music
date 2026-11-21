@@ -35,6 +35,7 @@ const nav = [
   ['library', 'Biblioteca', Library],
   ['likes', 'Curtidas', Heart],
   ['history', 'Histórico', History],
+  ['settings', 'Configurações', Settings],
 ] as const;
 
 export default function Sidebar() {
@@ -241,16 +242,6 @@ export default function Sidebar() {
               <span>Entrar</span>
             </>
           )}
-        </button>
-        <button
-          aria-label="Configurações"
-          title="Configurações"
-          aria-current={page === 'settings' ? 'page' : undefined}
-          className={`nav-item ${page === 'settings' ? 'selected' : ''}`}
-          onClick={() => setPage('settings')}
-        >
-          <Settings size={16} />
-          <span>Configurações</span>
         </button>
       </div>
     </GlassSidebar>

@@ -621,10 +621,15 @@ impl Accounts {
 
 fn resolve_hub_broker(secrets_mtx: &Mutex<Secrets>, override_url: Option<&str>) -> Result<String> {
     let stored = secrets_mtx.lock().unwrap().broker_url.clone();
+    let env_default = std::env::var("LIQUID_HUB_BROKER_URL").unwrap_or_default();
     let candidate = override_url
         .map(str::trim)
         .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| stored.trim());
+        .or_else(|| {
+            let s = stored.trim();
+            if s.is_empty() { None } else { Some(s) }
+        })
+        .unwrap_or_else(|| env_default.trim());
     let validated = secrets::validate_broker_origin(candidate)?;
     if validated.is_empty() {
         return Err("Informe o endereço HTTPS do servidor Liquid Hub.".into());

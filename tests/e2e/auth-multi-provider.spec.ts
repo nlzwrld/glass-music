@@ -130,6 +130,7 @@ async function launchApp(opts: {
   profile: string;
   runIndex: number;
   cdpPort: number;
+  brokerUrl?: string;
   args?: string[];
   errors: string[];
 }) {
@@ -140,6 +141,7 @@ async function launchApp(opts: {
       GLASS_TEST_DATA: opts.profile,
       GLASS_TEST_DISABLE_DIRECT: '1',
       LIQUID_HUB_TEST_OAUTH_AUTOFOLLOW: '1',
+      ...(opts.brokerUrl ? { LIQUID_HUB_BROKER_URL: opts.brokerUrl } : {}),
       WEBVIEW2_USER_DATA_FOLDER: join(opts.profile, `webview-${opts.runIndex}`),
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${opts.cdpPort}`,
     },
@@ -162,7 +164,13 @@ async function launchApp(opts: {
       for (const p of pages) {
         try {
           const ok = await p.evaluate(
-            () => Boolean((window as any).glass && document.querySelector('.sidebar .brand')),
+            () =>
+              Boolean(
+                (window as any).glass &&
+                  (document.querySelector('.sidebar .brand') ||
+                    document.querySelector('.auth-gate') ||
+                    document.querySelector('.onboarding')),
+              ),
           );
           if (ok) {
             page = p;
@@ -338,28 +346,31 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
     expect(prefsAfterWelcome.privacyVersion).toBe(CURRENT_PRIVACY_VERSION);
     expect(typeof prefsAfterWelcome.termsAcceptedAt).toBe('number');
 
-    // Configure local brokerUrl via Settings once
-    await page.getByRole('button', { name: 'Configurações', exact: true }).click();
-    await page.locator('summary', { hasText: 'Sessão Liquid Hub (Zero-Trust)' }).click();
-    await page.getByPlaceholder('https://hub.exemplo.com').fill(brokerUrl);
+    // 1. Verify Mandatory Login Gate locks the entire app (no sidebar, no close button)
+    await expect(page.locator('.sidebar')).toHaveCount(0);
+    const gate = page.locator('.auth-gate');
+    await expect(gate).toBeVisible({ timeout: 15000 });
+    await expect(gate.getByRole('button', { name: 'Fechar login' })).toHaveCount(0);
+    await expect(gate.getByRole('heading', { name: 'Entrar no Liquid Hub' })).toBeVisible();
+    await expect(gate.getByRole('button', { name: 'Continuar com Discord', exact: true })).toBeVisible();
+    await expect(gate.getByRole('button', { name: 'Continuar com GitHub', exact: true })).toBeVisible();
+    await expect(gate.getByRole('button', { name: 'Entrar com e-mail', exact: true })).toBeVisible();
 
-    // 1. Verify Sidebar "Entrar" opens AuthModal with the 3 official login methods
-    await page.locator('.sidebar').getByRole('button', { name: 'Entrar no Liquid Hub', exact: true }).click();
-    const modal = page.getByRole('dialog');
-    await expect(modal.getByRole('heading', { name: 'Entrar no Liquid Hub' })).toBeVisible();
-    await expect(modal.getByRole('button', { name: 'Continuar com Discord', exact: true })).toBeVisible();
-    await expect(modal.getByRole('button', { name: 'Continuar com GitHub', exact: true })).toBeVisible();
-    await expect(modal.getByRole('button', { name: 'Entrar com e-mail', exact: true })).toBeVisible();
+    // Configure local brokerUrl directly from the mandatory login screen
+    await gate.locator('summary', { hasText: 'Servidor de autenticação' }).click();
+    await gate.getByLabel('Servidor de autenticação').fill(brokerUrl);
 
     // Scenario 1: Cadastro com e-mail + verificação de e-mail
-    await modal.getByRole('button', { name: 'Entrar com e-mail', exact: true }).click();
-    await modal.getByRole('button', { name: 'Criar conta com e-mail', exact: true }).click();
-    await modal.getByLabel('Nome de exibição').fill('Ana Costa');
-    await modal.getByLabel('E-mail').fill('ana@liquidhub.dev');
-    await modal.getByLabel('Senha (mínimo 12 caracteres)').fill('StrongAuthPass!2026');
-    await modal.getByRole('button', { name: 'Criar conta', exact: true }).click();
+    await gate.getByRole('button', { name: 'Entrar com e-mail', exact: true }).click();
+    await gate.getByRole('button', { name: 'Criar conta com e-mail', exact: true }).click();
+    await gate.getByLabel('Nome de exibição').fill('Ana Costa');
+    await gate.getByLabel('E-mail').fill('ana@liquidhub.dev');
+    await gate.getByLabel('Senha (mínimo 12 caracteres)').fill('StrongAuthPass!2026');
+    await gate.getByRole('button', { name: 'Criar conta', exact: true }).click();
 
     await waitForAuthenticated(page, 'Ana Costa');
+    await expect(page.locator('.sidebar .brand')).toBeVisible({ timeout: 15000 });
+    await page.locator('.sidebar nav').getByRole('button', { name: 'Configurações', exact: true }).click();
     await expect(page.getByText(/Cofre DPAPI ativo/)).toBeVisible();
     await expect(page.getByText(/Não verificado/)).toBeVisible();
 
@@ -372,30 +383,33 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
     await page.getByRole('dialog').getByRole('button', { name: 'Verificar e-mail', exact: true }).click();
     await expect(page.getByText(/\(Verificado\)/)).toBeVisible();
 
-    // Scenario 11 & Scenario 2: Logout + Recuperação de senha + Login com e-mail
+    // Scenario 11 & Scenario 2: Logout re-locks the app -> Recuperação de senha + Login com e-mail
     await page.getByRole('button', { name: 'Encerrar sessão', exact: true }).click();
     await waitForLoggedOut(page);
+    await expect(page.locator('.sidebar')).toHaveCount(0);
+    await expect(gate).toBeVisible();
 
-    await page.locator('#hub-account-section').getByRole('button', { name: 'Entrar no Liquid Hub', exact: true }).click();
-    await page.getByRole('dialog').getByRole('button', { name: 'Entrar com e-mail', exact: true }).click();
-    await page.getByRole('dialog').getByRole('button', { name: 'Esqueci minha senha', exact: true }).click();
-    await page.getByRole('dialog').getByLabel('E-mail').fill('ana@liquidhub.dev');
-    await page.getByRole('dialog').getByRole('button', { name: 'Enviar código de recuperação', exact: true }).click();
-    await expect(page.getByRole('dialog').getByLabel('Código de recuperação')).toBeVisible();
+    await gate.getByRole('button', { name: 'Entrar com e-mail', exact: true }).click();
+    await gate.getByRole('button', { name: 'Esqueci minha senha', exact: true }).click();
+    await gate.getByLabel('E-mail').fill('ana@liquidhub.dev');
+    await gate.getByRole('button', { name: 'Enviar código de recuperação', exact: true }).click();
+    await expect(gate.getByLabel('Código de recuperação')).toBeVisible();
 
     const resetMail = capturedEmails.find(
       m => m.kind === 'reset_password' && m.to === 'ana@liquidhub.dev',
     );
     expect(resetMail).toBeTruthy();
-    await page.getByRole('dialog').getByLabel('Código de recuperação').fill(resetMail!.token);
-    await page.getByRole('dialog').getByLabel('Nova senha (mínimo 12 caracteres)').fill('RecoveredPass!2026');
-    await page.getByRole('dialog').getByRole('button', { name: 'Salvar nova senha', exact: true }).click();
+    await gate.getByLabel('Código de recuperação').fill(resetMail!.token);
+    await gate.getByLabel('Nova senha (mínimo 12 caracteres)').fill('RecoveredPass!2026');
+    await gate.getByRole('button', { name: 'Salvar nova senha', exact: true }).click();
 
-    await expect(page.getByRole('dialog').getByLabel('E-mail ou nome de usuário')).toBeVisible();
-    await page.getByRole('dialog').getByLabel('E-mail ou nome de usuário').fill('ana@liquidhub.dev');
-    await page.getByRole('dialog').getByLabel('Senha').fill('RecoveredPass!2026');
-    await page.getByRole('dialog').getByRole('button', { name: 'Entrar', exact: true }).click();
+    await expect(gate.getByLabel('E-mail ou nome de usuário')).toBeVisible();
+    await gate.getByLabel('E-mail ou nome de usuário').fill('ana@liquidhub.dev');
+    await gate.getByLabel('Senha').fill('RecoveredPass!2026');
+    await gate.getByRole('button', { name: 'Entrar', exact: true }).click();
     await waitForAuthenticated(page, 'Ana Costa');
+    await expect(page.locator('.sidebar .brand')).toBeVisible({ timeout: 15000 });
+    await page.locator('.sidebar nav').getByRole('button', { name: 'Configurações', exact: true }).click();
 
     // Scenario 8: Vinculação de duas identidades (Ana vincula Discord + GitHub e depois desvincula Discord)
     await page.getByRole('button', { name: 'Vincular Discord', exact: true }).click();
@@ -420,9 +434,9 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
       page.locator('[data-hub-provider="discord"]').getByRole('button', { name: 'Vincular Discord' }),
     ).toBeVisible({ timeout: 15000 });
 
-    // Save Ana's fresh JWT from Broker CLI helper later for creating a requireAuth room in Scenario 12
     await page.getByRole('button', { name: 'Encerrar sessão', exact: true }).click();
     await waitForLoggedOut(page);
+    await expect(gate).toBeVisible();
 
     // Scenario 3 & Scenario 9: Login com Discord + tentativa de vincular GitHub já pertencente a outro usuário (Ana)
     discordMock.setProfile({
@@ -432,8 +446,9 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
       email: 'lucas@example.com',
       emailVerified: true,
     });
-    await page.getByRole('button', { name: 'Continuar com Discord', exact: true }).click();
+    await gate.getByRole('button', { name: 'Continuar com Discord', exact: true }).click();
     await waitForAuthenticated(page, 'Lucas Discord');
+    await page.getByRole('button', { name: 'Configurações', exact: true }).click();
 
     // Lucas tem apenas Discord -> botão Desvincular deve ficar desabilitado (não deixa excluir único método)
     await expect(
@@ -451,6 +466,7 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
 
     await page.getByRole('button', { name: 'Encerrar sessão', exact: true }).click();
     await waitForLoggedOut(page);
+    await expect(gate).toBeVisible();
 
     // Scenario 5: Cancelamento do OAuth (recusa no provedor e cancelamento no aplicativo)
     discordMock.setProfile({
@@ -458,8 +474,8 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
       id: '4003333',
       username: 'canceled_user',
     });
-    await page.getByRole('button', { name: 'Continuar com Discord', exact: true }).click();
-    await expect(page.locator('.account-notice')).toContainText(/cancelada/i, {
+    await gate.getByRole('button', { name: 'Continuar com Discord', exact: true }).click();
+    await expect(gate.locator('.auth-error-banner')).toContainText(/cancelada/i, {
       timeout: 15000,
     });
     expect((await page.evaluate(() => window.glass.hubStatus())).authenticated).toBe(false);
@@ -471,9 +487,9 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
       username: 'slow_discord',
       displayName: 'Slow',
     });
-    await page.getByRole('button', { name: 'Continuar com Discord', exact: true }).click();
-    await page.getByRole('button', { name: 'Cancelar autenticação', exact: true }).click();
-    await expect(page.locator('.account-notice')).toContainText(/cancelada/i, {
+    await gate.getByRole('button', { name: 'Continuar com Discord', exact: true }).click();
+    await gate.locator('.auth-pending-banner').getByRole('button', { name: 'Cancelar', exact: true }).click();
+    await expect(gate.locator('.auth-error-banner')).toContainText(/cancelada/i, {
       timeout: 15000,
     });
     expect((await page.evaluate(() => window.glass.hubStatus())).authenticated).toBe(false);
@@ -487,11 +503,13 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
       email: null,
       emailVerified: false,
     });
-    await page.getByRole('button', { name: 'Continuar com Discord', exact: true }).click();
+    await gate.getByRole('button', { name: 'Continuar com Discord', exact: true }).click();
     await waitForAuthenticated(page, 'Sem Email Discord');
     expect((await page.evaluate(() => window.glass.hubStatus())).email).toBeNull();
+    await page.getByRole('button', { name: 'Configurações', exact: true }).click();
     await page.getByRole('button', { name: 'Encerrar sessão', exact: true }).click();
     await waitForLoggedOut(page);
+    await expect(gate).toBeVisible();
 
     // Scenario 4 & Scenario 6: Login com GitHub + e-mail privado no GitHub (403 no /user/emails)
     githubMock.setProfile({
@@ -502,8 +520,9 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
       privateEmailsForbidden: true,
       avatar: 'https://avatars.githubusercontent.com/u/5007777?v=4',
     });
-    await page.getByRole('button', { name: 'Continuar com GitHub', exact: true }).click();
+    await gate.getByRole('button', { name: 'Continuar com GitHub', exact: true }).click();
     await waitForAuthenticated(page, 'Privado GitHub');
+    await page.getByRole('button', { name: 'Configurações', exact: true }).click();
     await expect(page.locator('[data-hub-provider="github"]')).toContainText(/E-mail privado/);
 
     await browser.close().catch(() => {});
@@ -519,6 +538,7 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
       profile,
       runIndex: 2,
       cdpPort: 9392,
+      brokerUrl,
       errors,
     });
     proc = run2.proc;
@@ -526,6 +546,8 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
     page = run2.page;
 
     await waitForAuthenticated(page, 'Privado GitHub');
+    await expect(page.locator('.auth-gate')).toHaveCount(0);
+    await expect(page.locator('.sidebar .brand')).toBeVisible();
     const persistedAudit = await page.evaluate(async () => {
       const status = await window.glass.hubStatus();
       return {
@@ -542,6 +564,7 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
     await page.getByRole('button', { name: 'Configurações', exact: true }).click();
     await page.getByRole('button', { name: 'Encerrar sessão', exact: true }).click();
     await waitForLoggedOut(page);
+    await expect(page.locator('.auth-gate')).toBeVisible();
 
     await browser.close().catch(() => {});
     stopProcessTree(proc);
@@ -628,6 +651,7 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
       profile,
       runIndex: 3,
       cdpPort: 9393,
+      brokerUrl,
       args: [deepLinkInvite],
       errors,
     });
@@ -635,24 +659,24 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
     browser = run3.browser;
     page = run3.page;
 
-    // Wait for JamInviteModal opened automatically from deep link before login
-    await expect(page.getByText('Sessão Autenticada JAM')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText('Esta sala exige autenticação no Liquid Hub.')).toBeVisible();
-    await page.getByRole('button', { name: 'Fazer login', exact: true }).click();
-
-    // AuthModal shows the JAM invite banner & enforces Terms checkbox before GitHub OAuth
-    const authDialog = page.getByRole('dialog');
-    await expect(authDialog.getByText('Entre na sua conta para continuar para o convite da JAM.')).toBeVisible();
-    await authDialog.getByRole('button', { name: 'Continuar com GitHub', exact: true }).click();
+    // App stays strictly locked on mandatory login gate showing the pending JAM invite banner
+    const gateRun3 = page.locator('.auth-gate');
+    await expect(gateRun3).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('.sidebar')).toHaveCount(0);
     await expect(
-      authDialog.getByText('Aceite os Termos de Uso e a Política de Privacidade para continuar.'),
+      gateRun3.getByText('Você recebeu um convite de JAM — entre na sua conta para continuar.'),
+    ).toBeVisible({ timeout: 15000 });
+    await gateRun3.getByRole('button', { name: 'Continuar com GitHub', exact: true }).click();
+    await expect(
+      gateRun3.getByText('Aceite os Termos de Uso e a Política de Privacidade para continuar.'),
     ).toBeVisible();
 
-    await authDialog.locator('input[type="checkbox"]').check();
-    await authDialog.getByRole('button', { name: 'Continuar com GitHub', exact: true }).click();
+    await gateRun3.locator('input[type="checkbox"]').check();
+    await gateRun3.getByRole('button', { name: 'Continuar com GitHub', exact: true }).click();
 
-    // AuthModal closes automatically AND JamInviteModal returns ready to join!
+    // Unlocks app AND opens JamInviteModal automatically ready to join!
     await waitForAuthenticated(page, 'Convidado JAM GitHub');
+    await expect(page.locator('.auth-gate')).toHaveCount(0);
     await expect(page.getByText('Sessão Autenticada JAM')).toBeVisible({ timeout: 15000 });
     await expect(page.getByText('Esta sala exige autenticação no Liquid Hub.')).toHaveCount(0);
 

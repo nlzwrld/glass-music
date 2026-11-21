@@ -206,13 +206,21 @@ impl Secrets {
 
     /// Public safe projection: never leaks access_token, refresh_token or broker_token to WebView.
     pub fn public_hub_status(&self, now_ms: i64) -> Value {
+        let effective_broker = if !self.broker_url.is_empty() {
+            self.broker_url.clone()
+        } else {
+            std::env::var("LIQUID_HUB_BROKER_URL")
+                .ok()
+                .and_then(|v| validate_broker_origin(v.trim()).ok())
+                .unwrap_or_default()
+        };
         if let Some(session) = &self.hub_session {
             if !session.refresh_token.is_empty() {
                 let mut out = json!({
                     "authenticated": true,
                     "subject": session.subject,
                     "expiresAt": session.expires_at,
-                    "brokerUrl": self.broker_url,
+                    "brokerUrl": effective_broker,
                     "tokenActive": session.expires_at > now_ms,
                     "userId": if session.user_id.is_empty() { &session.subject } else { &session.user_id },
                     "username": if session.username.is_empty() { &session.subject } else { &session.username },
@@ -239,7 +247,7 @@ impl Secrets {
             "authenticated": false,
             "subject": "",
             "expiresAt": 0,
-            "brokerUrl": self.broker_url,
+            "brokerUrl": effective_broker,
             "tokenActive": false
         })
     }

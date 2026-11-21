@@ -1,3 +1,39 @@
+.auth-gate {
+  position: absolute;
+  inset: 34px 0 0 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--panel, #0f1216);
+  overflow: auto;
+}
+
+.auth-gate-loading {
+  gap: 10px;
+  place-content: center;
+  color: var(--m-text-sec, var(--muted, #b8c4c8));
+  font-size: 13px;
+}
+
+.auth-brand-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.auth-server-details {
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--m-border, rgb(255 255 255 / 0.1));
+  background: var(--m-bg, rgb(255 255 255 / 0.02));
+}
+
+.auth-server-details[open] {
+  display: grid;
+  gap: 8px;
+}
+
 .auth-modal {
   width: min(440px, 92vw);
   max-height: 90vh;

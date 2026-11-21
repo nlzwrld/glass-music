@@ -126,6 +126,7 @@ test('Liquid Hub rebranding, Zero-Trust PKCE+Ed25519+DPAPI login, Shuffle Play a
       ...process.env,
       GLASS_TEST_DATA: profile,
       GLASS_TEST_DISABLE_DIRECT: '1',
+      LIQUID_HUB_BROKER_URL: brokerUrl,
       WEBVIEW2_USER_DATA_FOLDER: join(profile, 'webview'),
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=9389',
     },
@@ -144,6 +145,17 @@ test('Liquid Hub rebranding, Zero-Trust PKCE+Ed25519+DPAPI login, Shuffle Play a
     browser = await chromium.connectOverCDP('http://127.0.0.1:9389');
     const page = browser.contexts()[0].pages()[0];
     page.on('pageerror', e => errors.push(e.message));
+
+    // 0. Mandatory authentication gate unlocks the desktop app
+    const gate = page.locator('.auth-gate');
+    await expect(gate).toBeVisible({ timeout: 15000 });
+    await gate.getByRole('button', { name: 'Entrar com e-mail', exact: true }).click();
+    await gate.getByRole('button', { name: 'Criar conta com e-mail', exact: true }).click();
+    await gate.getByLabel('Nome de exibição').fill('qa_security');
+    await gate.getByLabel('E-mail').fill('qa_security@liquidhub.dev');
+    await gate.getByLabel('Senha (mínimo 12 caracteres)').fill('ZeroTrustVault#2026!');
+    await gate.getByRole('button', { name: 'Criar conta', exact: true }).click();
+    await expect(page.locator('.sidebar .brand')).toBeVisible({ timeout: 15000 });
 
     // 1. Rebranding verification
     await expect(page).toHaveTitle('Liquid Hub');
@@ -257,7 +269,7 @@ test('Liquid Hub rebranding, Zero-Trust PKCE+Ed25519+DPAPI login, Shuffle Play a
     await expect(page.locator('footer.player .queue-count-dot')).toHaveText('2');
     await page.locator('footer.player').getByRole('button', { name: 'Pausar', exact: true }).click();
 
-    // 4. Zero-Trust Hub Login + Anti-Spam Notification Mode selector in Settings
+    // 4. Zero-Trust Hub DPAPI Audit + Anti-Spam Notification Mode selector in Settings
     await page.getByRole('button', { name: 'Configurações', exact: true }).click();
     const notifySelect = page.getByRole('combobox', {
       name: 'Notificações ao trocar de faixa',
@@ -267,13 +279,6 @@ test('Liquid Hub rebranding, Zero-Trust PKCE+Ed25519+DPAPI login, Shuffle Play a
     await notifySelect.selectOption('background');
     await expect(notifySelect).toHaveValue('background');
     await notifySelect.selectOption('off');
-
-    await page.locator('summary', { hasText: 'Sessão Liquid Hub (Zero-Trust)' }).click();
-    await page.getByRole('button', { name: 'Registrar nova conta', exact: true }).click();
-    await page.getByPlaceholder('https://hub.exemplo.com').fill(brokerUrl);
-    await page.locator('.hub-auth-form input[type="text"]').fill('qa_security');
-    await page.locator('.hub-auth-form input[type="password"]').fill('ZeroTrustVault#2026!');
-    await page.getByRole('button', { name: 'Criar conta segura', exact: true }).click();
 
     await expect(page.getByText(/Cofre DPAPI ativo/)).toBeVisible({ timeout: 15000 });
 
@@ -325,6 +330,8 @@ test('Liquid Hub rebranding, Zero-Trust PKCE+Ed25519+DPAPI login, Shuffle Play a
     await page.getByRole('button', { name: 'Encerrar JAM', exact: true }).click();
 
     await page.getByRole('button', { name: 'Encerrar sessão', exact: true }).click();
+    await expect(page.locator('.auth-gate')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('button', { name: 'Continuar com Discord', exact: true })).toBeVisible();
     await expect(page.getByText(/Cofre DPAPI ativo/)).toHaveCount(0);
 
     expect(errors).toEqual([]);

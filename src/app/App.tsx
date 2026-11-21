@@ -38,7 +38,11 @@ export default function App() {
     toast = useApp(s => s.toast),
     mini = useApp(s => s.mini),
     track = useApp(s => s.queue[s.index]),
-    expanded = useApp(s => s.expanded);
+    expanded = useApp(s => s.expanded),
+    hub = useAccounts(s => s.hub),
+    hubHydrated = useAccounts(s => s.hubHydrated);
+  const lockedByAuth =
+    ready && p.onboardingDone && (!hubHydrated || !hub.authenticated || Boolean(hub.needsTermsAcceptance));
   const searchInput = useRef<HTMLInputElement>(null);
   const [systemLight, setSystemLight] = useState(
     matchMedia('(prefers-color-scheme: light)').matches,
@@ -106,19 +110,19 @@ export default function App() {
   }, [ready, artworkTracks, p.onlineConsent, p.onboardingDone]);
 
   useEffect(() => {
-    if (!ready || !p.onlineConsent || !p.onboardingDone) return;
+    if (!ready) return;
     void useAccounts.getState().refresh();
   }, [ready, p.onlineConsent, p.onboardingDone]);
 
   useEffect(() => {
-    if (!ready || !p.onlineConsent || !p.catalogConsent || !p.onboardingDone) return;
+    if (!ready || lockedByAuth || !p.onlineConsent || !p.catalogConsent || !p.onboardingDone) return;
     const initial = setTimeout(() => void autoSyncAccounts(), 5000),
       timer = setInterval(() => void autoSyncAccounts(), 30 * 60 * 1000);
     return () => {
       clearTimeout(initial);
       clearInterval(timer);
     };
-  }, [ready, p.onlineConsent, p.catalogConsent, p.onboardingDone]);
+  }, [ready, lockedByAuth, p.onlineConsent, p.catalogConsent, p.onboardingDone]);
 
   useEffect(() => {
     const media = matchMedia('(prefers-color-scheme: light)');
@@ -144,6 +148,7 @@ export default function App() {
 
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      if (lockedByAuth || !p.onboardingDone) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         if (mini) {
@@ -159,7 +164,7 @@ export default function App() {
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
-  }, [mini]);
+  }, [mini, lockedByAuth, p.onboardingDone]);
 
   useEffect(() => {
     document.querySelector('.main-scroll')?.scrollTo({ top: 0 });
@@ -212,59 +217,74 @@ export default function App() {
               </button>
             </div>
           </header>
-          <div className="app-body">
-            <Sidebar />
-            <div className="main-shell">
-              <GlassSearch inputRef={searchInput} />
-              <AutoUpdates />
-              <main className="main-scroll">
-                <Suspense fallback={<div className="loading-page">Carregando…</div>}>
-                  <motion.div
-                    key={page}
-                    initial={{ opacity: p.reducedMotion || p.performance || isMatte ? 1 : 0, y: 0 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{
-                      duration: p.reducedMotion || p.performance || isMatte ? 0 : 0.2,
-                      ease: [0.22, 1, 0.36, 1],
-                    }}
-                  >
-                    {!ready ? (
-                      <div className="loading-page">Carregando…</div>
-                    ) : page === 'home' ? (
-                      <Home />
-                    ) : page === 'explore' ? (
-                      <Explore />
-                    ) : page === 'search' ? (
-                      <Search />
-                    ) : page === 'collection' ? (
-                      <Collection />
-                    ) : page === 'settings' ? (
-                      <Settings />
-                    ) : (
-                      <Library key={page} />
-                    )}
-                  </motion.div>
-                </Suspense>
-              </main>
-            </div>
-            <SidePlayer />
-          </div>
-          <div className="mini-content">
-            <Cover track={track} />
-            <h2>{track?.title || 'Liquid Hub'}</h2>
-            <p>{track?.artist || ''}</p>
-          </div>
-          <LyricsWindowBridge />
-          <JamEngine />
-          <JamInviteModal />
-          <AuthModal />
-          <ExpandedPlayer />
-          <Queue />
-          <Lyrics />
-          <Player />
-          <Dialogs />
+          {lockedByAuth ? (
+            <>
+              <JamEngine />
+              {!hubHydrated ? (
+                <div className="auth-gate auth-gate-loading" role="status">
+                  Carregando sessão…
+                </div>
+              ) : (
+                <AuthModal mandatory />
+              )}
+            </>
+          ) : (
+            <>
+              <div className="app-body">
+                <Sidebar />
+                <div className="main-shell">
+                  <GlassSearch inputRef={searchInput} />
+                  <AutoUpdates />
+                  <main className="main-scroll">
+                    <Suspense fallback={<div className="loading-page">Carregando…</div>}>
+                      <motion.div
+                        key={page}
+                        initial={{ opacity: p.reducedMotion || p.performance || isMatte ? 1 : 0, y: 0 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{
+                          duration: p.reducedMotion || p.performance || isMatte ? 0 : 0.2,
+                          ease: [0.22, 1, 0.36, 1],
+                        }}
+                      >
+                        {!ready ? (
+                          <div className="loading-page">Carregando…</div>
+                        ) : page === 'home' ? (
+                          <Home />
+                        ) : page === 'explore' ? (
+                          <Explore />
+                        ) : page === 'search' ? (
+                          <Search />
+                        ) : page === 'collection' ? (
+                          <Collection />
+                        ) : page === 'settings' ? (
+                          <Settings />
+                        ) : (
+                          <Library key={page} />
+                        )}
+                      </motion.div>
+                    </Suspense>
+                  </main>
+                </div>
+                <SidePlayer />
+              </div>
+              <div className="mini-content">
+                <Cover track={track} />
+                <h2>{track?.title || 'Liquid Hub'}</h2>
+                <p>{track?.artist || ''}</p>
+              </div>
+              <LyricsWindowBridge />
+              <JamEngine />
+              <JamInviteModal />
+              <AuthModal />
+              <ExpandedPlayer />
+              <Queue />
+              <Lyrics />
+              <Player />
+              <Dialogs />
+              <GlassLaboratory />
+            </>
+          )}
           <Welcome />
-          <GlassLaboratory />
           {toast && (
             <div className="toast glass" role="status">
               <span>{toast}</span>

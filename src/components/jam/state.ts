@@ -7,6 +7,7 @@ import type {
 } from '../../../shared/jam';
 import { JamClient, parseJamInvite, sendJam } from '../../lib/jam';
 import { discoverLanJamRooms } from '../../lib/discovery';
+import { useAccounts } from '../../stores/accounts';
 import { useApp, cleanError } from '../../stores/app';
 
 export const jamClient = new JamClient();
@@ -145,6 +146,11 @@ export const useJam = create<State>((set, get) => ({
   clearLookup: () => set({ lookupState: { input: '', loading: false, result: null }, error: '' }),
 
   openInviteModal: async rawInput => {
+    const auth = useAccounts.getState();
+    if (!auth.hub.authenticated || auth.hub.needsTermsAcceptance) {
+      auth.setPostAuthJamInvite(rawInput);
+      return;
+    }
     const current = get().session;
     const parsed = parseJamInvite(rawInput, get().endpoint);
     if (current && parsed.code && parsed.code === current.code) {

@@ -35,6 +35,7 @@ interface OpenAuthModalOptions {
 interface State {
   accounts: AccountStatus[];
   hub: HubSessionStatus;
+  hubHydrated: boolean;
   hubProviders: HubProvidersAvailability | null;
   oauthPending: HubOAuthProvider | null;
   authModalOpen: boolean;
@@ -47,6 +48,7 @@ interface State {
   openAuthModal(opts?: OpenAuthModalOptions): void;
   closeAuthModal(): void;
   setAuthModalView(view: AuthModalView): void;
+  setPostAuthJamInvite(raw: string | null): void;
   setPreferredBrokerUrl(url: string): void;
   clearAuthError(): void;
   refresh(): Promise<void>;
@@ -120,7 +122,7 @@ async function finishAuthenticatedFlow(
   get: () => State,
   noticeMsg: string,
 ): Promise<boolean> {
-  set({ hub, notice: noticeMsg, authError: '' });
+  set({ hub, notice: noticeMsg, authError: '', authModalView: 'choose' });
   await useJam.getState().refresh();
 
   if (hub.authenticated && hub.needsTermsAcceptance) {
@@ -132,11 +134,10 @@ async function finishAuthenticatedFlow(
   }
 
   const pendingInvite = get().postAuthJamInvite;
-  if (get().authModalOpen) {
+  if (get().authModalOpen || pendingInvite) {
     set({ authModalOpen: false, postAuthJamInvite: null });
   }
   if (pendingInvite) {
-    set({ postAuthJamInvite: null });
     void useJam.getState().openInviteModal(pendingInvite);
   }
   return true;
@@ -145,6 +146,7 @@ async function finishAuthenticatedFlow(
 export const useAccounts = create<State>((set, get) => ({
   accounts: [],
   hub: { authenticated: false, subject: '', expiresAt: 0, brokerUrl: '' },
+  hubHydrated: false,
   hubProviders: null,
   oauthPending: null,
   authModalOpen: false,
@@ -181,6 +183,7 @@ export const useAccounts = create<State>((set, get) => ({
   },
 
   setAuthModalView: view => set({ authModalView: view, authError: '' }),
+  setPostAuthJamInvite: raw => set({ postAuthJamInvite: raw }),
   setPreferredBrokerUrl: url => set({ preferredBrokerUrl: url }),
   clearAuthError: () => set({ authError: '' }),
 
@@ -203,13 +206,18 @@ export const useAccounts = create<State>((set, get) => ({
       set(s => ({
         accounts,
         hub,
+        hubHydrated: true,
         preferredBrokerUrl: s.preferredBrokerUrl || hub.brokerUrl || '',
       }));
       if (hub.authenticated && hub.needsTermsAcceptance) {
         set({ authModalOpen: true, authModalView: 'terms' });
       }
     } catch (e) {
-      set({ notice: cleanError(e) });
+      set({ notice: cleanError(e), hubHydrated: true });
+    } finally {
+      if (!get().hubHydrated) {
+        set({ hubHydrated: true });
+      }
     }
   },
 
@@ -411,6 +419,7 @@ export const useAccounts = create<State>((set, get) => ({
       set({
         oauthPending: null,
         busy: get().busy.startsWith('hub:oauth:') ? '' : get().busy,
+        authError: 'Autenticação OAuth cancelada.',
         notice: 'Autenticação OAuth cancelada.',
       });
     }
@@ -569,6 +578,8 @@ export const useAccounts = create<State>((set, get) => ({
       set({
         hub,
         authModalOpen: false,
+        authModalView: 'choose',
+        postAuthJamInvite: null,
         authError: '',
         notice: 'Sessão encerrada e removida do cofre do sistema.',
       });

@@ -4,7 +4,9 @@ import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { chromium, expect, test, type Browser, type Page } from '@playwright/test';
+import { createBroker } from '../../server/broker';
 import { createJam } from '../../server/jam';
+import { CURRENT_PRIVACY_VERSION, CURRENT_TERMS_VERSION } from '../../shared/auth';
 import { defaults, type Track } from '../../shared/types';
 import { opticalDefaults } from '../../src/components/glass/v3/model';
 import { resolveLiquidHubExe } from './exe';
@@ -32,6 +34,7 @@ const song2: Track = {
 async function launchAppInstance(opts: {
   exe: string;
   port: number;
+  brokerUrl: string;
   args?: string[];
   jamEndpoint?: string;
 }) {
@@ -56,6 +59,9 @@ async function launchAppInstance(opts: {
       onboardingDone: true,
       onlineConsent: true,
       catalogConsent: true,
+      termsVersion: CURRENT_TERMS_VERSION,
+      privacyVersion: CURRENT_PRIVACY_VERSION,
+      termsAcceptedAt: Date.now(),
       reducedMotion: true,
       transition: 'off',
       autoUpdate: false,
@@ -71,6 +77,7 @@ async function launchAppInstance(opts: {
       ...process.env,
       GLASS_TEST_DATA: profile,
       GLASS_TEST_DISABLE_DIRECT: '1',
+      LIQUID_HUB_BROKER_URL: opts.brokerUrl,
       WEBVIEW2_USER_DATA_FOLDER: join(profile, 'webview'),
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${opts.port}`,
     },
@@ -88,11 +95,36 @@ async function launchAppInstance(opts: {
   return { proc, browser, page, profile };
 }
 
+async function unlockWithEmail(page: Page, email: string, name: string) {
+  const gate = page.locator('.auth-gate');
+  await expect(gate).toBeVisible({ timeout: 15000 });
+  await gate.getByRole('button', { name: 'Entrar com e-mail', exact: true }).click();
+  await gate.getByRole('button', { name: 'Criar conta com e-mail', exact: true }).click();
+  await gate.getByLabel('Nome de exibição').fill(name);
+  await gate.getByLabel('E-mail').fill(email);
+  await gate.getByLabel('Senha (mínimo 12 caracteres)').fill('JamE2ePassword!2026');
+  await gate.getByRole('button', { name: 'Criar conta', exact: true }).click();
+  await expect(page.locator('.sidebar .brand')).toBeVisible({ timeout: 15000 });
+}
+
 test('two actual app windows follow JAM play pause seek track changes, link bridge, raw code lookup and cold/warm deep links', async () => {
   test.setTimeout(150000);
   await mkdir('.test-data/profiles', { recursive: true });
   await mkdir('test-results', { recursive: true });
   const exe = resolveLiquidHubExe();
+
+  const brokerServer = createBroker(
+    {
+      BROKER_ACCESS_TOKEN: 'jam-e2e-broker-secret-token-123456',
+      SOUNDCLOUD_CLIENT_ID: 'jam-sc-id',
+      SOUNDCLOUD_CLIENT_SECRET: 'jam-sc-secret',
+    },
+    async () => new Response(JSON.stringify({ access_token: 'sc', expires_in: 3600 })),
+    Date.now,
+    { argon2Params: { memory: 1024, passes: 1, parallelism: 1, tagLength: 16 } },
+  );
+  await new Promise<void>(r => brokerServer.listen(0, '127.0.0.1', r));
+  const brokerUrl = `http://127.0.0.1:${(brokerServer.address() as { port: number }).port}`;
 
   const processes: any[] = [];
   const browsers: Browser[] = [];
@@ -100,8 +132,8 @@ test('two actual app windows follow JAM play pause seek track changes, link brid
   const errors: string[] = [];
 
   try {
-    const hostInst = await launchAppInstance({ exe, port: 9386 });
-    const guestInst = await launchAppInstance({ exe, port: 9387 });
+    const hostInst = await launchAppInstance({ exe, port: 9386, brokerUrl });
+    const guestInst = await launchAppInstance({ exe, port: 9387, brokerUrl });
     processes.push(hostInst.proc, guestInst.proc);
     browsers.push(hostInst.browser, guestInst.browser);
     profiles.push(hostInst.profile, guestInst.profile);
@@ -110,6 +142,11 @@ test('two actual app windows follow JAM play pause seek track changes, link brid
     const guest = guestInst.page;
     host.on('pageerror', e => errors.push(`host: ${e.message}`));
     guest.on('pageerror', e => errors.push(`guest: ${e.message}`));
+
+    await Promise.all([
+      unlockWithEmail(host, 'host-jam@liquidhub.dev', 'Host'),
+      unlockWithEmail(guest, 'friend-jam@liquidhub.dev', 'Friend'),
+    ]);
 
     for (const [p, name] of [
       [host, 'Host'],
@@ -243,12 +280,13 @@ test('two actual app windows follow JAM play pause seek track changes, link brid
     await expect(guest.locator('.jam-room-code strong')).toHaveText(code, { timeout: 10000 });
 
     // Cold-start deep link: launch 3rd desktop process directly with liquidhub:// argument
-    const coldInst = await launchAppInstance({ exe, port: 9388, args: [deepLinkUrl] });
+    const coldInst = await launchAppInstance({ exe, port: 9388, brokerUrl, args: [deepLinkUrl] });
     processes.push(coldInst.proc);
     browsers.push(coldInst.browser);
     profiles.push(coldInst.profile);
     const coldGuest = coldInst.page;
     coldGuest.on('pageerror', e => errors.push(`coldGuest: ${e.message}`));
+    await unlockWithEmail(coldGuest, 'cold-jam@liquidhub.dev', 'ColdFriend');
 
     await expect(coldGuest.locator('.jam-invite-modal')).toBeVisible({ timeout: 15000 });
     await expect(coldGuest.locator('.jam-invite-modal')).toContainText('Sessão Liquid');
@@ -293,10 +331,12 @@ test('two actual app windows follow JAM play pause seek track changes, link brid
     processes.forEach(p => p.kill());
     await Promise.all(browsers.map(b => b.close().catch(() => {})));
     await Promise.all(profiles.map(p => rm(p, { recursive: true, force: true }).catch(() => {})));
+    brokerServer.closeAllConnections();
+    await new Promise<void>(r => brokerServer.close(() => r()));
   }
 });
 
-test('server-side Ed25519 authentication blocks unauthenticated JAM joins cleanly in desktop UI', async () => {
+test('server-side Ed25519 authentication blocks untrusted JAM joins cleanly in desktop UI', async () => {
   test.setTimeout(90000);
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const jwk = publicKey.export({ format: 'jwk' }) as { x: string };
@@ -308,6 +348,20 @@ test('server-side Ed25519 authentication blocks unauthenticated JAM joins cleanl
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
   const port = (server.address() as { port: number }).port;
   const endpoint = `http://127.0.0.1:${port}`;
+
+  // Independent broker with a different Ed25519 key so its JWT is rejected by the private JAM server
+  const untrustedBroker = createBroker(
+    {
+      BROKER_ACCESS_TOKEN: 'untrusted-broker-secret-token-123456',
+      SOUNDCLOUD_CLIENT_ID: 'jam-sc-id-2',
+      SOUNDCLOUD_CLIENT_SECRET: 'jam-sc-secret-2',
+    },
+    async () => new Response(JSON.stringify({ access_token: 'sc', expires_in: 3600 })),
+    Date.now,
+    { argon2Params: { memory: 1024, passes: 1, parallelism: 1, tagLength: 16 } },
+  );
+  await new Promise<void>(r => untrustedBroker.listen(0, '127.0.0.1', r));
+  const untrustedBrokerUrl = `http://127.0.0.1:${(untrustedBroker.address() as { port: number }).port}`;
 
   const iat = Math.floor(Date.now() / 1000);
   const hdr = Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'JWT' })).toString('base64url');
@@ -339,23 +393,27 @@ test('server-side Ed25519 authentication blocks unauthenticated JAM joins cleanl
   ).json()) as { code: string };
 
   const exe = resolveLiquidHubExe();
-  const inst = await launchAppInstance({ exe, port: 9390, jamEndpoint: endpoint });
+  const inst = await launchAppInstance({ exe, port: 9390, brokerUrl: untrustedBrokerUrl, jamEndpoint: endpoint });
   try {
     const page = inst.page;
+    await unlockWithEmail(page, 'untrusted@liquidhub.dev', 'UntrustedGuest');
     await page.getByRole('button', { name: 'Configurações', exact: true }).click();
     await page
       .getByRole('textbox', { name: 'Convite da JAM', exact: true })
       .fill(`${endpoint}/jam/join/${created.code}`);
     await expect(page.locator('.jam-preview-card')).toContainText('Sala Privada', { timeout: 10000 });
     await page.locator('.jam-preview-card').getByRole('button', { name: 'Entrar na JAM', exact: true }).click();
-    await expect(page.locator('.jam-error')).toContainText(/Autenticação no Liquid Hub necessária/i, {
-      timeout: 10000,
-    });
+    await expect(page.locator('.jam-error')).toContainText(
+      /Autenticação|Assinatura|inválida|expirada|recusada/i,
+      { timeout: 10000 },
+    );
     await expect(page.locator('.jam-room-code')).toHaveCount(0);
   } finally {
     inst.proc.kill();
     await inst.browser.close().catch(() => {});
     await rm(inst.profile, { recursive: true, force: true }).catch(() => {});
+    untrustedBroker.closeAllConnections();
+    await new Promise<void>(r => untrustedBroker.close(() => r()));
     server.closeAllConnections();
     await new Promise<void>(r => server.close(() => r()));
   }
