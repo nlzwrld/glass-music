@@ -13,6 +13,23 @@ use windows_sys::Win32::{
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
+pub struct HubIdentityPublic {
+    pub provider: String,
+    pub provider_subject: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    pub verified: bool,
+    pub linked_at: i64,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct HubVaultSession {
     pub subject: String,
     pub access_token: String,
@@ -20,6 +37,18 @@ pub struct HubVaultSession {
     pub family_id: String,
     pub expires_at: i64,
     pub jwk_x: String,
+    pub user_id: String,
+    pub username: String,
+    pub display_name: String,
+    pub email: Option<String>,
+    pub email_verified: bool,
+    pub avatar_url: Option<String>,
+    pub has_password: bool,
+    pub identities: Vec<HubIdentityPublic>,
+    pub terms_version: Option<String>,
+    pub privacy_version: Option<String>,
+    pub terms_accepted_at: Option<i64>,
+    pub needs_terms_acceptance: bool,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -179,13 +208,31 @@ impl Secrets {
     pub fn public_hub_status(&self, now_ms: i64) -> Value {
         if let Some(session) = &self.hub_session {
             if !session.refresh_token.is_empty() {
-                return json!({
+                let mut out = json!({
                     "authenticated": true,
                     "subject": session.subject,
                     "expiresAt": session.expires_at,
                     "brokerUrl": self.broker_url,
-                    "tokenActive": session.expires_at > now_ms
+                    "tokenActive": session.expires_at > now_ms,
+                    "userId": if session.user_id.is_empty() { &session.subject } else { &session.user_id },
+                    "username": if session.username.is_empty() { &session.subject } else { &session.username },
+                    "displayName": if session.display_name.is_empty() { &session.subject } else { &session.display_name },
+                    "email": session.email,
+                    "emailVerified": session.email_verified,
+                    "avatarUrl": session.avatar_url,
+                    "hasPassword": session.has_password,
+                    "identities": session.identities,
+                    "termsVersion": session.terms_version,
+                    "privacyVersion": session.privacy_version,
+                    "termsAcceptedAt": session.terms_accepted_at,
+                    "needsTermsAcceptance": session.needs_terms_acceptance
                 });
+                if let Some(obj) = out.as_object_mut() {
+                    if obj.get("identities").is_some_and(|v| v.as_array().is_none()) {
+                        obj.insert("identities".into(), json!([]));
+                    }
+                }
+                return out;
             }
         }
         json!({
@@ -259,6 +306,7 @@ mod tests {
             family_id: "fam_1".into(),
             expires_at: 9999999999999,
             jwk_x: "x".into(),
+            ..Default::default()
         });
         let status = secrets.public_hub_status(1000).to_string();
         assert!(status.contains("alice"));

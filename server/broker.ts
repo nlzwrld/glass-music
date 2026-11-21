@@ -22,13 +22,36 @@ import {
   type KeyObject,
 } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import type { Track } from '../shared/types.ts';
+import type { HubOAuthProvider, Track } from '../shared/types.ts';
 import {
+  acceptTermsSchema,
   credentialLoginSchema,
   credentialRegisterSchema,
+  forgotPasswordSchema,
+  hubAuthProviderSchema,
+  hubOAuthProviderSchema,
+  linkEmailSchema,
+  oauthStartSchema,
   pkceAuthorizeSchema,
+  resendVerificationSchema,
+  resetPasswordSchema,
   tokenGrantSchema,
+  verifyEmailSchema,
 } from '../shared/validation.ts';
+import {
+  type AuthEmailMessage,
+  type ExternalProfile,
+  HubAuthStore,
+  type HubUserPublic,
+  type HubUserRecord,
+  type OAuthProviderConfig,
+  type PendingOAuthFlow,
+  buildProviderAuthorizeUrl,
+  describeProviderAvailability,
+  exchangeExternalOAuthProfile,
+  isCurrentLegalAcceptance,
+  resolveOAuthProviders,
+} from './auth.ts';
 
 type UpstreamToken = { access_token: string; refresh_token?: string; expires: number };
 
@@ -62,23 +85,14 @@ interface PendingAuthCode {
   issuedFamilyId?: string;
 }
 
-interface RefreshRecord {
-  tokenHash: string;
-  familyId: string;
-  userId: string;
-  clientId: string;
-  scope: string;
-  expiresAt: number;
-  consumed: boolean;
-}
-
 export class BrokerHttpError extends Error {
-  constructor(
-    message: string,
-    public status = 400,
-    public code = 'invalid_request',
-  ) {
+  status: number;
+  code: string;
+
+  constructor(message: string, status = 400, code = 'invalid_request') {
     super(message);
+    this.status = status;
+    this.code = code;
   }
 }
 
@@ -221,14 +235,12 @@ const nativeArgon2Adapter: Argon2AsyncAdapter = {
 class Argon2Queue {
   private active = 0;
   private readonly waiting: Array<() => void> = [];
+  private readonly adapter: Argon2AsyncAdapter;
   private readonly concurrency: number;
   private readonly maxWaiting: number;
 
-  constructor(
-    private readonly adapter: Argon2AsyncAdapter,
-    concurrency = 2,
-    maxWaiting = 32,
-  ) {
+  constructor(adapter: Argon2AsyncAdapter, concurrency = 2, maxWaiting = 32) {
+    this.adapter = adapter;
     this.concurrency = Number.isFinite(concurrency)
       ? Math.max(1, Math.min(4, Math.floor(concurrency)))
       : 2;
@@ -299,6 +311,8 @@ function constantTimeStringEqual(a: string, b: string): boolean {
   return timingSafeEqual(ba, bb);
 }
 
+export type { AuthEmailMessage, HubUserPublic, OAuthProviderConfig };
+
 export interface ZeroTrustAuthEngineOptions {
   privateKeyPem?: string;
   clock?: () => number;
@@ -306,20 +320,27 @@ export interface ZeroTrustAuthEngineOptions {
   argon2Adapter?: Argon2AsyncAdapter;
   argon2Concurrency?: number;
   argon2QueueSize?: number;
+  dbPath?: string;
+  onAuthEmail?: (email: AuthEmailMessage) => void | Promise<void>;
+  discord?: OAuthProviderConfig;
+  github?: OAuthProviderConfig;
+  publicUrl?: string;
 }
+
+const EMAIL_VERIFY_TTL_MS = 24 * 60 * 60 * 1000;
+const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000;
+const OAUTH_FLOW_TTL_MS = 10 * 60 * 1000;
 
 export class ZeroTrustAuthEngine {
   private readonly privateKey: KeyObject;
   readonly publicKey: KeyObject;
   readonly kid: string;
-  private readonly usersByName = new Map<string, StoredUser>();
-  private readonly usersById = new Map<string, StoredUser>();
+  readonly store: HubAuthStore;
   private readonly authCodes = new Map<string, PendingAuthCode>();
-  private readonly refreshTokens = new Map<string, RefreshRecord>();
-  private readonly revokedFamilies = new Set<string>();
   private readonly dummyHash: string;
   private readonly argon2Params: Argon2Params;
   private readonly argon2: Argon2Queue;
+  private readonly onAuthEmail?: (email: AuthEmailMessage) => void | Promise<void>;
 
   constructor(options: ZeroTrustAuthEngineOptions = {}) {
     this.clock = options.clock ?? Date.now;
@@ -329,6 +350,8 @@ export class ZeroTrustAuthEngine {
       options.argon2Concurrency,
       options.argon2QueueSize,
     );
+    this.store = new HubAuthStore(options.dbPath || ':memory:');
+    this.onAuthEmail = options.onAuthEmail;
     if (options.privateKeyPem) {
       this.privateKey = createPrivateKey(options.privateKeyPem);
       this.publicKey = createPublicKey(this.privateKey);
@@ -343,6 +366,10 @@ export class ZeroTrustAuthEngine {
   }
 
   private clock: () => number;
+
+  close() {
+    this.store.close();
+  }
 
   publicJwk() {
     const exported = this.publicKey.export({ format: 'jwk' }) as { kty: string; crv: string; x: string };
@@ -361,76 +388,190 @@ export class ZeroTrustAuthEngine {
     for (const [k, v] of this.authCodes) {
       if (v.expiresAt <= now) this.authCodes.delete(k);
     }
-    for (const [k, v] of this.refreshTokens) {
-      if (v.expiresAt <= now) this.refreshTokens.delete(k);
+    this.store.pruneExpiredTokens(now);
+  }
+
+  private dispatchEmail(msg: AuthEmailMessage) {
+    if (!this.onAuthEmail) return;
+    try {
+      const maybePromise = this.onAuthEmail(msg);
+      if (maybePromise && typeof (maybePromise as Promise<void>).catch === 'function') {
+        (maybePromise as Promise<void>).catch(() => {});
+      }
+    } catch {
+      // Never fail auth mutations because of async notification hooks
     }
   }
 
-  private ensureCanRegister(normalized: string) {
-    if (this.usersByName.has(normalized)) {
+  private ensureCanRegister(normalizedUsername: string, normalizedEmail?: string | null) {
+    if (normalizedEmail && this.store.findUserByEmail(normalizedEmail)) {
+      throw new BrokerHttpError('Este e-mail já está cadastrado.', 409, 'email_exists');
+    }
+    if (this.store.findUserByUsername(normalizedUsername)) {
       throw new BrokerHttpError('Usuário já registrado.', 409, 'user_exists');
     }
-    if (this.usersByName.size >= 10_000) {
-      throw new BrokerHttpError('Capacidade de contas atingida.', 503, 'capacity_exceeded');
-    }
   }
 
-  private commitRegisteredUser(normalized: string, passwordHash: string): StoredUser {
+  private commitRegisteredUser(input: {
+    username: string;
+    displayName?: string;
+    email?: string | null;
+    passwordHash: string;
+    termsVersion?: string | null;
+    privacyVersion?: string | null;
+  }): HubUserRecord {
     // Async registration must recheck after Argon2: another request may have committed meanwhile.
-    this.ensureCanRegister(normalized);
-    const user: StoredUser = {
-      id: `usr_${randomBytes(12).toString('hex')}`,
-      username: normalized,
-      passwordHash,
-      createdAt: this.clock(),
-    };
-    this.usersByName.set(normalized, user);
-    this.usersById.set(user.id, user);
-    return user;
+    this.ensureCanRegister(input.username, input.email);
+    const now = this.clock();
+    return this.store.createPasswordUser({
+      username: input.username,
+      displayName: input.displayName,
+      email: input.email,
+      emailVerified: false,
+      passwordHash: input.passwordHash,
+      termsVersion: input.termsVersion,
+      privacyVersion: input.privacyVersion,
+      now,
+    });
   }
 
   registerUser(username: string, password: string): StoredUser {
     const normalized = username.trim().toLowerCase();
-    this.ensureCanRegister(normalized);
-    return this.commitRegisteredUser(
-      normalized,
-      hashPasswordArgon2id(password, this.argon2Params),
-    );
+    this.ensureCanRegister(normalized, null);
+    const user = this.commitRegisteredUser({
+      username: normalized,
+      passwordHash: hashPasswordArgon2id(password, this.argon2Params),
+    });
+    return {
+      id: user.userId,
+      username: user.username,
+      passwordHash: user.passwordHash || '',
+      createdAt: user.createdAt,
+    };
   }
 
-  private async registerUserAsync(username: string, password: string): Promise<StoredUser> {
-    const normalized = username.trim().toLowerCase();
-    this.ensureCanRegister(normalized);
-    const passwordHash = await this.argon2.hash(password, this.argon2Params);
-    return this.commitRegisteredUser(normalized, passwordHash);
+  private async registerUserAsync(input: {
+    username?: string;
+    email?: string;
+    displayName?: string;
+    password: string;
+    termsVersion?: string;
+    privacyVersion?: string;
+  }): Promise<HubUserRecord> {
+    const normalizedEmail = input.email ? input.email.trim().toLowerCase() : null;
+    const explicitUsername = input.username ? input.username.trim().toLowerCase() : null;
+    const initialUsername =
+      explicitUsername ||
+      this.store.allocateUniqueUsername(normalizedEmail ? normalizedEmail.split('@')[0] : 'user');
+    this.ensureCanRegister(initialUsername, normalizedEmail);
+    const passwordHash = await this.argon2.hash(input.password, this.argon2Params);
+    const finalUsername =
+      explicitUsername ||
+      this.store.allocateUniqueUsername(normalizedEmail ? normalizedEmail.split('@')[0] : 'user');
+    return this.commitRegisteredUser({
+      username: finalUsername,
+      displayName: input.displayName,
+      email: normalizedEmail,
+      passwordHash,
+      termsVersion: input.termsVersion,
+      privacyVersion: input.privacyVersion,
+    });
   }
 
   async authenticateCredentials(raw: unknown, autoRegister = false) {
     this.prune();
-    const parsed = (autoRegister ? credentialRegisterSchema : credentialLoginSchema).safeParse(raw);
+    if (autoRegister) {
+      const parsed = credentialRegisterSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new BrokerHttpError('Payload de cadastro fora do contrato.', 400, 'invalid_request');
+      }
+      const {
+        username,
+        email,
+        displayName,
+        password,
+        client_id,
+        code_challenge,
+        redirect_uri,
+        termsVersion,
+        privacyVersion,
+      } = parsed.data;
+      const user = await this.registerUserAsync({
+        username,
+        email,
+        displayName,
+        password,
+        termsVersion,
+        privacyVersion,
+      });
+      if (user.email) {
+        const now = this.clock();
+        const issued = this.store.createEmailToken({
+          kind: 'verify_email',
+          userId: user.userId,
+          email: user.email,
+          ttlMs: EMAIL_VERIFY_TTL_MS,
+          now,
+        });
+        this.dispatchEmail({
+          kind: 'verify_email',
+          to: user.email,
+          userId: user.userId,
+          username: user.username,
+          displayName: user.displayName,
+          token: issued.rawToken,
+          expiresAt: issued.expiresAt,
+        });
+      }
+      const codeResult = this.issueAuthorizationCode({
+        userId: user.userId,
+        clientId: client_id,
+        codeChallenge: code_challenge,
+        redirectUri: redirect_uri,
+        scope: 'hub:access',
+      });
+      return { ...codeResult, user: this.store.toPublicUser(user) };
+    }
+
+    const parsed = credentialLoginSchema.safeParse(raw);
     if (!parsed.success) {
       throw new BrokerHttpError('Payload de autenticação fora do contrato.', 400, 'invalid_request');
     }
-    const { username, password, client_id, code_challenge, redirect_uri } = parsed.data;
-    const normalized = username.trim().toLowerCase();
-    let user = this.usersByName.get(normalized);
-    if (autoRegister) {
-      user = await this.registerUserAsync(normalized, password);
-    } else if (!user) {
-      // Constant-time dummy Argon2id verification prevents username enumeration
+    const {
+      identifier,
+      username,
+      email,
+      password,
+      client_id,
+      code_challenge,
+      redirect_uri,
+      termsVersion,
+      privacyVersion,
+    } = parsed.data;
+    const loginKey = (identifier || email || username || '').trim();
+    let user = this.store.findUserByIdentifier(loginKey);
+    if (!user || !user.passwordHash) {
+      // Constant-time dummy Argon2id verification prevents username/email enumeration
       await this.argon2.verify(password, this.dummyHash);
       throw new BrokerHttpError('Credenciais inválidas.', 401, 'invalid_credentials');
-    } else if (!(await this.argon2.verify(password, user.passwordHash))) {
+    }
+    if (!(await this.argon2.verify(password, user.passwordHash))) {
       throw new BrokerHttpError('Credenciais inválidas.', 401, 'invalid_credentials');
     }
-
-    return this.issueAuthorizationCode({
-      userId: user.id,
+    if (
+      !isCurrentLegalAcceptance(user.termsVersion, user.privacyVersion) &&
+      isCurrentLegalAcceptance(termsVersion, privacyVersion)
+    ) {
+      user = this.store.acceptLegalTerms(user.userId, this.clock());
+    }
+    const codeResult = this.issueAuthorizationCode({
+      userId: user.userId,
       clientId: client_id,
       codeChallenge: code_challenge,
       redirectUri: redirect_uri,
       scope: 'hub:access',
     });
+    return { ...codeResult, user: this.store.toPublicUser(user) };
   }
 
   authorizePkceRequest(query: Record<string, unknown>, userId: string) {
@@ -443,7 +584,7 @@ export class ZeroTrustAuthEngine {
         'invalid_request',
       );
     }
-    if (!this.usersById.has(userId)) {
+    if (!this.store.findUserById(userId)) {
       throw new BrokerHttpError('Sessão de usuário inválida.', 401, 'unauthorized');
     }
     const issued = this.issueAuthorizationCode({
@@ -454,6 +595,430 @@ export class ZeroTrustAuthEngine {
       scope: parsed.data.scope || 'hub:access',
     });
     return { ...issued, state: parsed.data.state };
+  }
+
+  startOAuthFlow(input: {
+    raw: unknown;
+    providerConfig: Required<OAuthProviderConfig>;
+    callbackUrl: string;
+    linkUserId: string | null;
+  }) {
+    this.prune();
+    const parsed = oauthStartSchema.safeParse(input.raw);
+    if (!parsed.success) {
+      throw new BrokerHttpError('Parâmetros OAuth inválidos.', 400, 'invalid_request');
+    }
+    const data = parsed.data;
+    if (!input.providerConfig.clientId || !input.providerConfig.clientSecret) {
+      throw new BrokerHttpError(
+        `Provedor ${data.provider} não configurado no servidor.`,
+        503,
+        'provider_not_configured',
+      );
+    }
+    const mode = data.mode ?? 'login';
+    if (mode === 'link') {
+      if (!input.linkUserId || !this.store.findUserById(input.linkUserId)) {
+        throw new BrokerHttpError(
+          'Autenticação obrigatória para vincular um provedor.',
+          401,
+          'unauthorized',
+        );
+      }
+    }
+    const now = this.clock();
+    const legalAccepted = isCurrentLegalAcceptance(data.termsVersion, data.privacyVersion);
+    const flow: PendingOAuthFlow = {
+      state: data.state,
+      provider: data.provider,
+      mode,
+      linkUserId: mode === 'link' ? input.linkUserId : null,
+      clientId: data.client_id,
+      redirectUri: data.redirect_uri,
+      codeChallenge: data.code_challenge,
+      codeChallengeMethod: 'S256',
+      providerVerifier: randomBytes(32).toString('base64url'),
+      termsVersion: legalAccepted ? data.termsVersion! : null,
+      privacyVersion: legalAccepted ? data.privacyVersion! : null,
+      termsAcceptedAt: legalAccepted ? now : null,
+      createdAt: now,
+      expiresAt: now + OAUTH_FLOW_TTL_MS,
+    };
+    this.store.saveOAuthFlow(flow);
+    const authorizeUrl = buildProviderAuthorizeUrl({
+      provider: data.provider,
+      config: input.providerConfig,
+      callbackUrl: input.callbackUrl,
+      state: flow.state,
+      codeVerifier: flow.providerVerifier,
+    });
+    return { authorizeUrl, state: flow.state, expires_in: 600 };
+  }
+
+  consumeOAuthFlow(state: string, provider: HubOAuthProvider): PendingOAuthFlow | null {
+    return this.store.consumeOAuthFlow(state, provider, this.clock());
+  }
+
+  completeOAuthProfile(flow: PendingOAuthFlow, profile: ExternalProfile) {
+    const now = this.clock();
+    if (flow.mode === 'link') {
+      if (!flow.linkUserId) {
+        throw new BrokerHttpError('Sessão de vínculo inválida.', 401, 'unauthorized');
+      }
+      const targetUser = this.store.findUserById(flow.linkUserId);
+      if (!targetUser) {
+        throw new BrokerHttpError('Usuário não encontrado para vínculo.', 401, 'unauthorized');
+      }
+      const existingIdentity = this.store.findIdentity(profile.provider, profile.providerSubject);
+      if (existingIdentity) {
+        if (existingIdentity.userId !== flow.linkUserId) {
+          throw new BrokerHttpError(
+            'Esta conta externa já está vinculada a outro usuário do Liquid Hub.',
+            409,
+            'identity_already_linked',
+          );
+        }
+        const refreshed = this.store.refreshExternalIdentity({
+          userId: flow.linkUserId,
+          profile,
+          termsVersion: flow.termsVersion,
+          privacyVersion: flow.privacyVersion,
+          now,
+        });
+        return this.issueAuthorizationCode({
+          userId: refreshed.userId,
+          clientId: flow.clientId,
+          codeChallenge: flow.codeChallenge,
+          redirectUri: flow.redirectUri,
+          scope: 'hub:access',
+        });
+      }
+      const sameProvider = this.store.findUserIdentityByProvider(
+        flow.linkUserId,
+        profile.provider,
+      );
+      if (sameProvider) {
+        throw new BrokerHttpError(
+          'Sua conta já possui outra identidade deste provedor vinculada.',
+          409,
+          'provider_already_linked',
+        );
+      }
+      const linked = this.store.linkOAuthIdentity({
+        userId: flow.linkUserId,
+        profile,
+        now,
+      });
+      return this.issueAuthorizationCode({
+        userId: linked.userId,
+        clientId: flow.clientId,
+        codeChallenge: flow.codeChallenge,
+        redirectUri: flow.redirectUri,
+        scope: 'hub:access',
+      });
+    }
+
+    // Standard login / signup via external OAuth identity
+    const existingIdentity = this.store.findIdentity(profile.provider, profile.providerSubject);
+    if (existingIdentity) {
+      const owner = this.store.findUserById(existingIdentity.userId);
+      if (!owner) {
+        throw new BrokerHttpError('Usuário vinculado não encontrado.', 401, 'unauthorized');
+      }
+      const refreshed = this.store.refreshExternalIdentity({
+        userId: owner.userId,
+        profile,
+        termsVersion: flow.termsVersion,
+        privacyVersion: flow.privacyVersion,
+        now,
+      });
+      return this.issueAuthorizationCode({
+        userId: refreshed.userId,
+        clientId: flow.clientId,
+        codeChallenge: flow.codeChallenge,
+        redirectUri: flow.redirectUri,
+        scope: 'hub:access',
+      });
+    }
+
+    // Anti-auto-merge: verified email matches existing account -> require explicit login & link
+    if (profile.email && profile.emailVerified) {
+      const emailOwner = this.store.findUserByEmail(profile.email);
+      if (emailOwner) {
+        throw new BrokerHttpError(
+          'Já existe uma conta com este e-mail. Entre com ela primeiro para vincular este provedor sem duplicar sua conta.',
+          409,
+          'account_exists_link_required',
+        );
+      }
+    }
+
+    const created = this.store.createOAuthUser({
+      profile,
+      termsVersion: flow.termsVersion,
+      privacyVersion: flow.privacyVersion,
+      now,
+    });
+    return this.issueAuthorizationCode({
+      userId: created.userId,
+      clientId: flow.clientId,
+      codeChallenge: flow.codeChallenge,
+      redirectUri: flow.redirectUri,
+      scope: 'hub:access',
+    });
+  }
+
+  getUserProfile(userId: string): HubUserPublic {
+    const profile = this.store.getPublicUserById(userId);
+    if (!profile) {
+      throw new BrokerHttpError('Usuário não encontrado.', 404, 'user_not_found');
+    }
+    return profile;
+  }
+
+  acceptTerms(userId: string, raw: unknown): HubUserPublic {
+    const parsed = acceptTermsSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new BrokerHttpError('Versões de termos inválidas.', 400, 'invalid_request');
+    }
+    if (!isCurrentLegalAcceptance(parsed.data.termsVersion, parsed.data.privacyVersion)) {
+      throw new BrokerHttpError(
+        'A versão dos Termos de Uso ou Política de Privacidade está desatualizada.',
+        400,
+        'invalid_legal_version',
+      );
+    }
+    if (!this.store.findUserById(userId)) {
+      throw new BrokerHttpError('Usuário não encontrado.', 404, 'user_not_found');
+    }
+    const updated = this.store.acceptLegalTerms(userId, this.clock());
+    return this.store.toPublicUser(updated);
+  }
+
+  verifyEmail(raw: unknown): { ok: boolean; user: HubUserPublic } {
+    const parsed = verifyEmailSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new BrokerHttpError('Token de verificação inválido.', 400, 'invalid_request');
+    }
+    const now = this.clock();
+    const consumed = this.store.consumeEmailToken('verify_email', parsed.data.token, now);
+    if (!consumed) {
+      throw new BrokerHttpError(
+        'Token de verificação expirado ou já utilizado.',
+        400,
+        'invalid_or_expired_token',
+      );
+    }
+    const updated = this.store.markEmailVerified(consumed.userId, now);
+    return { ok: true, user: this.store.toPublicUser(updated) };
+  }
+
+  resendVerification(userId: string | null, raw: unknown): { ok: boolean; sent: boolean } {
+    const parsed = resendVerificationSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new BrokerHttpError('Parâmetros inválidos.', 400, 'invalid_request');
+    }
+    const now = this.clock();
+    if (userId) {
+      const user = this.store.findUserById(userId);
+      if (!user) throw new BrokerHttpError('Usuário não encontrado.', 404, 'user_not_found');
+      if (!user.email) {
+        throw new BrokerHttpError('Nenhum e-mail associado a esta conta.', 400, 'email_not_configured');
+      }
+      if (user.emailVerified) {
+        return { ok: true, sent: false };
+      }
+      const issued = this.store.createEmailToken({
+        kind: 'verify_email',
+        userId: user.userId,
+        email: user.email,
+        ttlMs: EMAIL_VERIFY_TTL_MS,
+        now,
+      });
+      this.dispatchEmail({
+        kind: 'verify_email',
+        to: user.email,
+        userId: user.userId,
+        username: user.username,
+        displayName: user.displayName,
+        token: issued.rawToken,
+        expiresAt: issued.expiresAt,
+      });
+      return { ok: true, sent: true };
+    }
+    if (parsed.data.email) {
+      const user = this.store.findUserByEmail(parsed.data.email);
+      if (user && user.email && !user.emailVerified) {
+        const issued = this.store.createEmailToken({
+          kind: 'verify_email',
+          userId: user.userId,
+          email: user.email,
+          ttlMs: EMAIL_VERIFY_TTL_MS,
+          now,
+        });
+        this.dispatchEmail({
+          kind: 'verify_email',
+          to: user.email,
+          userId: user.userId,
+          username: user.username,
+          displayName: user.displayName,
+          token: issued.rawToken,
+          expiresAt: issued.expiresAt,
+        });
+      }
+    }
+    return { ok: true, sent: true };
+  }
+
+  forgotPassword(raw: unknown): { ok: boolean } {
+    const parsed = forgotPasswordSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new BrokerHttpError('Informe um e-mail válido.', 400, 'invalid_request');
+    }
+    const now = this.clock();
+    const user = this.store.findUserByEmail(parsed.data.email);
+    if (user && user.email) {
+      const issued = this.store.createEmailToken({
+        kind: 'reset_password',
+        userId: user.userId,
+        email: user.email,
+        ttlMs: PASSWORD_RESET_TTL_MS,
+        now,
+      });
+      this.dispatchEmail({
+        kind: 'reset_password',
+        to: user.email,
+        userId: user.userId,
+        username: user.username,
+        displayName: user.displayName,
+        token: issued.rawToken,
+        expiresAt: issued.expiresAt,
+      });
+    }
+    return { ok: true };
+  }
+
+  async resetPassword(raw: unknown): Promise<{ ok: boolean }> {
+    const parsed = resetPasswordSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new BrokerHttpError(
+        'Token inválido ou nova senha menor que 12 caracteres.',
+        400,
+        'invalid_request',
+      );
+    }
+    const now = this.clock();
+    const consumed = this.store.consumeEmailToken('reset_password', parsed.data.token, now);
+    if (!consumed) {
+      throw new BrokerHttpError(
+        'Token de recuperação inválido ou expirado.',
+        400,
+        'invalid_or_expired_token',
+      );
+    }
+    const passwordHash = await this.argon2.hash(parsed.data.newPassword, this.argon2Params);
+    this.store.updatePassword(consumed.userId, passwordHash, now);
+    this.store.markEmailVerified(consumed.userId, now);
+    this.store.revokeAllUserFamilies(consumed.userId, now);
+    return { ok: true };
+  }
+
+  async linkEmail(userId: string, raw: unknown): Promise<HubUserPublic> {
+    const parsed = linkEmailSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new BrokerHttpError('Dados inválidos para vincular e-mail.', 400, 'invalid_request');
+    }
+    const user = this.store.findUserById(userId);
+    if (!user) {
+      throw new BrokerHttpError('Usuário não encontrado.', 404, 'user_not_found');
+    }
+    const owner = this.store.findUserByEmail(parsed.data.email);
+    if (owner && owner.userId !== userId) {
+      throw new BrokerHttpError(
+        'Este e-mail já está em uso por outra conta do Liquid Hub.',
+        409,
+        'email_exists',
+      );
+    }
+    const passwordHash = await this.argon2.hash(parsed.data.password, this.argon2Params);
+    const ownerAfterHash = this.store.findUserByEmail(parsed.data.email);
+    if (ownerAfterHash && ownerAfterHash.userId !== userId) {
+      throw new BrokerHttpError(
+        'Este e-mail já está em uso por outra conta do Liquid Hub.',
+        409,
+        'email_exists',
+      );
+    }
+    const now = this.clock();
+    const updated = this.store.linkEmailPassword({
+      userId,
+      email: parsed.data.email,
+      passwordHash,
+      displayName: parsed.data.displayName,
+      now,
+    });
+    if (updated.email && !updated.emailVerified) {
+      const issued = this.store.createEmailToken({
+        kind: 'verify_email',
+        userId: updated.userId,
+        email: updated.email,
+        ttlMs: EMAIL_VERIFY_TTL_MS,
+        now,
+      });
+      this.dispatchEmail({
+        kind: 'verify_email',
+        to: updated.email,
+        userId: updated.userId,
+        username: updated.username,
+        displayName: updated.displayName,
+        token: issued.rawToken,
+        expiresAt: issued.expiresAt,
+      });
+    }
+    return this.store.toPublicUser(updated);
+  }
+
+  unlinkIdentity(userId: string, providerRaw: string): HubUserPublic {
+    const parsed = hubAuthProviderSchema.safeParse(providerRaw);
+    if (!parsed.success) {
+      throw new BrokerHttpError('Provedor inválido.', 400, 'invalid_provider');
+    }
+    const provider = parsed.data;
+    const user = this.store.findUserById(userId);
+    if (!user) {
+      throw new BrokerHttpError('Usuário não encontrado.', 404, 'user_not_found');
+    }
+    const identities = this.store.listIdentities(userId);
+    const oauthIdentities = identities.filter(id => id.provider !== 'email');
+    if (provider === 'email') {
+      const hasEmailIdentity = identities.some(id => id.provider === 'email') || Boolean(user.passwordHash);
+      if (!hasEmailIdentity) {
+        throw new BrokerHttpError('Login por e-mail não está vinculado.', 400, 'identity_not_linked');
+      }
+      if (oauthIdentities.length < 1) {
+        throw new BrokerHttpError(
+          'Adicione outro método de login antes de remover o acesso por e-mail.',
+          400,
+          'cannot_unlink_last_method',
+        );
+      }
+    } else {
+      const hasTarget = oauthIdentities.some(id => id.provider === provider);
+      if (!hasTarget) {
+        throw new BrokerHttpError(`Provedor ${provider} não está vinculado.`, 400, 'identity_not_linked');
+      }
+      const remainingMethods =
+        (user.passwordHash ? 1 : 0) + oauthIdentities.filter(id => id.provider !== provider).length;
+      if (remainingMethods < 1) {
+        throw new BrokerHttpError(
+          'Adicione outro método de login antes de desvincular o único provedor ativo.',
+          400,
+          'cannot_unlink_last_method',
+        );
+      }
+    }
+    const updated = this.store.unlinkIdentity(userId, provider, this.clock());
+    return this.store.toPublicUser(updated);
   }
 
   private issueAuthorizationCode(input: {
@@ -525,11 +1090,11 @@ export class ZeroTrustAuthEngine {
     // Strict Refresh Token Rotation + Family Reuse Detection
     const { refresh_token, client_id } = parsed.data;
     const tokenHash = sha256Hex(refresh_token);
-    const existing = this.refreshTokens.get(tokenHash);
+    const existing = this.store.findRefreshToken(tokenHash);
     if (!existing) {
       throw new BrokerHttpError('Refresh token inválido.', 401, 'invalid_grant');
     }
-    if (existing.consumed || this.revokedFamilies.has(existing.familyId)) {
+    if (existing.consumed || this.store.isFamilyRevoked(existing.familyId)) {
       // Reuse of a rotated refresh token compromises the entire family immediately!
       this.revokeFamily(existing.familyId);
       throw new BrokerHttpError(
@@ -543,7 +1108,7 @@ export class ZeroTrustAuthEngine {
       throw new BrokerHttpError('Refresh token expirado ou cliente divergente.', 401, 'invalid_grant');
     }
 
-    existing.consumed = true;
+    this.store.markRefreshTokenConsumed(tokenHash);
     return this.mintSessionPair(
       existing.userId,
       existing.clientId,
@@ -554,13 +1119,7 @@ export class ZeroTrustAuthEngine {
   }
 
   revokeFamily(familyId: string) {
-    this.revokedFamilies.add(familyId);
-    for (const [hash, rec] of this.refreshTokens) {
-      if (rec.familyId === familyId) {
-        rec.consumed = true;
-        this.refreshTokens.delete(hash);
-      }
-    }
+    this.store.revokeFamily(familyId, this.clock());
   }
 
   private mintSessionPair(
@@ -594,21 +1153,21 @@ export class ZeroTrustAuthEngine {
 
     const rawRefresh = randomBytes(36).toString('base64url');
     const refreshHash = sha256Hex(rawRefresh);
-    if (this.refreshTokens.size >= 16384) {
-      const first = this.refreshTokens.keys().next().value;
-      if (first) this.refreshTokens.delete(first);
-    }
-    this.refreshTokens.set(refreshHash, {
-      tokenHash: refreshHash,
-      familyId,
-      userId,
-      clientId,
-      scope,
-      expiresAt: nowMs + REFRESH_TOKEN_TTL_MS,
-      consumed: false,
-    });
+    this.store.saveRefreshToken(
+      {
+        tokenHash: refreshHash,
+        familyId,
+        userId,
+        clientId,
+        scope,
+        expiresAt: nowMs + REFRESH_TOKEN_TTL_MS,
+        consumed: false,
+      },
+      nowMs,
+    );
 
-    const user = this.usersById.get(userId);
+    const user = this.store.findUserById(userId);
+    const publicUser = user ? this.store.toPublicUser(user) : undefined;
     return {
       token_type: 'Bearer',
       access_token: accessToken,
@@ -617,6 +1176,7 @@ export class ZeroTrustAuthEngine {
       scope,
       subject: user?.username || userId,
       family_id: familyId,
+      user: publicUser,
     };
   }
 
@@ -659,7 +1219,7 @@ export class ZeroTrustAuthEngine {
     ) {
       throw new BrokerHttpError('Token expirado ou fora do escopo.', 401, 'invalid_token');
     }
-    if (this.revokedFamilies.has(claims.fam)) {
+    if (this.store.isFamilyRevoked(claims.fam)) {
       throw new BrokerHttpError('Sessão revogada por segurança.', 401, 'revoked_token');
     }
     return claims;
@@ -728,8 +1288,10 @@ export function createBroker(
   const auth = new ZeroTrustAuthEngine({
     privateKeyPem: env.BROKER_ED25519_PRIVATE_KEY,
     clock,
+    dbPath: authOptions.dbPath ?? env.BROKER_DB_PATH,
     ...authOptions,
   });
+  const oauthProviders = resolveOAuthProviders(env, authOptions.discord, authOptions.github);
 
   if (env.BROKER_ADMIN_USER && env.BROKER_ADMIN_PASSWORD && env.BROKER_ADMIN_PASSWORD.length >= 12) {
     try {
@@ -824,6 +1386,44 @@ export function createBroker(
     return { userId: claims.sub, familyId: claims.fam };
   }
 
+  function requireHubUser(req: IncomingMessage): { userId: string; familyId?: string } {
+    const identity = authenticateBearer(req);
+    if (!identity.userId || identity.userId === 'owner:static') {
+      throw new BrokerHttpError('Autenticação de usuário Liquid Hub obrigatória.', 401, 'unauthorized');
+    }
+    return identity;
+  }
+
+  function resolvePublicBase(req: IncomingMessage): string {
+    const configured = authOptions.publicUrl || env.BROKER_PUBLIC_URL;
+    if (configured) return configured.replace(/\/+$/, '');
+    const host = String(req.headers.host || '').trim();
+    const proto = req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+    if (host && /^[a-zA-Z0-9.:-]+$/.test(host)) {
+      return `${proto}://${host}`;
+    }
+    const addr = server.address();
+    const port = addr && typeof addr === 'object' ? addr.port : 8787;
+    return `http://127.0.0.1:${port}`;
+  }
+
+  function htmlResponse(res: ServerResponse, status: number, title: string, message: string) {
+    if (res.destroyed || res.headersSent) return;
+    const escapeHtml = (s: string) =>
+      s
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font-family:system-ui,-apple-system,sans-serif;background:#101216;color:#f3f5f8;display:grid;place-items:center;min-height:100vh;margin:0;padding:24px}main{max-width:440px;padding:28px;border-radius:20px;background:#191d24;border:1px solid rgba(255,255,255,.12)}h1{font-size:18px;margin:0 0 10px}p{font-size:14px;line-height:1.5;color:#b8c0cc;margin:0}</style></head><body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></main></body></html>`;
+    res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8' }).end(html);
+  }
+
+  function redirectUrl(res: ServerResponse, location: string) {
+    if (res.destroyed || res.headersSent) return;
+    res.writeHead(302, { Location: location }).end();
+  }
+
   const server = createServer(async (req, res) => {
     setSecurityHeaders(res);
     const send = (status: number, payload: unknown) => {
@@ -853,6 +1453,12 @@ export function createBroker(
         return;
       }
 
+      if (req.method === 'GET' && u.pathname === '/v1/auth/providers') {
+        enforceRateLimit(`ip:${ip}:providers`, 60);
+        send(200, describeProviderAvailability(resolvePublicBase(req), oauthProviders));
+        return;
+      }
+
       if (req.method === 'POST' && u.pathname === '/v1/auth/register') {
         enforceRateLimit(`ip:${ip}:auth`, authLimit);
         if (env.BROKER_ALLOW_REGISTRATION === '0') {
@@ -867,10 +1473,11 @@ export function createBroker(
       if (req.method === 'POST' && u.pathname === '/v1/auth/login') {
         enforceRateLimit(`ip:${ip}:auth`, authLimit);
         const body = await readJsonBody(req);
-        const maybeUser =
-          body && typeof body === 'object' && 'username' in body
-            ? String((body as Record<string, unknown>).username).trim().toLowerCase().slice(0, 80)
-            : '';
+        const rawObj = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+        const maybeUser = String(rawObj.identifier || rawObj.email || rawObj.username || '')
+          .trim()
+          .toLowerCase()
+          .slice(0, 120);
         if (maybeUser) enforceRateLimit(`acct:${maybeUser}:auth`, authLimit);
         const result = await auth.authenticateCredentials(body, false);
         send(200, result);
@@ -890,6 +1497,130 @@ export function createBroker(
         return;
       }
 
+      const oauthMatch = /^\/v1\/auth\/oauth\/([a-z0-9_-]+)\/(start|callback)$/.exec(u.pathname);
+      if (oauthMatch) {
+        const providerParsed = hubOAuthProviderSchema.safeParse(oauthMatch[1]);
+        if (!providerParsed.success) {
+          send(404, { error: 'Provedor OAuth desconhecido.', code: 'invalid_provider' });
+          return;
+        }
+        const provider: HubOAuthProvider = providerParsed.data;
+        const action = oauthMatch[2];
+        const callbackUrl = `${resolvePublicBase(req)}/v1/auth/oauth/${provider}/callback`;
+
+        if (action === 'start' && req.method === 'GET') {
+          enforceRateLimit(`ip:${ip}:auth`, authLimit);
+          const queryObj: Record<string, string> = { provider };
+          for (const [k, v] of u.searchParams) {
+            if (k === 'format') continue;
+            queryObj[k] = v;
+          }
+          if (queryObj.mode === 'link') {
+            throw new BrokerHttpError(
+              'Use POST autenticado para iniciar vínculo de conta.',
+              400,
+              'invalid_request',
+            );
+          }
+          const started = auth.startOAuthFlow({
+            raw: queryObj,
+            providerConfig: oauthProviders[provider],
+            callbackUrl,
+            linkUserId: null,
+          });
+          if (u.searchParams.get('format') === 'json') {
+            send(200, started);
+          } else {
+            redirectUrl(res, started.authorizeUrl);
+          }
+          return;
+        }
+
+        if (action === 'start' && req.method === 'POST') {
+          enforceRateLimit(`ip:${ip}:auth`, authLimit);
+          const rawBody = await readJsonBody(req);
+          const bodyObj =
+            rawBody && typeof rawBody === 'object' ? { ...(rawBody as Record<string, unknown>), provider } : { provider };
+          let linkUserId: string | null = null;
+          if ((bodyObj as Record<string, unknown>).mode === 'link') {
+            const identity = requireHubUser(req);
+            enforceRateLimit(`user:${identity.userId}:auth`, authLimit);
+            linkUserId = identity.userId;
+          }
+          const started = auth.startOAuthFlow({
+            raw: bodyObj,
+            providerConfig: oauthProviders[provider],
+            callbackUrl,
+            linkUserId,
+          });
+          send(200, started);
+          return;
+        }
+
+        if (action === 'callback' && req.method === 'GET') {
+          enforceRateLimit(`ip:${ip}:auth`, authLimit * 2);
+          const state = u.searchParams.get('state') || '';
+          const flow = state ? auth.consumeOAuthFlow(state, provider) : null;
+          if (!flow) {
+            htmlResponse(
+              res,
+              400,
+              'Sessão OAuth inválida ou expirada',
+              'Esta solicitação de autenticação expirou ou já foi utilizada. Volte para o Liquid Hub e tente novamente.',
+            );
+            return;
+          }
+          const finishWithError = (errCode: string, description: string) => {
+            const target = new URL(flow.redirectUri);
+            target.searchParams.set('error', errCode);
+            target.searchParams.set('state', flow.state);
+            target.searchParams.set('error_description', description);
+            redirectUrl(res, target.toString());
+          };
+
+          const upstreamError = u.searchParams.get('error');
+          const upstreamCode = u.searchParams.get('code');
+          if (upstreamError || !upstreamCode) {
+            const desc =
+              u.searchParams.get('error_description') ||
+              (upstreamError === 'access_denied'
+                ? 'Autorização cancelada no provedor.'
+                : 'Autorização não concluída no provedor.');
+            finishWithError(upstreamError || 'access_denied', desc);
+            return;
+          }
+
+          try {
+            const profile = await exchangeExternalOAuthProfile({
+              provider,
+              config: oauthProviders[provider],
+              code: upstreamCode,
+              callbackUrl,
+              codeVerifier: flow.providerVerifier,
+            });
+            const issued = auth.completeOAuthProfile(flow, profile);
+            const target = new URL(flow.redirectUri);
+            target.searchParams.set('code', issued.code);
+            target.searchParams.set('state', flow.state);
+            redirectUrl(res, target.toString());
+          } catch (oauthErr) {
+            if (oauthErr instanceof BrokerHttpError) {
+              finishWithError(oauthErr.code, oauthErr.message);
+            } else {
+              const code =
+                oauthErr && typeof oauthErr === 'object' && 'oauthCode' in oauthErr
+                  ? String((oauthErr as { oauthCode?: string }).oauthCode || 'oauth_failed')
+                  : 'oauth_failed';
+              finishWithError(
+                code,
+                oauthErr instanceof Error ? oauthErr.message : 'Falha na autenticação OAuth.',
+              );
+            }
+          }
+          return;
+        }
+      }
+
       if (req.method === 'POST' && u.pathname === '/v1/auth/token') {
         enforceRateLimit(`ip:${ip}:token`, authLimit * 2);
         const body = await readJsonBody(req);
@@ -904,6 +1635,70 @@ export function createBroker(
         const identity = authenticateBearer(req);
         if (identity.familyId) auth.revokeFamily(identity.familyId);
         send(200, { revoked: true });
+        return;
+      }
+
+      if (req.method === 'GET' && u.pathname === '/v1/auth/me') {
+        enforceRateLimit(`ip:${ip}:auth`, authLimit * 2);
+        const identity = requireHubUser(req);
+        enforceRateLimit(`user:${identity.userId}:auth`, authLimit * 2);
+        send(200, auth.getUserProfile(identity.userId));
+        return;
+      }
+
+      if (req.method === 'POST' && u.pathname === '/v1/auth/terms/accept') {
+        enforceRateLimit(`ip:${ip}:auth`, authLimit);
+        const identity = requireHubUser(req);
+        const body = await readJsonBody(req);
+        send(200, auth.acceptTerms(identity.userId, body));
+        return;
+      }
+
+      if (req.method === 'POST' && u.pathname === '/v1/auth/email/verify') {
+        enforceRateLimit(`ip:${ip}:auth`, authLimit);
+        const body = await readJsonBody(req);
+        send(200, auth.verifyEmail(body));
+        return;
+      }
+
+      if (req.method === 'POST' && u.pathname === '/v1/auth/email/resend') {
+        enforceRateLimit(`ip:${ip}:auth`, authLimit);
+        const maybeAuthHeader = req.headers.authorization || '';
+        const maybeUser = maybeAuthHeader.startsWith('Bearer ')
+          ? requireHubUser(req).userId
+          : null;
+        const body = await readJsonBody(req);
+        send(200, auth.resendVerification(maybeUser, body));
+        return;
+      }
+
+      if (req.method === 'POST' && u.pathname === '/v1/auth/password/forgot') {
+        enforceRateLimit(`ip:${ip}:auth`, authLimit);
+        const body = await readJsonBody(req);
+        send(200, auth.forgotPassword(body));
+        return;
+      }
+
+      if (req.method === 'POST' && u.pathname === '/v1/auth/password/reset') {
+        enforceRateLimit(`ip:${ip}:auth`, authLimit);
+        const body = await readJsonBody(req);
+        send(200, await auth.resetPassword(body));
+        return;
+      }
+
+      if (req.method === 'POST' && u.pathname === '/v1/auth/identities/email') {
+        enforceRateLimit(`ip:${ip}:auth`, authLimit);
+        const identity = requireHubUser(req);
+        const body = await readJsonBody(req);
+        send(200, await auth.linkEmail(identity.userId, body));
+        return;
+      }
+
+      const unlinkMatch = /^\/v1\/auth\/identities\/([a-z0-9_-]+)$/.exec(u.pathname);
+      if (req.method === 'DELETE' && unlinkMatch) {
+        enforceRateLimit(`ip:${ip}:auth`, authLimit);
+        const identity = requireHubUser(req);
+        send(200, auth.unlinkIdentity(identity.userId, unlinkMatch[1]));
         return;
       }
 
@@ -1025,6 +1820,7 @@ export function createBroker(
   server.requestTimeout = 15000;
   server.headersTimeout = 8000;
   server.keepAliveTimeout = 5000;
+  server.on('close', () => auth.close());
   (server as typeof server & { auth: ZeroTrustAuthEngine }).auth = auth;
   return server as typeof server & { auth: ZeroTrustAuthEngine };
 }

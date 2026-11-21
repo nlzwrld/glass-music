@@ -15,9 +15,11 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Radio,
+  UserRound,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useApp, type Page } from '../../stores/app';
+import { useAccounts } from '../../stores/accounts';
 import { useJam } from '../jam/state';
 import { IconButton } from '../glass/controls';
 import { GlassContextMenu, GlassSidebar } from '../glass/materials';
@@ -42,6 +44,7 @@ export default function Sidebar() {
     jamSession = useJam(s => s.session),
     jamConnected = useJam(s => s.connected),
     jamMembersCount = useJam(s => s.room?.members.length ?? (s.session ? 1 : 0)),
+    hub = useAccounts(s => s.hub),
     { settings, setSettings, reduced } = useOptics();
   const isGlass = (data.preferences.uiStyle ?? 'matte') === 'glass';
 
@@ -206,6 +209,39 @@ export default function Sidebar() {
       </div>
 
       <div className="sidebar-bottom">
+        <button
+          aria-label={hub.authenticated ? `Conta ${hub.displayName || hub.subject}` : 'Entrar no Liquid Hub'}
+          title={hub.authenticated ? `${hub.displayName || hub.subject} · Conta Liquid Hub` : 'Entrar no Liquid Hub'}
+          className="nav-item sidebar-account-btn"
+          onClick={() => {
+            if (hub.authenticated) {
+              setPage('settings');
+              setTimeout(() => {
+                document.getElementById('hub-account-section')?.scrollIntoView({ behavior: 'smooth' });
+              }, 60);
+            } else {
+              useAccounts.getState().openAuthModal({ view: 'choose' });
+            }
+          }}
+        >
+          {hub.authenticated ? (
+            <>
+              <span className="sidebar-account-avatar" aria-hidden="true">
+                {hub.avatarUrl ? (
+                  <img src={hub.avatarUrl} alt="" />
+                ) : (
+                  (hub.displayName || hub.subject || 'L').charAt(0).toUpperCase()
+                )}
+              </span>
+              <span>{hub.displayName || hub.subject}</span>
+            </>
+          ) : (
+            <>
+              <UserRound size={16} />
+              <span>Entrar</span>
+            </>
+          )}
+        </button>
         <button
           aria-label="Configurações"
           title="Configurações"

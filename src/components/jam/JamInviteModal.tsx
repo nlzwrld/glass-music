@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import type { JamErrorCode, JamRoomStatus } from '../../../shared/jam';
 import { buildJamInviteUrl } from '../../lib/jam';
+import { useAccounts } from '../../stores/accounts';
 import { useApp } from '../../stores/app';
 import { IconButton } from '../glass/controls';
 import { useJam } from './state';
@@ -60,6 +61,8 @@ export function JamInviteModal() {
     busy = useJam(s => s.busy),
     error = useJam(s => s.error),
     hubSubject = useJam(s => s.hubSubject),
+    hubDisplayName = useJam(s => s.hubDisplayName),
+    hubAvatar = useJam(s => s.hubAvatar),
     hubAuthenticated = useJam(s => s.hubAuthenticated),
     consent = useApp(s => s.data.preferences.onlineConsent && s.data.preferences.onboardingDone);
 
@@ -68,10 +71,10 @@ export function JamInviteModal() {
 
   useEffect(() => {
     if (pending) {
-      setGuestName(prev => prev || hubSubject || '');
+      setGuestName(prev => prev || hubDisplayName || hubSubject || '');
       setCopied(false);
     }
-  }, [pending?.raw, hubSubject]);
+  }, [pending?.raw, hubDisplayName, hubSubject]);
 
   useEffect(() => {
     if (!pending) return;
@@ -99,10 +102,12 @@ export function JamInviteModal() {
 
   const handleJoin = async () => {
     if (!preview || !preview.canJoin || busy) return;
-    const displayName = guestName.trim() || hubSubject || 'Ouvinte';
+    const displayName = guestName.trim() || hubDisplayName || hubSubject || 'Ouvinte';
     const ok = await useJam
       .getState()
-      .enter('join', displayName, preview.code, preview.endpoint);
+      .enter('join', displayName, preview.code, preview.endpoint, {
+        avatar: hubAvatar || undefined,
+      });
     if (ok) {
       useApp.getState().message(`Você entrou na JAM ${preview.roomName}.`);
       useApp.getState().setPage('settings');
@@ -204,8 +209,12 @@ export function JamInviteModal() {
                   type="button"
                   className="text-button"
                   onClick={() => {
+                    const targetInvite = pending.raw;
                     close();
-                    useApp.getState().setPage('settings');
+                    useAccounts.getState().openAuthModal({
+                      view: 'choose',
+                      postAuthJamInvite: targetInvite,
+                    });
                   }}
                 >
                   Fazer login

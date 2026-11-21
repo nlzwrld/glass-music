@@ -1,5 +1,10 @@
-import { createPublicKey, randomBytes, verify } from 'node:crypto';
+import { createPublicKey, generateKeyPairSync, randomBytes, verify } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { CURRENT_PRIVACY_VERSION, CURRENT_TERMS_VERSION } from '../../shared/auth';
 import {
   computePkceS256Challenge,
   createBroker,
@@ -581,6 +586,555 @@ describe('Zero-Trust Broker & Auth Engine', () => {
     } finally {
       firstRelease.resolve(firstHash);
       secondRelease.resolve(secondHash);
+    }
+  });
+});
+
+interface MockOAuthBehavior {
+  mode?: 'approve' | 'cancel';
+  id: string;
+  username: string;
+  displayName?: string | null;
+  email?: string | null;
+  emailVerified?: boolean;
+  avatar?: string | null;
+  privateGithubEmailsForbidden?: boolean;
+}
+
+async function startMockOAuthProvider(provider: 'discord' | 'github', initial: MockOAuthBehavior) {
+  let behavior = initial;
+  const server = createServer((req, res) => {
+    const u = new URL(req.url || '/', 'http://127.0.0.1');
+    if (req.method === 'GET' && u.pathname === '/authorize') {
+      const redirectUri = u.searchParams.get('redirect_uri')!;
+      const state = u.searchParams.get('state')!;
+      const target = new URL(redirectUri);
+      target.searchParams.set('state', state);
+      if (behavior.mode === 'cancel') {
+        target.searchParams.set('error', 'access_denied');
+        target.searchParams.set('error_description', 'Usuário cancelou no provedor');
+      } else {
+        target.searchParams.set('code', `mock_code_${behavior.id}_${Date.now()}`);
+      }
+      res.writeHead(302, { Location: target.toString() }).end();
+      return;
+    }
+    if (req.method === 'POST' && u.pathname === '/token') {
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(
+        JSON.stringify({ access_token: `mock_tok_${behavior.id}`, token_type: 'Bearer' }),
+      );
+      return;
+    }
+    if (req.method === 'GET' && u.pathname === '/user') {
+      if (provider === 'discord') {
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(
+          JSON.stringify({
+            id: behavior.id,
+            username: behavior.username,
+            global_name: behavior.displayName ?? null,
+            avatar: behavior.avatar ?? null,
+            email: behavior.email ?? null,
+            verified: behavior.emailVerified ?? Boolean(behavior.email),
+          }),
+        );
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(
+          JSON.stringify({
+            id: Number(behavior.id) || behavior.id,
+            login: behavior.username,
+            name: behavior.displayName ?? null,
+            avatar_url: behavior.avatar ?? null,
+            email: behavior.privateGithubEmailsForbidden ? null : (behavior.email ?? null),
+          }),
+        );
+      }
+      return;
+    }
+    if (req.method === 'GET' && u.pathname === '/user/emails') {
+      if (behavior.privateGithubEmailsForbidden) {
+        res.writeHead(403, { 'Content-Type': 'application/json' }).end(JSON.stringify({ message: 'Forbidden' }));
+        return;
+      }
+      const list = behavior.email
+        ? [{ email: behavior.email, primary: true, verified: behavior.emailVerified ?? true }]
+        : [];
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(list));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as { port: number }).port;
+  const base = `http://127.0.0.1:${port}`;
+  return {
+    base,
+    setBehavior(next: MockOAuthBehavior) {
+      behavior = next;
+    },
+    config() {
+      return {
+        clientId: `${provider}_client_id`,
+        clientSecret: `${provider}_super_secret`,
+        authorizeUrl: `${base}/authorize`,
+        tokenUrl: `${base}/token`,
+        userInfoUrl: `${base}/user`,
+        emailsUrl: `${base}/user/emails`,
+      };
+    },
+    close: () => new Promise<void>(r => server.close(() => r())),
+  };
+}
+
+async function runHttpOAuthPkce(input: {
+  brokerUrl: string;
+  provider: 'discord' | 'github';
+  mode?: 'login' | 'link';
+  bearerToken?: string;
+  terms?: boolean;
+}) {
+  const verifier = randomBytes(32).toString('base64url');
+  const challenge = computePkceS256Challenge(verifier);
+  const state = randomBytes(24).toString('base64url');
+  const redirectUri = 'http://127.0.0.1:49999/callback';
+
+  const startRes = await fetch(`${input.brokerUrl}/v1/auth/oauth/${input.provider}/start`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(input.bearerToken ? { Authorization: `Bearer ${input.bearerToken}` } : {}),
+    },
+    body: JSON.stringify({
+      provider: input.provider,
+      client_id: 'liquid-hub-desktop',
+      redirect_uri: redirectUri,
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+      state,
+      mode: input.mode || 'login',
+      ...(input.terms
+        ? { termsVersion: CURRENT_TERMS_VERSION, privacyVersion: CURRENT_PRIVACY_VERSION }
+        : {}),
+    }),
+  });
+  expect(startRes.status).toBe(200);
+  const { authorizeUrl } = (await startRes.json()) as { authorizeUrl: string };
+
+  const authHop = await fetch(authorizeUrl, { redirect: 'manual' });
+  expect(authHop.status).toBe(302);
+  const brokerCallbackUrl = authHop.headers.get('location')!;
+  const cbHop = await fetch(brokerCallbackUrl, { redirect: 'manual' });
+  expect(cbHop.status).toBe(302);
+  const finalRedirect = new URL(cbHop.headers.get('location')!);
+  expect(finalRedirect.origin + finalRedirect.pathname).toBe(redirectUri);
+  expect(finalRedirect.searchParams.get('state')).toBe(state);
+
+  const err = finalRedirect.searchParams.get('error');
+  if (err) {
+    return {
+      ok: false as const,
+      error: err,
+      description: finalRedirect.searchParams.get('error_description') || '',
+    };
+  }
+  const code = finalRedirect.searchParams.get('code')!;
+  const tokenRes = await fetch(`${input.brokerUrl}/v1/auth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      grant_type: 'authorization_code',
+      code,
+      client_id: 'liquid-hub-desktop',
+      code_verifier: verifier,
+      redirect_uri: redirectUri,
+    }),
+  });
+  expect(tokenRes.status).toBe(200);
+  const tokens = (await tokenRes.json()) as any;
+  return { ok: true as const, tokens };
+}
+
+describe('Multi-Provider Identity, OAuth & SQLite Persistence', () => {
+  it('supports email signup, verification, email/username login, and password recovery revoking old sessions', async () => {
+    const emails: Array<{ kind: string; to: string; token: string }> = [];
+    const server = createBroker(
+      {
+        BROKER_ACCESS_TOKEN: 'owner-secret-token-value-123456',
+        SOUNDCLOUD_CLIENT_ID: 'sc_id',
+        SOUNDCLOUD_CLIENT_SECRET: 'sc_secret',
+      },
+      mockSoundcloudFetch(),
+      Date.now,
+      {
+        argon2Params: TEST_ARGON2,
+        onAuthEmail: msg => {
+          emails.push({ kind: msg.kind, to: msg.to, token: msg.token });
+        },
+      },
+    );
+    await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+
+    try {
+      const verifier = randomBytes(32).toString('base64url');
+      const challenge = computePkceS256Challenge(verifier);
+      const regRes = await fetch(`${base}/v1/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'Maria.Silva@Example.COM',
+          displayName: 'Maria Silva',
+          password: 'StrongEmailPassword!2026',
+          client_id: 'liquid-hub-desktop',
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+          termsVersion: CURRENT_TERMS_VERSION,
+          privacyVersion: CURRENT_PRIVACY_VERSION,
+        }),
+      });
+      expect(regRes.status).toBe(201);
+      const regData = (await regRes.json()) as any;
+      expect(regData.user.email).toBe('maria.silva@example.com');
+      expect(regData.user.emailVerified).toBe(false);
+      expect(regData.user.needsTermsAcceptance).toBe(false);
+      expect(emails).toHaveLength(1);
+      expect(emails[0].kind).toBe('verify_email');
+
+      const tokRes = await fetch(`${base}/v1/auth/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          grant_type: 'authorization_code',
+          code: regData.code,
+          client_id: 'liquid-hub-desktop',
+          code_verifier: verifier,
+        }),
+      });
+      const sess1 = (await tokRes.json()) as any;
+      expect(sess1.access_token).toBeTruthy();
+
+      // Verify email token (single-use)
+      const verifyOk = await fetch(`${base}/v1/auth/email/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: emails[0].token }),
+      });
+      expect(verifyOk.status).toBe(200);
+      const verifyBody = (await verifyOk.json()) as any;
+      expect(verifyBody.user.emailVerified).toBe(true);
+
+      const reuseVerify = await fetch(`${base}/v1/auth/email/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: emails[0].token }),
+      });
+      expect(reuseVerify.status).toBe(400);
+
+      // Login using email directly
+      const v2 = randomBytes(32).toString('base64url');
+      const loginByEmail = await fetch(`${base}/v1/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          identifier: 'maria.silva@example.com',
+          password: 'StrongEmailPassword!2026',
+          client_id: 'liquid-hub-desktop',
+          code_challenge: computePkceS256Challenge(v2),
+          code_challenge_method: 'S256',
+        }),
+      });
+      expect(loginByEmail.status).toBe(200);
+
+      // Password recovery flow revokes old refresh token family
+      const forgotRes = await fetch(`${base}/v1/auth/password/forgot`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'maria.silva@example.com' }),
+      });
+      expect(forgotRes.status).toBe(200);
+      const resetEmail = emails.find(e => e.kind === 'reset_password')!;
+      expect(resetEmail).toBeTruthy();
+
+      const resetRes = await fetch(`${base}/v1/auth/password/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: resetEmail.token,
+          newPassword: 'BrandNewStrongPassword!99',
+        }),
+      });
+      expect(resetRes.status).toBe(200);
+
+      // Old refresh token is revoked after password reset
+      const oldRefresh = await fetch(`${base}/v1/auth/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          grant_type: 'refresh_token',
+          refresh_token: sess1.refresh_token,
+          client_id: 'liquid-hub-desktop',
+        }),
+      });
+      expect(oldRefresh.status).toBe(401);
+
+      // Old password fails, new password succeeds
+      const oldPwRes = await fetch(`${base}/v1/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          identifier: 'maria.silva@example.com',
+          password: 'StrongEmailPassword!2026',
+          client_id: 'liquid-hub-desktop',
+          code_challenge: computePkceS256Challenge(v2),
+          code_challenge_method: 'S256',
+        }),
+      });
+      expect(oldPwRes.status).toBe(401);
+
+      const newPwRes = await fetch(`${base}/v1/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          identifier: 'maria.silva@example.com',
+          password: 'BrandNewStrongPassword!99',
+          client_id: 'liquid-hub-desktop',
+          code_challenge: computePkceS256Challenge(v2),
+          code_challenge_method: 'S256',
+        }),
+      });
+      expect(newPwRes.status).toBe(200);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('handles Discord/GitHub OAuth, private/missing emails, cancellation, anti-auto-merge, linking, cross-user rejection & SQLite persistence', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lh-broker-db-'));
+    const dbPath = join(dir, 'broker.sqlite');
+    const keypair = generateKeyPairSync('ed25519');
+    const privateKeyPem = keypair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+
+    const discord = await startMockOAuthProvider('discord', {
+      id: '9001001',
+      username: 'discord_kai',
+      displayName: 'Kai Discord',
+      email: null,
+      avatar: 'a_hash123',
+    });
+    const github = await startMockOAuthProvider('github', {
+      id: '7002002',
+      username: 'gh_kai',
+      displayName: 'Kai GitHub',
+      email: null,
+      privateGithubEmailsForbidden: true,
+      avatar: 'https://avatars.githubusercontent.com/u/7002002?v=4',
+    });
+
+    const server = createBroker(
+      {
+        BROKER_ACCESS_TOKEN: 'owner-secret-token-value-123456',
+        BROKER_ED25519_PRIVATE_KEY: privateKeyPem,
+        BROKER_REQUESTS_PER_MINUTE: '300',
+        BROKER_AUTH_REQUESTS_PER_MINUTE: '100',
+        SOUNDCLOUD_CLIENT_ID: 'sc_id',
+        SOUNDCLOUD_CLIENT_SECRET: 'sc_secret',
+      },
+      mockSoundcloudFetch(),
+      Date.now,
+      {
+        dbPath,
+        argon2Params: TEST_ARGON2,
+        discord: discord.config(),
+        github: github.config(),
+      },
+    );
+    await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+
+    try {
+      // 1. Discord without email (Scenario 7) + deferred Terms acceptance
+      const discordLogin = await runHttpOAuthPkce({
+        brokerUrl: base,
+        provider: 'discord',
+        terms: false,
+      });
+      expect(discordLogin.ok).toBe(true);
+      if (!discordLogin.ok) throw new Error('expected ok');
+      const user1 = discordLogin.tokens.user;
+      expect(user1.email).toBeNull();
+      expect(user1.displayName).toBe('Kai Discord');
+      expect(user1.avatarUrl).toContain('cdn.discordapp.com/avatars/9001001');
+      expect(user1.needsTermsAcceptance).toBe(true);
+
+      // Cannot unlink sole provider
+      const denyUnlinkSole = await fetch(`${base}/v1/auth/identities/discord`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${discordLogin.tokens.access_token}` },
+      });
+      expect(denyUnlinkSole.status).toBe(400);
+      expect(((await denyUnlinkSole.json()) as any).code).toBe('cannot_unlink_last_method');
+
+      // Explicit Terms acceptance records version and clears needsTermsAcceptance
+      const termsRes = await fetch(`${base}/v1/auth/terms/accept`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${discordLogin.tokens.access_token}`,
+        },
+        body: JSON.stringify({
+          termsVersion: CURRENT_TERMS_VERSION,
+          privacyVersion: CURRENT_PRIVACY_VERSION,
+        }),
+      });
+      expect(termsRes.status).toBe(200);
+      const acceptedUser = (await termsRes.json()) as any;
+      expect(acceptedUser.termsVersion).toBe(CURRENT_TERMS_VERSION);
+      expect(acceptedUser.privacyVersion).toBe(CURRENT_PRIVACY_VERSION);
+      expect(typeof acceptedUser.termsAcceptedAt).toBe('number');
+      expect(acceptedUser.needsTermsAcceptance).toBe(false);
+
+      // 2. Link GitHub (with private email 403!) to Kai's central account (Scenario 6 & 8)
+      const linkedGh = await runHttpOAuthPkce({
+        brokerUrl: base,
+        provider: 'github',
+        mode: 'link',
+        bearerToken: discordLogin.tokens.access_token,
+      });
+      expect(linkedGh.ok).toBe(true);
+      if (!linkedGh.ok) throw new Error('expected linked github');
+      expect(linkedGh.tokens.user.userId).toBe(user1.userId);
+      expect(linkedGh.tokens.user.identities.map((i: any) => i.provider)).toEqual([
+        'discord',
+        'github',
+      ]);
+
+      // Logging in via GitHub now resolves to the SAME central user!
+      const ghRelogin = await runHttpOAuthPkce({
+        brokerUrl: base,
+        provider: 'github',
+        mode: 'login',
+      });
+      expect(ghRelogin.ok).toBe(true);
+      if (!ghRelogin.ok) throw new Error('expected gh relogin');
+      expect(ghRelogin.tokens.user.userId).toBe(user1.userId);
+
+      // 3. OAuth cancellation (Scenario 5)
+      discord.setBehavior({
+        mode: 'cancel',
+        id: '9999999',
+        username: 'canceled',
+      });
+      const canceled = await runHttpOAuthPkce({ brokerUrl: base, provider: 'discord' });
+      expect(canceled.ok).toBe(false);
+      if (!canceled.ok) expect(canceled.error).toBe('access_denied');
+
+      // 4. Separate user creation & anti-hijacking rules (Scenario 9 + anti-auto-merge)
+      discord.setBehavior({
+        id: '9008888',
+        username: 'devuser',
+        displayName: 'Bob Distinct',
+        email: 'bob@liquidhub.dev',
+        emailVerified: true,
+      });
+      const bobRes = await runHttpOAuthPkce({
+        brokerUrl: base,
+        provider: 'discord',
+        terms: true,
+      });
+      expect(bobRes.ok).toBe(true);
+      if (!bobRes.ok) throw new Error('expected bob');
+      expect(bobRes.tokens.user.userId).not.toBe(user1.userId);
+
+      // Bob tries to link Kai's already-linked GitHub -> REJECTED (Scenario 9)
+      const crossLink = await runHttpOAuthPkce({
+        brokerUrl: base,
+        provider: 'github',
+        mode: 'link',
+        bearerToken: bobRes.tokens.access_token,
+      });
+      expect(crossLink.ok).toBe(false);
+      if (!crossLink.ok) expect(crossLink.error).toBe('identity_already_linked');
+
+      // New GitHub user with same email as Bob AND matching username 'devuser' -> REJECTED for email collision (no auto-merge)
+      github.setBehavior({
+        id: '7009999',
+        username: 'devuser',
+        displayName: 'Impostor',
+        email: 'bob@liquidhub.dev',
+        emailVerified: true,
+      });
+      const autoMergeAttempt = await runHttpOAuthPkce({
+        brokerUrl: base,
+        provider: 'github',
+        terms: true,
+      });
+      expect(autoMergeAttempt.ok).toBe(false);
+      if (!autoMergeAttempt.ok) expect(autoMergeAttempt.error).toBe('account_exists_link_required');
+
+      // New GitHub user with SAME username 'devuser' but DIFFERENT email -> creates separate user (no username auto-merge)
+      github.setBehavior({
+        id: '7005555',
+        username: 'devuser',
+        displayName: 'Different Owner',
+        email: 'charlie@liquidhub.dev',
+        emailVerified: true,
+      });
+      const charlieRes = await runHttpOAuthPkce({
+        brokerUrl: base,
+        provider: 'github',
+        terms: true,
+      });
+      expect(charlieRes.ok).toBe(true);
+      if (!charlieRes.ok) throw new Error('expected charlie');
+      expect(charlieRes.tokens.user.userId).not.toBe(bobRes.tokens.user.userId);
+      expect(charlieRes.tokens.user.username).not.toBe(bobRes.tokens.user.username);
+
+      // 5. SQLite Persistence across broker restart!
+      await new Promise<void>(r => server.close(() => r()));
+
+      const server2 = createBroker(
+        {
+          BROKER_ACCESS_TOKEN: 'owner-secret-token-value-123456',
+          BROKER_ED25519_PRIVATE_KEY: privateKeyPem,
+          SOUNDCLOUD_CLIENT_ID: 'sc_id',
+          SOUNDCLOUD_CLIENT_SECRET: 'sc_secret',
+        },
+        mockSoundcloudFetch(),
+        Date.now,
+        {
+          dbPath,
+          argon2Params: TEST_ARGON2,
+          discord: discord.config(),
+          github: github.config(),
+        },
+      );
+      await new Promise<void>(r => server2.listen(0, '127.0.0.1', r));
+      const base2 = `http://127.0.0.1:${(server2.address() as { port: number }).port}`;
+      try {
+        // Refresh token minted by server 1 STILL rotates on server 2 with same SQLite DB!
+        const rotRes = await fetch(`${base2}/v1/auth/token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            grant_type: 'refresh_token',
+            refresh_token: ghRelogin.tokens.refresh_token,
+            client_id: 'liquid-hub-desktop',
+          }),
+        });
+        expect(rotRes.status).toBe(200);
+        const rotBody = (await rotRes.json()) as any;
+        expect(rotBody.user.userId).toBe(user1.userId);
+        expect(rotBody.user.identities.map((i: any) => i.provider)).toEqual([
+          'discord',
+          'github',
+        ]);
+      } finally {
+        server2.close();
+      }
+    } finally {
+      server.close();
+      await discord.close();
+      await github.close();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

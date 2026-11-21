@@ -80,6 +80,8 @@ struct State {
     notifications: Mutex<media::NotificationGate>,
     pending_deep_link: Mutex<Option<String>>,
     jam_realtime: jam::JamRealtime,
+    hub_auth_gate: tokio::sync::Mutex<()>,
+    hub_oauth_cancel: Arc<AtomicBool>,
 }
 
 fn dispatch_deep_link(app: &tauri::AppHandle, raw: &str) -> bool {
@@ -300,6 +302,19 @@ async fn call(
             Ok(status(&st))
         }
         "hubStatus" => Ok(st.secrets.lock().unwrap().public_hub_status(db::now())),
+        "hubProviders" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online antes de autenticar no Liquid Hub.".into());
+            }
+            let override_url = s(&p, "brokerUrl").to_string();
+            let opt = if override_url.is_empty() {
+                None
+            } else {
+                Some(override_url.as_str())
+            };
+            accounts::hub_providers(&st.secrets, opt).await
+        }
         "hubLogin" => {
             let pref = st.db.lock().unwrap().pref();
             if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
@@ -307,6 +322,94 @@ async fn call(
             }
             let secrets_path = st.data.join("credentials.dpapi");
             accounts::hub_login(&st.secrets, &secrets_path, &p).await
+        }
+        "hubOAuthStart" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online antes de autenticar no Liquid Hub.".into());
+            }
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_oauth_flow(
+                &app,
+                &st.secrets,
+                &secrets_path,
+                &st.hub_auth_gate,
+                &st.hub_oauth_cancel,
+                &p,
+            )
+            .await
+        }
+        "hubCancelOAuth" => {
+            st.hub_oauth_cancel.store(true, Ordering::Release);
+            Ok(json!({ "ok": true }))
+        }
+        "hubRefresh" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Ok(st.secrets.lock().unwrap().public_hub_status(db::now()));
+            }
+            let override_url = s(&p, "brokerUrl").to_string();
+            let opt = if override_url.is_empty() {
+                None
+            } else {
+                Some(override_url.as_str())
+            };
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_refresh(&st.secrets, &secrets_path, opt).await
+        }
+        "hubAcceptTerms" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online antes de autenticar no Liquid Hub.".into());
+            }
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_accept_terms(&st.secrets, &secrets_path, &p).await
+        }
+        "hubLinkEmail" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online antes de autenticar no Liquid Hub.".into());
+            }
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_link_email(&st.secrets, &secrets_path, &p).await
+        }
+        "hubUnlinkIdentity" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online antes de autenticar no Liquid Hub.".into());
+            }
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_unlink_identity(&st.secrets, &secrets_path, &p).await
+        }
+        "hubVerifyEmail" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online antes de autenticar no Liquid Hub.".into());
+            }
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_verify_email(&st.secrets, &secrets_path, &p).await
+        }
+        "hubResendVerification" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online antes de autenticar no Liquid Hub.".into());
+            }
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_resend_verification(&st.secrets, &secrets_path, &p).await
+        }
+        "hubForgotPassword" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online antes de autenticar no Liquid Hub.".into());
+            }
+            accounts::hub_forgot_password(&st.secrets, &p).await
+        }
+        "hubResetPassword" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online antes de autenticar no Liquid Hub.".into());
+            }
+            accounts::hub_reset_password(&st.secrets, &p).await
         }
         "hubLogout" => {
             let secrets_path = st.data.join("credentials.dpapi");
@@ -1506,6 +1609,8 @@ fn main() {
                 notifications: Mutex::new(media::NotificationGate::new()),
                 pending_deep_link: Mutex::new(initial_deep_link),
                 jam_realtime: jam::JamRealtime::new(),
+                hub_auth_gate: tokio::sync::Mutex::new(()),
+                hub_oauth_cancel: Arc::new(AtomicBool::new(false)),
             });
             let menu = Menu::with_items(
                 app,

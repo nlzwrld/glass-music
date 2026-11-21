@@ -208,6 +208,9 @@ export const preferencesSchema = z
     onlineConsent: z.boolean(),
     catalogConsent: z.boolean(),
     onboardingDone: z.boolean(),
+    termsVersion: z.string().min(1).max(32).optional(),
+    privacyVersion: z.string().min(1).max(32).optional(),
+    termsAcceptedAt: z.number().int().nonnegative().optional(),
   })
   .strict();
 
@@ -336,12 +339,28 @@ export const usernameSchema = z
   .min(3)
   .max(80)
   .regex(/^[a-zA-Z0-9._@-]+$/);
+export const emailSchema = z.string().trim().toLowerCase().email().max(160);
+export const displayNameSchema = z.string().trim().min(1).max(80);
+export const legalVersionSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(32)
+  .regex(/^[a-zA-Z0-9._-]+$/);
 export const passwordSchema = z.string().min(12).max(256);
+export const hubOAuthProviderSchema = z.enum(['discord', 'github']);
+export const hubAuthProviderSchema = z.enum(['email', 'discord', 'github']);
+
+const brokerClientIdSchema = z
+  .string()
+  .min(3)
+  .max(120)
+  .regex(/^[a-zA-Z0-9._:-]+$/);
 
 export const pkceAuthorizeSchema = z
   .object({
     response_type: z.literal('code'),
-    client_id: z.string().min(3).max(120).regex(/^[a-zA-Z0-9._:-]+$/),
+    client_id: brokerClientIdSchema,
     redirect_uri: z.string().max(512).refine(loopbackRedirectUri, 'Redirect URI deve ser loopback'),
     state: z.string().min(32).max(256).regex(/^[A-Za-z0-9_-]+$/),
     code_challenge: pkceChallengeSchema,
@@ -352,23 +371,104 @@ export const pkceAuthorizeSchema = z
 
 export const credentialRegisterSchema = z
   .object({
-    username: usernameSchema,
+    username: usernameSchema.optional(),
+    email: emailSchema.optional(),
+    displayName: displayNameSchema.optional(),
     password: passwordSchema,
-    client_id: z.string().min(3).max(120).regex(/^[a-zA-Z0-9._:-]+$/),
+    client_id: brokerClientIdSchema,
     code_challenge: pkceChallengeSchema,
     code_challenge_method: z.literal('S256'),
     redirect_uri: z.string().max(512).refine(loopbackRedirectUri).optional(),
+    termsVersion: legalVersionSchema.optional(),
+    privacyVersion: legalVersionSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((data, ctx) => {
+    if (!data.username && !data.email) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Informe um e-mail ou nome de usuário.',
+        path: ['email'],
+      });
+    }
+  });
 
 export const credentialLoginSchema = z
   .object({
-    username: usernameSchema,
+    identifier: usernameSchema.optional(),
+    username: usernameSchema.optional(),
+    email: emailSchema.optional(),
     password: passwordSchema,
-    client_id: z.string().min(3).max(120).regex(/^[a-zA-Z0-9._:-]+$/),
+    client_id: brokerClientIdSchema,
     code_challenge: pkceChallengeSchema,
     code_challenge_method: z.literal('S256'),
     redirect_uri: z.string().max(512).refine(loopbackRedirectUri).optional(),
+    termsVersion: legalVersionSchema.optional(),
+    privacyVersion: legalVersionSchema.optional(),
+  })
+  .strict()
+  .superRefine((data, ctx) => {
+    if (!data.identifier && !data.username && !data.email) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Informe seu e-mail ou nome de usuário.',
+        path: ['identifier'],
+      });
+    }
+  });
+
+export const oauthStartSchema = z
+  .object({
+    provider: hubOAuthProviderSchema,
+    client_id: brokerClientIdSchema,
+    redirect_uri: z.string().max(512).refine(loopbackRedirectUri, 'Redirect URI deve ser loopback'),
+    code_challenge: pkceChallengeSchema,
+    code_challenge_method: z.literal('S256'),
+    state: z.string().min(32).max(256).regex(/^[A-Za-z0-9_-]+$/),
+    mode: z.enum(['login', 'link']).optional(),
+    termsVersion: legalVersionSchema.optional(),
+    privacyVersion: legalVersionSchema.optional(),
+  })
+  .strict();
+
+export const verifyEmailSchema = z
+  .object({
+    token: z.string().min(16).max(256).regex(/^[A-Za-z0-9_-]+$/),
+  })
+  .strict();
+
+export const resendVerificationSchema = z
+  .object({
+    email: emailSchema.optional(),
+  })
+  .strict();
+
+export const forgotPasswordSchema = z
+  .object({
+    email: emailSchema,
+  })
+  .strict();
+
+export const resetPasswordSchema = z
+  .object({
+    token: z.string().min(16).max(256).regex(/^[A-Za-z0-9_-]+$/),
+    newPassword: passwordSchema,
+  })
+  .strict();
+
+export const linkEmailSchema = z
+  .object({
+    email: emailSchema,
+    password: passwordSchema,
+    username: usernameSchema.optional(),
+    displayName: displayNameSchema.optional(),
+  })
+  .strict();
+
+export const acceptTermsSchema = z
+  .object({
+    termsVersion: legalVersionSchema,
+    privacyVersion: legalVersionSchema,
   })
   .strict();
 

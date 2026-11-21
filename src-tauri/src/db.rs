@@ -267,6 +267,19 @@ pub fn validate_prefs(p: &Value) -> Result<()> {
     for key in ["limiter","autoUpdate","autoplay"]{if p.get(key).is_some()&&!p[key].is_boolean(){return Err("Preferência inválida.".into());}}
     if p.get("outputDevice").is_some()&&(!p["outputDevice"].is_string()||s(p,"outputDevice").len()>300){return Err("Dispositivo inválido.".into());}
     if p.get("jamEndpoint").is_some(){crate::jam::validate_endpoint(s(p,"jamEndpoint"))?;}
+    for key in ["termsVersion", "privacyVersion"] {
+        if let Some(val) = p.get(key) {
+            let text = val.as_str().ok_or("Versão de termos inválida.")?;
+            if text.is_empty() || text.len() > 32 {
+                return Err("Versão de termos inválida.".into());
+            }
+        }
+    }
+    if let Some(accepted) = p.get("termsAcceptedAt") {
+        if !accepted.as_i64().is_some_and(|n| n >= 0) {
+            return Err("Data de aceitação dos termos inválida.".into());
+        }
+    }
     let accent = s(p, "accent");
     if accent.len() != 7
         || !accent.starts_with('#')

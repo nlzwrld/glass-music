@@ -3,7 +3,6 @@ import { MotionConfig, motion } from 'motion/react';
 import { Minus, Square, X, AudioLines } from 'lucide-react';
 import { purgeSensitiveWebStorage } from '../../shared/validation';
 import { repairArtwork } from '../lib/artwork';
-import { autoSyncAccounts } from '../stores/accounts';
 import { useApp } from '../stores/app';
 import Sidebar from '../components/sidebar/Sidebar';
 import Player, { ExpandedPlayer, Queue, SidePlayer } from '../components/player/Player';
@@ -16,6 +15,8 @@ import { AutoUpdates } from '../lib/updates';
 import { LyricsWindowBridge } from '../lib/lyricsWindow';
 import { JamEngine } from '../components/jam/JamEngine';
 import { JamInviteModal } from '../components/jam/JamInviteModal';
+import { AuthModal } from '../components/auth/AuthModal';
+import { useAccounts, autoSyncAccounts } from '../stores/accounts';
 import { useJam } from '../components/jam/state';
 import { parseJamInvite } from '../lib/jam';
 import { getCurrent, onOpenUrl } from '@tauri-apps/plugin-deep-link';
@@ -103,6 +104,11 @@ export default function App() {
   useEffect(() => {
     if (ready) repairArtwork();
   }, [ready, artworkTracks, p.onlineConsent, p.onboardingDone]);
+
+  useEffect(() => {
+    if (!ready || !p.onlineConsent || !p.onboardingDone) return;
+    void useAccounts.getState().refresh();
+  }, [ready, p.onlineConsent, p.onboardingDone]);
 
   useEffect(() => {
     if (!ready || !p.onlineConsent || !p.catalogConsent || !p.onboardingDone) return;
@@ -251,6 +257,7 @@ export default function App() {
           <LyricsWindowBridge />
           <JamEngine />
           <JamInviteModal />
+          <AuthModal />
           <ExpandedPlayer />
           <Queue />
           <Lyrics />

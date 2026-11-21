@@ -280,22 +280,30 @@ pub async fn call(
             .lock()
             .map(|d| d.jam_client_id())
             .unwrap_or_else(|_| "lh_fallback".into());
-        let (hub_auth, hub_subject) = secrets_mtx
+        let (hub_auth, hub_subject, hub_display_name, hub_avatar) = secrets_mtx
             .lock()
             .map(|sec| {
                 let pub_st = sec.public_hub_status(db::now());
-                (
-                    pub_st["authenticated"] == true,
-                    pub_st["subject"].as_str().unwrap_or("").to_string(),
-                )
+                let subj = pub_st["subject"].as_str().unwrap_or("").to_string();
+                let dname = pub_st["displayName"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .unwrap_or_else(|| subj.clone());
+                let av = pub_st["avatarUrl"]
+                    .as_str()
+                    .map(String::from);
+                (pub_st["authenticated"] == true, subj, dname, av)
             })
-            .unwrap_or((false, String::new()));
+            .unwrap_or((false, String::new(), String::new(), None));
         return Ok(json!({
             "endpoint": validate_endpoint(configured_base).unwrap_or_default(),
             "configured": !configured_base.is_empty(),
             "clientId": client_id,
             "hubAuthenticated": hub_auth,
             "hubSubject": hub_subject,
+            "hubDisplayName": hub_display_name,
+            "hubAvatar": hub_avatar,
             "protocolRegistered": crate::deeplink::is_protocol_registered()
         }));
     }

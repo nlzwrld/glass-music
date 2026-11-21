@@ -1,7 +1,7 @@
 use crate::{
     collections::{self, Collection},
     db::{self, now, s, Result},
-    secrets::{self, HubVaultSession, Secrets},
+    secrets::{self, HubIdentityPublic, HubVaultSession, Secrets},
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -619,6 +619,265 @@ impl Accounts {
     }
 }
 
+fn resolve_hub_broker(secrets_mtx: &Mutex<Secrets>, override_url: Option<&str>) -> Result<String> {
+    let stored = secrets_mtx.lock().unwrap().broker_url.clone();
+    let candidate = override_url
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| stored.trim());
+    let validated = secrets::validate_broker_origin(candidate)?;
+    if validated.is_empty() {
+        return Err("Informe o endereço HTTPS do servidor Liquid Hub.".into());
+    }
+    Ok(validated)
+}
+
+fn parse_broker_error(body: &Value, fallback: &str) -> String {
+    let msg = s(body, "error");
+    if msg.is_empty() {
+        fallback.into()
+    } else {
+        msg.chars().take(240).collect()
+    }
+}
+
+fn apply_hub_user_profile(session: &mut HubVaultSession, user: &Value) {
+    let Some(obj) = user.as_object() else {
+        return;
+    };
+    if let Some(uid) = obj.get("userId").and_then(|v| v.as_str()).filter(|v| !v.is_empty()) {
+        session.user_id = uid.to_string();
+    }
+    if let Some(subj) = obj.get("subject").and_then(|v| v.as_str()).filter(|v| !v.is_empty()) {
+        session.subject = subj.to_string();
+    }
+    if let Some(uname) = obj.get("username").and_then(|v| v.as_str()).filter(|v| !v.is_empty()) {
+        session.username = uname.to_string();
+        if session.subject.is_empty() {
+            session.subject = uname.to_string();
+        }
+    }
+    if let Some(dname) = obj.get("displayName").and_then(|v| v.as_str()).filter(|v| !v.is_empty()) {
+        session.display_name = dname.to_string();
+    }
+    if let Some(email_val) = obj.get("email") {
+        session.email = email_val.as_str().map(|v| v.to_string());
+    }
+    if let Some(ver) = obj.get("emailVerified").and_then(|v| v.as_bool()) {
+        session.email_verified = ver;
+    }
+    if let Some(avatar_val) = obj.get("avatarUrl") {
+        session.avatar_url = avatar_val.as_str().map(|v| v.to_string());
+    }
+    if let Some(hp) = obj.get("hasPassword").and_then(|v| v.as_bool()) {
+        session.has_password = hp;
+    }
+    if let Some(ids_val) = obj.get("identities") {
+        if let Ok(ids) = serde_json::from_value::<Vec<HubIdentityPublic>>(ids_val.clone()) {
+            session.identities = ids;
+        }
+    }
+    if let Some(tv) = obj.get("termsVersion") {
+        session.terms_version = tv.as_str().map(|v| v.to_string());
+    }
+    if let Some(pv) = obj.get("privacyVersion") {
+        session.privacy_version = pv.as_str().map(|v| v.to_string());
+    }
+    if let Some(ta) = obj.get("termsAcceptedAt") {
+        session.terms_accepted_at = ta.as_i64();
+    }
+    if let Some(needs) = obj.get("needsTermsAcceptance").and_then(|v| v.as_bool()) {
+        session.needs_terms_acceptance = needs;
+    }
+}
+
+async fn fetch_jwk_x(http: &reqwest::Client, broker: &str) -> Result<String> {
+    let jwks_res = http
+        .get(format!("{broker}/.well-known/jwks.json"))
+        .send()
+        .await
+        .map_err(|_| "Não foi possível conectar ao servidor Liquid Hub.")?;
+    if !jwks_res.status().is_success() {
+        return Err("Servidor Liquid Hub não expôs chaves Ed25519 válidas.".into());
+    }
+    let jwks: Value = jwks_res.json().await.map_err(|_| "JWKS inválido.")?;
+    jwks["keys"]
+        .as_array()
+        .and_then(|arr| arr.iter().find(|k| k["crv"] == "Ed25519" && k["alg"] == "EdDSA"))
+        .and_then(|k| k["x"].as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Chave pública Ed25519 ausente no servidor.".into())
+}
+
+async fn exchange_pkce_and_seal(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    broker: &str,
+    code: &str,
+    verifier: &str,
+    redirect_uri: Option<&str>,
+) -> Result<Value> {
+    let http = crate::providers::client();
+    let jwk_x = fetch_jwk_x(&http, broker).await?;
+    let mut body = json!({
+        "grant_type": "authorization_code",
+        "code": code,
+        "client_id": "liquid-hub-desktop",
+        "code_verifier": verifier
+    });
+    if let Some(redir) = redirect_uri {
+        body["redirect_uri"] = json!(redir);
+    }
+    let token_res = http
+        .post(format!("{broker}/v1/auth/token"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "Falha na troca PKCE de tokens.")?;
+    let token_status = token_res.status();
+    let tokens: Value = token_res.json().await.unwrap_or(Value::Null);
+    if !token_status.is_success() {
+        return Err(parse_broker_error(
+            &tokens,
+            "Falha ao validar prova PKCE S256.",
+        ));
+    }
+    let access_token = s(&tokens, "access_token");
+    let refresh_token = s(&tokens, "refresh_token");
+    if access_token.is_empty() || refresh_token.len() < 32 {
+        return Err("Tokens inválidos retornados pelo servidor.".into());
+    }
+    let now_ms = now();
+    let claims = secrets::verify_ed25519_jwt(access_token, &jwk_x, now_ms)?;
+    let expires_at = claims["exp"].as_i64().unwrap_or(0) * 1000;
+    let family_id = s(&claims, "fam").to_string();
+
+    let mut session = HubVaultSession {
+        subject: s(&tokens, "subject").to_string(),
+        access_token: access_token.to_string(),
+        refresh_token: refresh_token.to_string(),
+        family_id,
+        expires_at,
+        jwk_x,
+        ..Default::default()
+    };
+    if let Some(user_obj) = tokens.get("user") {
+        apply_hub_user_profile(&mut session, user_obj);
+    }
+
+    let mut guard = secrets_mtx.lock().unwrap();
+    guard.broker_url = broker.to_string();
+    guard.hub_session = Some(session);
+    guard.save(secrets_path)?;
+    Ok(guard.public_hub_status(now_ms))
+}
+
+async fn ensure_fresh_hub_token(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    broker_override: Option<&str>,
+) -> Result<(String, String)> {
+    ensure_fresh_hub_token_with_force(secrets_mtx, secrets_path, broker_override, false).await
+}
+
+async fn ensure_fresh_hub_token_with_force(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    broker_override: Option<&str>,
+    force_refresh: bool,
+) -> Result<(String, String)> {
+    let broker = resolve_hub_broker(secrets_mtx, broker_override)?;
+    let (access_token, refresh_token, expires_at) = {
+        let guard = secrets_mtx.lock().unwrap();
+        let Some(sess) = &guard.hub_session else {
+            return Err("Autenticação Liquid Hub necessária.".into());
+        };
+        if sess.refresh_token.is_empty() {
+            return Err("Autenticação Liquid Hub necessária.".into());
+        }
+        (
+            sess.access_token.clone(),
+            sess.refresh_token.clone(),
+            sess.expires_at,
+        )
+    };
+
+    let now_ms = now();
+    if !force_refresh && !access_token.is_empty() && expires_at > now_ms + 60_000 {
+        return Ok((broker, access_token));
+    }
+
+    let http = crate::providers::client();
+    let jwk_x = fetch_jwk_x(&http, &broker).await?;
+    let res = http
+        .post(format!("{broker}/v1/auth/token"))
+        .json(&json!({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": "liquid-hub-desktop"
+        }))
+        .send()
+        .await
+        .map_err(|_| "Não foi possível renovar a sessão no servidor Liquid Hub.")?;
+    let status = res.status();
+    let tokens: Value = res.json().await.unwrap_or(Value::Null);
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        let mut guard = secrets_mtx.lock().unwrap();
+        guard.clear_hub_session();
+        let _ = guard.save(secrets_path);
+        return Err("Sua sessão expirou ou foi revogada. Entre novamente.".into());
+    }
+    if !status.is_success() {
+        return Err(parse_broker_error(
+            &tokens,
+            "Falha ao renovar a sessão do Liquid Hub.",
+        ));
+    }
+    let new_access = s(&tokens, "access_token");
+    let new_refresh = s(&tokens, "refresh_token");
+    if new_access.is_empty() || new_refresh.len() < 32 {
+        return Err("Tokens inválidos na renovação da sessão.".into());
+    }
+    let verify_now = now();
+    let claims = secrets::verify_ed25519_jwt(new_access, &jwk_x, verify_now)?;
+    let new_exp = claims["exp"].as_i64().unwrap_or(0) * 1000;
+    let new_fam = s(&claims, "fam").to_string();
+
+    let mut guard = secrets_mtx.lock().unwrap();
+    let mut updated = guard.hub_session.clone().unwrap_or_default();
+    updated.subject = s(&tokens, "subject").to_string();
+    updated.access_token = new_access.to_string();
+    updated.refresh_token = new_refresh.to_string();
+    updated.family_id = new_fam;
+    updated.expires_at = new_exp;
+    updated.jwk_x = jwk_x;
+    if let Some(user_obj) = tokens.get("user") {
+        apply_hub_user_profile(&mut updated, user_obj);
+    }
+    guard.broker_url = broker.clone();
+    guard.hub_session = Some(updated);
+    guard.save(secrets_path)?;
+    Ok((broker, new_access.to_string()))
+}
+
+pub async fn hub_providers(secrets_mtx: &Mutex<Secrets>, broker_override: Option<&str>) -> Result<Value> {
+    let broker = resolve_hub_broker(secrets_mtx, broker_override)?;
+    let res = crate::providers::client()
+        .get(format!("{broker}/v1/auth/providers"))
+        .send()
+        .await
+        .map_err(|_| "Não foi possível consultar os métodos de login no servidor Liquid Hub.")?;
+    let status = res.status();
+    let body: Value = res.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        return Err(parse_broker_error(
+            &body,
+            "Servidor Liquid Hub não retornou provedores.",
+        ));
+    }
+    Ok(body)
+}
+
 /// Zero-Trust Desktop Login against the Liquid Hub Broker:
 /// 1. Validates broker HTTPS/loopback URL
 /// 2. Generates high-entropy PKCE (S256) verifier + challenge
@@ -632,110 +891,704 @@ pub async fn hub_login(
 ) -> Result<Value> {
     let obj = payload.as_object().ok_or("Solicitação inválida.")?;
     for k in obj.keys() {
-        if !["brokerUrl", "username", "password", "register"].contains(&k.as_str()) {
+        if ![
+            "brokerUrl",
+            "username",
+            "email",
+            "identifier",
+            "displayName",
+            "password",
+            "register",
+            "termsVersion",
+            "privacyVersion",
+        ]
+        .contains(&k.as_str())
+        {
             return Err("Campo de login não permitido.".into());
         }
     }
-    let broker = secrets::validate_broker_origin(s(payload, "brokerUrl").trim())?;
-    if broker.is_empty() {
-        return Err("Informe o endereço HTTPS do servidor Liquid Hub.".into());
-    }
+    let broker = resolve_hub_broker(secrets_mtx, Some(s(payload, "brokerUrl")))?;
     let username = s(payload, "username").trim();
+    let email = s(payload, "email").trim();
+    let identifier = s(payload, "identifier").trim();
+    let display_name = s(payload, "displayName").trim();
     let password = s(payload, "password");
-    if username.len() < 3 || username.len() > 80 || password.len() < 12 || password.len() > 256 {
-        return Err("Usuário (3-80) e senha forte (mínimo 12 caracteres) são obrigatórios.".into());
+    let login_key = if !identifier.is_empty() {
+        identifier
+    } else if !email.is_empty() {
+        email
+    } else {
+        username
+    };
+    if login_key.len() < 3 || login_key.len() > 160 || password.len() < 12 || password.len() > 256
+    {
+        return Err(
+            "Informe seu e-mail ou usuário e uma senha forte (mínimo 12 caracteres).".into(),
+        );
     }
     let register = payload["register"] == true;
     let client_id = "liquid-hub-desktop";
     let (verifier, challenge) = generate_pkce_pair()?;
     let http = crate::providers::client();
 
-    let jwks_res = http
-        .get(format!("{broker}/.well-known/jwks.json"))
-        .send()
-        .await
-        .map_err(|_| "Não foi possível conectar ao servidor Liquid Hub.")?;
-    if !jwks_res.status().is_success() {
-        return Err("Servidor Liquid Hub não expôs chaves Ed25519 válidas.".into());
-    }
-    let jwks: Value = jwks_res.json().await.map_err(|_| "JWKS inválido.")?;
-    let jwk_x = jwks["keys"]
-        .as_array()
-        .and_then(|arr| arr.iter().find(|k| k["crv"] == "Ed25519" && k["alg"] == "EdDSA"))
-        .and_then(|k| k["x"].as_str())
-        .ok_or("Chave pública Ed25519 ausente no servidor.")?
-        .to_string();
-
     let auth_endpoint = if register {
         format!("{broker}/v1/auth/register")
     } else {
         format!("{broker}/v1/auth/login")
     };
+    let mut auth_json = json!({
+        "password": password,
+        "client_id": client_id,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256"
+    });
+    if !username.is_empty() {
+        auth_json["username"] = json!(username);
+    }
+    if !email.is_empty() {
+        auth_json["email"] = json!(email);
+    }
+    if !register && !identifier.is_empty() {
+        auth_json["identifier"] = json!(identifier);
+    }
+    if !display_name.is_empty() {
+        auth_json["displayName"] = json!(display_name);
+    }
+    let tv = s(payload, "termsVersion").trim();
+    let pv = s(payload, "privacyVersion").trim();
+    if !tv.is_empty() && !pv.is_empty() {
+        auth_json["termsVersion"] = json!(tv);
+        auth_json["privacyVersion"] = json!(pv);
+    }
+
     let auth_res = http
         .post(auth_endpoint)
-        .json(&json!({
-            "username": username,
-            "password": password,
-            "client_id": client_id,
-            "code_challenge": challenge,
-            "code_challenge_method": "S256"
-        }))
+        .json(&auth_json)
         .send()
         .await
         .map_err(|_| "Falha ao autenticar com o servidor.")?;
     let auth_status = auth_res.status();
     let auth_body: Value = auth_res.json().await.unwrap_or(Value::Null);
     if !auth_status.is_success() {
-        let msg = s(&auth_body, "error");
-        return Err(if msg.is_empty() {
-            "Credenciais recusadas pelo servidor.".into()
-        } else {
-            msg.chars().take(240).collect()
-        });
+        return Err(parse_broker_error(
+            &auth_body,
+            "Credenciais recusadas pelo servidor.",
+        ));
     }
     let code = auth_body["code"]
         .as_str()
         .filter(|c| c.len() >= 24 && c.len() <= 256)
         .ok_or("Código PKCE ausente na resposta.")?;
 
-    let token_res = http
-        .post(format!("{broker}/v1/auth/token"))
-        .json(&json!({
-            "grant_type": "authorization_code",
-            "code": code,
-            "client_id": client_id,
-            "code_verifier": verifier
-        }))
+    exchange_pkce_and_seal(secrets_mtx, secrets_path, &broker, code, &verifier, None).await
+}
+
+fn hub_callback_code(raw: &str, expected_state: &str) -> Result<String> {
+    let u = url::Url::parse(&format!("http://127.0.0.1{raw}")).map_err(|_| "Retorno inválido.")?;
+    if u.path() != "/callback" || raw.len() > 8192 {
+        return Err("Retorno inválido.".into());
+    }
+    let pairs: Vec<_> = u.query_pairs().into_owned().collect();
+    let params: HashMap<_, _> = pairs.iter().cloned().collect();
+    if params.len() != pairs.len() {
+        return Err("Retorno ambíguo.".into());
+    }
+    if params.get("state").map(String::as_str) != Some(expected_state) {
+        return Err("A autorização não corresponde à solicitação.".into());
+    }
+    if let Some(err) = params.get("error") {
+        let mapped = match err.as_str() {
+            "access_denied" => "Autorização cancelada no provedor.".to_string(),
+            "identity_already_linked" => {
+                "Esta conta externa já está vinculada a outro usuário do Liquid Hub.".to_string()
+            }
+            "account_exists_link_required" => {
+                "Já existe uma conta com este e-mail. Entre nela primeiro para vincular este provedor."
+                    .to_string()
+            }
+            "provider_already_linked" => {
+                "Você já possui outra conta deste provedor vinculada.".to_string()
+            }
+            _ => params
+                .get("error_description")
+                .map(|d| d.trim().chars().take(220).collect::<String>())
+                .filter(|d| !d.is_empty())
+                .unwrap_or_else(|| "Autenticação externa recusada.".to_string()),
+        };
+        return Err(mapped);
+    }
+    params
+        .get("code")
+        .filter(|s| s.len() >= 24 && s.len() <= 256)
+        .cloned()
+        .ok_or("Código de autorização ausente.".into())
+}
+
+pub async fn hub_oauth_flow(
+    app: &tauri::AppHandle,
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    gate: &tokio::sync::Mutex<()>,
+    cancel: &Arc<AtomicBool>,
+    payload: &Value,
+) -> Result<Value> {
+    let obj = payload.as_object().ok_or("Solicitação OAuth inválida.")?;
+    for k in obj.keys() {
+        if !["brokerUrl", "provider", "mode", "termsVersion", "privacyVersion"]
+            .contains(&k.as_str())
+        {
+            return Err("Campo OAuth não permitido.".into());
+        }
+    }
+    let provider = s(payload, "provider").trim().to_string();
+    if provider != "discord" && provider != "github" {
+        return Err("Provedor OAuth não suportado.".into());
+    }
+    let mode_raw = s(payload, "mode").trim();
+    let mode = if mode_raw.is_empty() { "login" } else { mode_raw };
+    if mode != "login" && mode != "link" {
+        return Err("Modo OAuth inválido.".into());
+    }
+
+    let _guard = gate
+        .try_lock()
+        .map_err(|_| "Já existe uma autenticação externa em andamento.")?;
+    cancel.store(false, Ordering::Release);
+
+    let (broker, bearer) = if mode == "link" {
+        let (b, tok) = ensure_fresh_hub_token(
+            secrets_mtx,
+            secrets_path,
+            Some(s(payload, "brokerUrl")),
+        )
+        .await?;
+        (b, Some(tok))
+    } else {
+        let b = resolve_hub_broker(secrets_mtx, Some(s(payload, "brokerUrl")))?;
+        (b, None)
+    };
+
+    let server = tiny_http::Server::http("127.0.0.1:0")
+        .map_err(|_| "Não foi possível abrir o listener local para autenticação OAuth.")?;
+    let port = server
+        .server_addr()
+        .to_ip()
+        .ok_or("Endereço local OAuth indisponível.")?
+        .port();
+    let expected_host = format!("127.0.0.1:{port}");
+    let redirect_uri = format!("http://{expected_host}/callback");
+    let state = generate_oauth_state()?;
+    let (verifier, challenge) = generate_pkce_pair()?;
+
+    let mut start_body = json!({
+        "provider": provider,
+        "client_id": "liquid-hub-desktop",
+        "redirect_uri": redirect_uri,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "state": state,
+        "mode": mode
+    });
+    let tv = s(payload, "termsVersion").trim();
+    let pv = s(payload, "privacyVersion").trim();
+    if !tv.is_empty() && !pv.is_empty() {
+        start_body["termsVersion"] = json!(tv);
+        start_body["privacyVersion"] = json!(pv);
+    }
+
+    let http = crate::providers::client();
+    let mut start_req = http
+        .post(format!("{broker}/v1/auth/oauth/{provider}/start"))
+        .json(&start_body);
+    if let Some(tok) = bearer {
+        start_req = start_req.header("Authorization", format!("Bearer {tok}"));
+    }
+    let start_res = start_req
         .send()
         .await
-        .map_err(|_| "Falha na troca PKCE de tokens.")?;
-    if !token_res.status().is_success() {
-        return Err("Falha ao validar prova PKCE S256.".into());
+        .map_err(|_| "Não foi possível iniciar o fluxo OAuth no servidor Liquid Hub.")?;
+    let start_status = start_res.status();
+    let start_json: Value = start_res.json().await.unwrap_or(Value::Null);
+    if !start_status.is_success() {
+        return Err(parse_broker_error(
+            &start_json,
+            "Provedor OAuth indisponível no servidor.",
+        ));
     }
-    let tokens: Value = token_res.json().await.map_err(|_| "Resposta de sessão inválida.")?;
-    let access_token = s(&tokens, "access_token");
-    let refresh_token = s(&tokens, "refresh_token");
-    if access_token.is_empty() || refresh_token.len() < 32 {
-        return Err("Tokens inválidos retornados pelo servidor.".into());
+    let authorize_url = s(&start_json, "authorizeUrl").to_string();
+    let parsed_auth_url =
+        url::Url::parse(&authorize_url).map_err(|_| "URL de autorização inválida.")?;
+    let host_ok = match (parsed_auth_url.scheme(), parsed_auth_url.host_str()) {
+        ("https", Some(_)) => true,
+        ("http", Some("127.0.0.1")) | ("http", Some("localhost")) => true,
+        _ => false,
+    };
+    if !host_ok {
+        return Err("URL de autorização do provedor não permitida.".into());
     }
 
-    let now_ms = now();
-    let claims = secrets::verify_ed25519_jwt(access_token, &jwk_x, now_ms)?;
-    let expires_at = claims["exp"].as_i64().unwrap_or(0) * 1000;
-    let family_id = s(&claims, "fam").to_string();
+    let mut launched_autofollow = false;
+    #[cfg(debug_assertions)]
+    {
+        if std::env::var("LIQUID_HUB_TEST_OAUTH_AUTOFOLLOW").as_deref() == Ok("1")
+            && matches!(
+                parsed_auth_url.host_str(),
+                Some("127.0.0.1") | Some("localhost")
+            )
+        {
+            launched_autofollow = true;
+            let follow_url = authorize_url.clone();
+            tokio::spawn(async move {
+                let policy = reqwest::redirect::Policy::custom(|attempt| {
+                    if attempt.previous().len() >= 6 {
+                        return attempt.stop();
+                    }
+                    let is_loopback = matches!(
+                        attempt.url().host_str(),
+                        Some("127.0.0.1") | Some("localhost")
+                    ) && attempt.url().scheme() == "http";
+                    if is_loopback {
+                        attempt.follow()
+                    } else {
+                        attempt.stop()
+                    }
+                });
+                if let Ok(test_client) = reqwest::Client::builder()
+                    .connect_timeout(Duration::from_secs(5))
+                    .timeout(Duration::from_secs(12))
+                    .redirect(policy)
+                    .build()
+                {
+                    let _ = test_client.get(follow_url).send().await;
+                }
+            });
+        }
+    }
+    if !launched_autofollow {
+        use tauri_plugin_opener::OpenerExt;
+        app.opener()
+            .open_url(&authorize_url, None::<&str>)
+            .map_err(|_| "Não foi possível abrir o navegador para autorização.")?;
+    }
 
+    let cancel_flag = Arc::clone(cancel);
+    let expected_state = state.clone();
+    let code = tokio::task::spawn_blocking(move || -> Result<String> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(300);
+        loop {
+            if cancel_flag.load(Ordering::Acquire) {
+                return Err("Autenticação cancelada.".into());
+            }
+            if std::time::Instant::now() > deadline {
+                return Err("Tempo limite de autenticação excedido. Tente novamente.".into());
+            }
+            if let Some(req) = server
+                .recv_timeout(Duration::from_millis(80))
+                .map_err(|_| "Falha ao receber retorno OAuth.")?
+            {
+                let host_header = req
+                    .headers()
+                    .iter()
+                    .find(|h| h.field.equiv("Host"))
+                    .map(|h| h.value.as_str())
+                    .unwrap_or("");
+                if req.method() != &tiny_http::Method::Get || host_header != expected_host {
+                    let _ = req.respond(tiny_http::Response::empty(400));
+                    continue;
+                }
+                if !req.url().starts_with("/callback?") {
+                    let _ = req.respond(tiny_http::Response::empty(404));
+                    continue;
+                }
+                let result = hub_callback_code(req.url(), &expected_state);
+                let ok = result.is_ok();
+                let html = match &result {
+                    Ok(_) => "<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>Liquid Hub</title><body style='font-family:system-ui;background:#101216;color:#f3f5f8;display:grid;place-items:center;height:100vh;margin:0'><p>Autenticação concluída. Você pode fechar esta aba e voltar para o Liquid Hub.</p></body></html>".to_string(),
+                    Err(msg) => format!("<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>Liquid Hub</title><body style='font-family:system-ui;background:#101216;color:#f3f5f8;display:grid;place-items:center;height:100vh;margin:0'><p>{}</p></body></html>", msg.replace('<', "&lt;")),
+                };
+                let mut resp = tiny_http::Response::from_string(html)
+                    .with_status_code(if ok { 200 } else { 400 });
+                if let Ok(h) = tiny_http::Header::from_bytes("Content-Type", "text/html; charset=utf-8") {
+                    resp.add_header(h);
+                }
+                if let Ok(h) = tiny_http::Header::from_bytes("Cache-Control", "no-store") {
+                    resp.add_header(h);
+                }
+                let _ = req.respond(resp);
+                return result;
+            }
+        }
+    })
+    .await
+    .map_err(|_| "Falha interna ao aguardar o retorno OAuth.")??;
+
+    exchange_pkce_and_seal(
+        secrets_mtx,
+        secrets_path,
+        &broker,
+        &code,
+        &verifier,
+        Some(&redirect_uri),
+    )
+    .await
+}
+
+pub async fn hub_refresh(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    broker_override: Option<&str>,
+) -> Result<Value> {
+    let has_session = secrets_mtx
+        .lock()
+        .unwrap()
+        .hub_session
+        .as_ref()
+        .is_some_and(|s| !s.refresh_token.is_empty());
+    if !has_session {
+        return Ok(secrets_mtx.lock().unwrap().public_hub_status(now()));
+    }
+
+    let (mut broker, mut token) =
+        match ensure_fresh_hub_token(secrets_mtx, secrets_path, broker_override).await {
+            Ok(pair) => pair,
+            Err(err) => {
+                if err.contains("expirou") || err.contains("revogada") {
+                    return Ok(secrets_mtx.lock().unwrap().public_hub_status(now()));
+                }
+                return Err(err);
+            }
+        };
+
+    let http = crate::providers::client();
+    let mut res = http
+        .get(format!("{broker}/v1/auth/me"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|_| "Sem conexão com o servidor Liquid Hub.")?;
+    if res.status() == reqwest::StatusCode::UNAUTHORIZED {
+        // Retry once forcing refresh_token rotation in case signing key rolled over cleanly.
+        match ensure_fresh_hub_token_with_force(secrets_mtx, secrets_path, broker_override, true)
+            .await
+        {
+            Ok((next_broker, next_tok)) => {
+                broker = next_broker;
+                token = next_tok;
+                res = http
+                    .get(format!("{broker}/v1/auth/me"))
+                    .header("Authorization", format!("Bearer {token}"))
+                    .send()
+                    .await
+                    .map_err(|_| "Sem conexão com o servidor Liquid Hub.")?;
+            }
+            Err(err) => {
+                if err.contains("expirou") || err.contains("revogada") {
+                    return Ok(secrets_mtx.lock().unwrap().public_hub_status(now()));
+                }
+                return Err(err);
+            }
+        }
+    }
+    let status = res.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        let mut guard = secrets_mtx.lock().unwrap();
+        guard.clear_hub_session();
+        let _ = guard.save(secrets_path);
+        return Ok(guard.public_hub_status(now()));
+    }
+    if status.is_success() {
+        let user: Value = res.json().await.unwrap_or(Value::Null);
+        let mut guard = secrets_mtx.lock().unwrap();
+        if let Some(sess) = guard.hub_session.as_mut() {
+            apply_hub_user_profile(sess, &user);
+        }
+        guard.save(secrets_path)?;
+        return Ok(guard.public_hub_status(now()));
+    }
+    Ok(secrets_mtx.lock().unwrap().public_hub_status(now()))
+}
+
+pub async fn hub_accept_terms(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    payload: &Value,
+) -> Result<Value> {
+    let obj = payload.as_object().ok_or("Solicitação inválida.")?;
+    for k in obj.keys() {
+        if !["brokerUrl", "termsVersion", "privacyVersion"].contains(&k.as_str()) {
+            return Err("Campo inválido.".into());
+        }
+    }
+    let tv = s(payload, "termsVersion").trim().to_string();
+    let pv = s(payload, "privacyVersion").trim().to_string();
+    if tv.is_empty() || pv.is_empty() {
+        return Err("Versão de termos obrigatória.".into());
+    }
+    let (broker, token) =
+        ensure_fresh_hub_token(secrets_mtx, secrets_path, Some(s(payload, "brokerUrl"))).await?;
+    let res = crate::providers::client()
+        .post(format!("{broker}/v1/auth/terms/accept"))
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&json!({ "termsVersion": tv, "privacyVersion": pv }))
+        .send()
+        .await
+        .map_err(|_| "Falha ao registrar aceitação dos termos.")?;
+    let status = res.status();
+    let body: Value = res.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        return Err(parse_broker_error(
+            &body,
+            "Não foi possível confirmar os Termos e Privacidade.",
+        ));
+    }
     let mut guard = secrets_mtx.lock().unwrap();
-    guard.broker_url = broker;
-    guard.hub_session = Some(HubVaultSession {
-        subject: s(&tokens, "subject").to_string(),
-        access_token: access_token.to_string(),
-        refresh_token: refresh_token.to_string(),
-        family_id,
-        expires_at,
-        jwk_x,
-    });
+    if let Some(sess) = guard.hub_session.as_mut() {
+        apply_hub_user_profile(sess, &body);
+    }
     guard.save(secrets_path)?;
-    Ok(guard.public_hub_status(now_ms))
+    Ok(guard.public_hub_status(now()))
+}
+
+pub async fn hub_link_email(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    payload: &Value,
+) -> Result<Value> {
+    let obj = payload.as_object().ok_or("Solicitação inválida.")?;
+    for k in obj.keys() {
+        if !["brokerUrl", "email", "password", "username", "displayName"].contains(&k.as_str()) {
+            return Err("Campo inválido.".into());
+        }
+    }
+    let email = s(payload, "email").trim().to_string();
+    let password = s(payload, "password");
+    if email.is_empty() || password.len() < 12 {
+        return Err("E-mail válido e senha com mínimo 12 caracteres são obrigatórios.".into());
+    }
+    let (broker, token) =
+        ensure_fresh_hub_token(secrets_mtx, secrets_path, Some(s(payload, "brokerUrl"))).await?;
+    let mut body = json!({ "email": email, "password": password });
+    let uname = s(payload, "username").trim();
+    let dname = s(payload, "displayName").trim();
+    if !uname.is_empty() {
+        body["username"] = json!(uname);
+    }
+    if !dname.is_empty() {
+        body["displayName"] = json!(dname);
+    }
+    let res = crate::providers::client()
+        .post(format!("{broker}/v1/auth/identities/email"))
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "Falha ao vincular e-mail à conta.")?;
+    let status = res.status();
+    let resp_body: Value = res.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        return Err(parse_broker_error(
+            &resp_body,
+            "Não foi possível vincular o e-mail.",
+        ));
+    }
+    let mut guard = secrets_mtx.lock().unwrap();
+    if let Some(sess) = guard.hub_session.as_mut() {
+        apply_hub_user_profile(sess, &resp_body);
+    }
+    guard.save(secrets_path)?;
+    Ok(guard.public_hub_status(now()))
+}
+
+pub async fn hub_unlink_identity(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    payload: &Value,
+) -> Result<Value> {
+    let obj = payload.as_object().ok_or("Solicitação inválida.")?;
+    for k in obj.keys() {
+        if !["brokerUrl", "provider"].contains(&k.as_str()) {
+            return Err("Campo inválido.".into());
+        }
+    }
+    let provider = s(payload, "provider").trim();
+    if !["email", "discord", "github"].contains(&provider) {
+        return Err("Provedor inválido.".into());
+    }
+    let (broker, token) =
+        ensure_fresh_hub_token(secrets_mtx, secrets_path, Some(s(payload, "brokerUrl"))).await?;
+    let res = crate::providers::client()
+        .delete(format!("{broker}/v1/auth/identities/{provider}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|_| "Falha ao desvincular provedor.")?;
+    let status = res.status();
+    let resp_body: Value = res.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        return Err(parse_broker_error(
+            &resp_body,
+            "Não foi possível desvincular o provedor.",
+        ));
+    }
+    let mut guard = secrets_mtx.lock().unwrap();
+    if let Some(sess) = guard.hub_session.as_mut() {
+        apply_hub_user_profile(sess, &resp_body);
+    }
+    guard.save(secrets_path)?;
+    Ok(guard.public_hub_status(now()))
+}
+
+pub async fn hub_verify_email(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    payload: &Value,
+) -> Result<Value> {
+    let obj = payload.as_object().ok_or("Solicitação inválida.")?;
+    for k in obj.keys() {
+        if !["brokerUrl", "token"].contains(&k.as_str()) {
+            return Err("Campo inválido.".into());
+        }
+    }
+    let broker = resolve_hub_broker(secrets_mtx, Some(s(payload, "brokerUrl")))?;
+    let token = s(payload, "token").trim().to_string();
+    if token.len() < 16 {
+        return Err("Código de verificação inválido.".into());
+    }
+    let res = crate::providers::client()
+        .post(format!("{broker}/v1/auth/email/verify"))
+        .json(&json!({ "token": token }))
+        .send()
+        .await
+        .map_err(|_| "Falha ao verificar e-mail no servidor.")?;
+    let status = res.status();
+    let body: Value = res.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        return Err(parse_broker_error(
+            &body,
+            "Token de verificação expirado ou inválido.",
+        ));
+    }
+    let mut guard = secrets_mtx.lock().unwrap();
+    if let (Some(sess), Some(user_obj)) = (guard.hub_session.as_mut(), body.get("user")) {
+        let target_uid = s(user_obj, "userId");
+        if !target_uid.is_empty() && (sess.user_id == target_uid || sess.user_id.is_empty()) {
+            apply_hub_user_profile(sess, user_obj);
+            guard.save(secrets_path)?;
+        }
+    }
+    Ok(json!({
+        "ok": true,
+        "status": guard.public_hub_status(now())
+    }))
+}
+
+pub async fn hub_resend_verification(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    payload: &Value,
+) -> Result<Value> {
+    let obj = payload.as_object().ok_or("Solicitação inválida.")?;
+    for k in obj.keys() {
+        if !["brokerUrl", "email"].contains(&k.as_str()) {
+            return Err("Campo inválido.".into());
+        }
+    }
+    let email = s(payload, "email").trim().to_string();
+    let has_sess = secrets_mtx
+        .lock()
+        .unwrap()
+        .hub_session
+        .as_ref()
+        .is_some_and(|s| !s.refresh_token.is_empty());
+    let (broker, bearer) = if has_sess && email.is_empty() {
+        let (b, t) =
+            ensure_fresh_hub_token(secrets_mtx, secrets_path, Some(s(payload, "brokerUrl"))).await?;
+        (b, Some(t))
+    } else {
+        (resolve_hub_broker(secrets_mtx, Some(s(payload, "brokerUrl")))?, None)
+    };
+    let mut body = json!({});
+    if !email.is_empty() {
+        body["email"] = json!(email);
+    }
+    let mut req = crate::providers::client()
+        .post(format!("{broker}/v1/auth/email/resend"))
+        .json(&body);
+    if let Some(tok) = bearer {
+        req = req.header("Authorization", format!("Bearer {tok}"));
+    }
+    let res = req
+        .send()
+        .await
+        .map_err(|_| "Falha ao reenviar verificação.")?;
+    let status = res.status();
+    let resp_body: Value = res.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        return Err(parse_broker_error(
+            &resp_body,
+            "Não foi possível reenviar o e-mail de verificação.",
+        ));
+    }
+    Ok(resp_body)
+}
+
+pub async fn hub_forgot_password(secrets_mtx: &Mutex<Secrets>, payload: &Value) -> Result<Value> {
+    let obj = payload.as_object().ok_or("Solicitação inválida.")?;
+    for k in obj.keys() {
+        if !["brokerUrl", "email"].contains(&k.as_str()) {
+            return Err("Campo inválido.".into());
+        }
+    }
+    let broker = resolve_hub_broker(secrets_mtx, Some(s(payload, "brokerUrl")))?;
+    let email = s(payload, "email").trim().to_string();
+    if email.is_empty() {
+        return Err("Informe um e-mail válido.".into());
+    }
+    let res = crate::providers::client()
+        .post(format!("{broker}/v1/auth/password/forgot"))
+        .json(&json!({ "email": email }))
+        .send()
+        .await
+        .map_err(|_| "Falha ao solicitar recuperação de senha.")?;
+    let status = res.status();
+    let resp_body: Value = res.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        return Err(parse_broker_error(
+            &resp_body,
+            "Não foi possível iniciar a recuperação de senha.",
+        ));
+    }
+    Ok(resp_body)
+}
+
+pub async fn hub_reset_password(secrets_mtx: &Mutex<Secrets>, payload: &Value) -> Result<Value> {
+    let obj = payload.as_object().ok_or("Solicitação inválida.")?;
+    for k in obj.keys() {
+        if !["brokerUrl", "token", "newPassword"].contains(&k.as_str()) {
+            return Err("Campo inválido.".into());
+        }
+    }
+    let broker = resolve_hub_broker(secrets_mtx, Some(s(payload, "brokerUrl")))?;
+    let token = s(payload, "token").trim().to_string();
+    let new_password = s(payload, "newPassword");
+    if token.len() < 16 || new_password.len() < 12 {
+        return Err("Código válido e senha forte (mínimo 12 caracteres) são obrigatórios.".into());
+    }
+    let res = crate::providers::client()
+        .post(format!("{broker}/v1/auth/password/reset"))
+        .json(&json!({ "token": token, "newPassword": new_password }))
+        .send()
+        .await
+        .map_err(|_| "Falha ao redefinir a senha.")?;
+    let status = res.status();
+    let resp_body: Value = res.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        return Err(parse_broker_error(
+            &resp_body,
+            "Token inválido ou expirado.",
+        ));
+    }
+    Ok(resp_body)
 }
 
 pub async fn hub_logout(secrets_mtx: &Mutex<Secrets>, secrets_path: &Path) -> Result<Value> {
@@ -841,6 +1694,28 @@ mod tests {
         assert_eq!(new.refresh, "new");
         let preserved = token_session(json!({"access_token":"b"}), Some(new)).unwrap();
         assert_eq!(preserved.refresh, "new");
+    }
+    #[test]
+    fn hub_callback_handles_oauth_codes_and_errors() {
+        let valid_code = "abcdefghijklmnopqrstuvwxyz123456";
+        assert_eq!(
+            hub_callback_code(&format!("/callback?state=st1&code={valid_code}"), "st1").unwrap(),
+            valid_code
+        );
+        assert!(hub_callback_code("/callback?state=st1&error=access_denied", "st1")
+            .unwrap_err()
+            .contains("cancelada"));
+        assert!(
+            hub_callback_code("/callback?state=st1&error=identity_already_linked", "st1")
+                .unwrap_err()
+                .contains("outro usuário")
+        );
+        assert!(
+            hub_callback_code("/callback?state=st1&error=account_exists_link_required", "st1")
+                .unwrap_err()
+                .contains("Já existe uma conta")
+        );
+        assert!(hub_callback_code(&format!("/callback?state=wrong&code={valid_code}"), "st1").is_err());
     }
 }
 

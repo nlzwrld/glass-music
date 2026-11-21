@@ -108,6 +108,9 @@ test('Liquid Hub rebranding, Zero-Trust PKCE+Ed25519+DPAPI login, Shuffle Play a
       onboardingDone: true,
       onlineConsent: true,
       catalogConsent: true,
+      termsVersion: '2026-11-01',
+      privacyVersion: '2026-11-01',
+      termsAcceptedAt: Date.now(),
       shuffle: false,
       autoUpdate: false,
       volume: 0,
@@ -288,9 +291,31 @@ test('Liquid Hub rebranding, Zero-Trust PKCE+Ed25519+DPAPI login, Shuffle Play a
     });
     expect(storageAudit.status.authenticated).toBe(true);
     expect(storageAudit.hasJwtInWeb).toBe(false);
-    expect(Object.keys(storageAudit.status).sort()).toEqual(
-      ['authenticated', 'brokerUrl', 'expiresAt', 'subject', 'tokenActive'].sort(),
+    expect(Object.keys(storageAudit.status)).toEqual(
+      expect.arrayContaining([
+        'authenticated',
+        'brokerUrl',
+        'expiresAt',
+        'subject',
+        'tokenActive',
+        'userId',
+        'username',
+        'displayName',
+        'identities',
+      ]),
     );
+    for (const secretKey of [
+      'accessToken',
+      'refreshToken',
+      'password',
+      'passwordHash',
+      'clientSecret',
+      'brokerToken',
+      'familyId',
+      'jwkX',
+    ]) {
+      expect(storageAudit.status).not.toHaveProperty(secretKey);
+    }
 
     // 5. Live JAM sidebar & player indicators
     await page.getByRole('textbox', { name: 'Seu nome na JAM', exact: true }).fill('HubHost');

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AudioLines, ArrowUpRight } from 'lucide-react';
 import { motion, useReducedMotion } from 'motion/react';
+import { CURRENT_PRIVACY_VERSION, CURRENT_TERMS_VERSION } from '../../../shared/auth';
 import { useApp } from '../../stores/app';
 
 export function greeting(hour: number) {
@@ -77,6 +78,13 @@ export default function Welcome() {
         onboardingDone: true,
         onlineConsent: online,
         catalogConsent: online,
+        ...(online
+          ? {
+              termsVersion: CURRENT_TERMS_VERSION,
+              privacyVersion: CURRENT_PRIVACY_VERSION,
+              termsAcceptedAt: Date.now(),
+            }
+          : {}),
       };
       await window.glass.preferences(next);
       useApp.setState(s => ({ data: { ...s.data, preferences: next } }));
@@ -145,8 +153,10 @@ export default function Welcome() {
         <span className="collection-type-label">Liquid Hub</span>
         <h2 id="welcome-title">Permitir acesso online?</h2>
         <p>
-          Buscas, capas, letras e sessões JAM consultam catálogos externos e o LRCLIB. Sua
-          biblioteca e credenciais permanecem protegidas localmente neste computador.
+          Buscas, capas, letras e sessões JAM consultam catálogos externos e o LRCLIB. Ao continuar
+          online, você aceita os Termos de Uso e a Política de Privacidade (v.{' '}
+          {CURRENT_TERMS_VERSION}); sua biblioteca e credenciais permanecem protegidas localmente
+          neste computador.
         </p>
         <div className="terms-links">
           {[

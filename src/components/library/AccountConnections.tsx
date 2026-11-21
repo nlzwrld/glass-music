@@ -1,7 +1,19 @@
 import { useEffect, useState } from 'react';
-import { Link2, RefreshCw, Unplug, LoaderCircle, ShieldCheck, LogOut } from 'lucide-react';
-import { useApp } from '../../stores/app';
+import {
+  CheckCircle2,
+  Link2,
+  LoaderCircle,
+  LogOut,
+  Mail,
+  RefreshCw,
+  ShieldAlert,
+  ShieldCheck,
+  Unplug,
+} from 'lucide-react';
 import { useAccounts } from '../../stores/accounts';
+import { useApp } from '../../stores/app';
+import { DiscordIcon, GitHubIcon } from '../auth/ProviderIcons';
+import '../auth/auth.css';
 
 const names = { youtube: 'YouTube', soundcloud: 'SoundCloud', spotify: 'Spotify' };
 
@@ -9,6 +21,8 @@ export default function AccountConnections() {
   const {
     accounts,
     hub,
+    oauthPending,
+    preferredBrokerUrl,
     busy,
     notice,
     refresh,
@@ -18,23 +32,34 @@ export default function AccountConnections() {
     disconnect,
     cancel,
     loginHub,
+    oauthHub,
+    cancelHubOAuth,
+    linkEmail,
+    unlinkIdentity,
+    resendVerification,
     logoutHub,
+    openAuthModal,
+    setPreferredBrokerUrl,
   } = useAccounts();
   const p = useApp(s => s.data.preferences),
     online = p.onlineConsent && p.catalogConsent && p.onboardingDone;
 
-  const [brokerUrl, setBrokerUrl] = useState(''),
+  const [brokerUrl, setBrokerUrl] = useState(preferredBrokerUrl || hub.brokerUrl || ''),
     [username, setUsername] = useState(''),
     [password, setPassword] = useState(''),
-    [registerMode, setRegisterMode] = useState(false);
+    [registerMode, setRegisterMode] = useState(false),
+    [linkEmailOpen, setLinkEmailOpen] = useState(false),
+    [newEmail, setNewEmail] = useState(''),
+    [newEmailPassword, setNewEmailPassword] = useState('');
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
   useEffect(() => {
-    if (hub.brokerUrl && !brokerUrl) setBrokerUrl(hub.brokerUrl);
-  }, [hub.brokerUrl]);
+    const next = hub.brokerUrl || preferredBrokerUrl;
+    if (next && !brokerUrl) setBrokerUrl(next);
+  }, [hub.brokerUrl, preferredBrokerUrl]);
 
   return (
     <section className="settings-section account-connections">
@@ -104,6 +129,326 @@ export default function AccountConnections() {
         </button>
       )}
 
+      <div id="hub-account-section" style={{ display: 'grid', gap: 12, marginTop: 8 }}>
+        <h3>Conta unificada do Liquid Hub</h3>
+
+        {hub.authenticated ? (
+          (() => {
+            const identities = hub.identities || [];
+            const discordId = identities.find(i => i.provider === 'discord');
+            const githubId = identities.find(i => i.provider === 'github');
+            const emailId = identities.find(i => i.provider === 'email');
+            const methodCount =
+              (hub.hasPassword ? 1 : 0) + identities.filter(i => i.provider !== 'email').length;
+            const activeBroker = brokerUrl.trim() || hub.brokerUrl || undefined;
+            return (
+              <div className="hub-profile-card">
+                <div className="hub-profile-head">
+                  <div className="hub-profile-user">
+                    <div className="hub-avatar" aria-hidden="true">
+                      {hub.avatarUrl ? (
+                        <img src={hub.avatarUrl} alt="" />
+                      ) : (
+                        (hub.displayName || hub.subject || 'L').charAt(0).toUpperCase()
+                      )}
+                    </div>
+                    <div className="hub-profile-meta">
+                      <strong>{hub.displayName || hub.subject}</strong>
+                      <small>
+                        @{hub.username || hub.subject} · Cofre DPAPI ativo · {hub.brokerUrl}
+                      </small>
+                      <div className="hub-badge-row">
+                        {hub.email && (
+                          <span className={`hub-badge ${hub.emailVerified ? '' : 'warn'}`}>
+                            {hub.emailVerified ? (
+                              <CheckCircle2 size={11} />
+                            ) : (
+                              <ShieldAlert size={11} />
+                            )}
+                            {hub.email} ({hub.emailVerified ? 'Verificado' : 'Não verificado'})
+                          </span>
+                        )}
+                        {hub.termsVersion && (
+                          <span
+                            className="hub-badge"
+                            title={
+                              hub.termsAcceptedAt
+                                ? `Aceito em ${new Date(hub.termsAcceptedAt).toLocaleString()}`
+                                : undefined
+                            }
+                          >
+                            <ShieldCheck size={11} />
+                            Termos v. {hub.termsVersion}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="button secondary"
+                    disabled={!!busy}
+                    onClick={() => void logoutHub()}
+                  >
+                    <LogOut size={14} />
+                    Encerrar sessão
+                  </button>
+                </div>
+
+                {hub.email && !hub.emailVerified && (
+                  <div className="settings-actions-row">
+                    <button
+                      type="button"
+                      className="text-button"
+                      disabled={!!busy}
+                      onClick={() => openAuthModal({ view: 'verify', brokerUrl: activeBroker })}
+                    >
+                      Verificar e-mail com código
+                    </button>
+                    <button
+                      type="button"
+                      className="text-button"
+                      disabled={!!busy}
+                      onClick={() => void resendVerification(undefined, activeBroker)}
+                    >
+                      Reenviar verificação
+                    </button>
+                  </div>
+                )}
+
+                {hub.needsTermsAcceptance && (
+                  <div className="settings-actions-row">
+                    <button
+                      type="button"
+                      className="button primary"
+                      onClick={() => openAuthModal({ view: 'terms', brokerUrl: activeBroker })}
+                    >
+                      Confirmar Termos e Privacidade
+                    </button>
+                  </div>
+                )}
+
+                <div className="hub-identities-list" aria-label="Identidades vinculadas">
+                  <div className="hub-identity-row" data-hub-provider="discord">
+                    <div className="hub-identity-info">
+                      <DiscordIcon size={17} />
+                      <div>
+                        <strong>Discord</strong>
+                        <small>
+                          {discordId
+                            ? `${discordId.displayName || discordId.username || discordId.providerSubject}${discordId.email ? ` · ${discordId.email}` : ' · Sem e-mail público'}`
+                            : 'Não vinculado'}
+                        </small>
+                      </div>
+                    </div>
+                    {discordId ? (
+                      <button
+                        type="button"
+                        className="button secondary"
+                        disabled={!!busy || methodCount <= 1}
+                        title={
+                          methodCount <= 1
+                            ? 'Adicione outro método de login antes de desvincular.'
+                            : 'Desvincular Discord'
+                        }
+                        onClick={() => void unlinkIdentity('discord', activeBroker)}
+                      >
+                        Desvincular
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="button secondary"
+                        disabled={!!busy || !online}
+                        onClick={() => void oauthHub('discord', 'link', activeBroker)}
+                      >
+                        Vincular Discord
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="hub-identity-row" data-hub-provider="github">
+                    <div className="hub-identity-info">
+                      <GitHubIcon size={17} />
+                      <div>
+                        <strong>GitHub</strong>
+                        <small>
+                          {githubId
+                            ? `${githubId.displayName || githubId.username || githubId.providerSubject}${githubId.email ? ` · ${githubId.email}` : ' · E-mail privado'}`
+                            : 'Não vinculado'}
+                        </small>
+                      </div>
+                    </div>
+                    {githubId ? (
+                      <button
+                        type="button"
+                        className="button secondary"
+                        disabled={!!busy || methodCount <= 1}
+                        title={
+                          methodCount <= 1
+                            ? 'Adicione outro método de login antes de desvincular.'
+                            : 'Desvincular GitHub'
+                        }
+                        onClick={() => void unlinkIdentity('github', activeBroker)}
+                      >
+                        Desvincular
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="button secondary"
+                        disabled={!!busy || !online}
+                        onClick={() => void oauthHub('github', 'link', activeBroker)}
+                      >
+                        Vincular GitHub
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="hub-identity-row" data-hub-provider="email">
+                    <div className="hub-identity-info">
+                      <Mail size={16} />
+                      <div>
+                        <strong>E-mail e senha</strong>
+                        <small>
+                          {hub.hasPassword
+                            ? emailId?.email || hub.email || hub.username
+                            : 'Nenhuma senha vinculada'}
+                        </small>
+                      </div>
+                    </div>
+                    {hub.hasPassword ? (
+                      <button
+                        type="button"
+                        className="button secondary"
+                        disabled={!!busy || methodCount <= 1}
+                        title={
+                          methodCount <= 1
+                            ? 'Adicione outro método de login antes de remover o acesso por e-mail.'
+                            : 'Remover login por e-mail'
+                        }
+                        onClick={() => void unlinkIdentity('email', activeBroker)}
+                      >
+                        Desvincular
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="button secondary"
+                        disabled={!!busy || !online}
+                        onClick={() => setLinkEmailOpen(v => !v)}
+                      >
+                        {linkEmailOpen ? 'Fechar' : 'Vincular e-mail'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {linkEmailOpen && !hub.hasPassword && (
+                  <form
+                    className="auth-form"
+                    onSubmit={e => {
+                      e.preventDefault();
+                      void linkEmail({
+                        brokerUrl: activeBroker,
+                        email: newEmail.trim(),
+                        password: newEmailPassword,
+                      }).then(ok => {
+                        if (ok) {
+                          setLinkEmailOpen(false);
+                          setNewEmailPassword('');
+                        }
+                      });
+                    }}
+                  >
+                    <label className="field-label">
+                      E-mail para vincular
+                      <input
+                        type="email"
+                        className="input"
+                        value={newEmail}
+                        onChange={e => setNewEmail(e.target.value)}
+                        required
+                      />
+                    </label>
+                    <label className="field-label">
+                      Senha (mínimo 12 caracteres)
+                      <input
+                        type="password"
+                        className="input"
+                        minLength={12}
+                        maxLength={256}
+                        value={newEmailPassword}
+                        onChange={e => setNewEmailPassword(e.target.value)}
+                        required
+                      />
+                    </label>
+                    <button
+                      type="submit"
+                      className="button primary"
+                      disabled={!!busy || !newEmail.trim() || newEmailPassword.length < 12}
+                    >
+                      Salvar acesso por e-mail
+                    </button>
+                  </form>
+                )}
+              </div>
+            );
+          })()
+        ) : (
+          <div className="hub-profile-card">
+            <p className="fine-print">
+              Entre com Discord, GitHub ou e-mail para manter um único perfil verificado no Liquid Hub.
+            </p>
+            <div className="settings-actions-row">
+              <button
+                type="button"
+                className="button primary"
+                disabled={!!busy}
+                onClick={() =>
+                  openAuthModal({ view: 'choose', brokerUrl: brokerUrl.trim() || undefined })
+                }
+              >
+                <ShieldCheck size={15} />
+                Entrar no Liquid Hub
+              </button>
+              <button
+                type="button"
+                className="button secondary"
+                disabled={!!busy || !online}
+                onClick={() => void oauthHub('discord', 'login', brokerUrl.trim() || undefined)}
+              >
+                <DiscordIcon size={16} />
+                Continuar com Discord
+              </button>
+              <button
+                type="button"
+                className="button secondary"
+                disabled={!!busy || !online}
+                onClick={() => void oauthHub('github', 'login', brokerUrl.trim() || undefined)}
+              >
+                <GitHubIcon size={16} />
+                Continuar com GitHub
+              </button>
+            </div>
+            {oauthPending && (
+              <div className="settings-actions-row">
+                <span className="fine-print">
+                  Aguardando retorno do {oauthPending === 'discord' ? 'Discord' : 'GitHub'}…
+                </span>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => void cancelHubOAuth()}
+                >
+                  Cancelar autenticação
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       <details className="account-setup">
         <summary>Sessão Liquid Hub (Zero-Trust)</summary>
         {hub.authenticated ? (
@@ -111,28 +456,21 @@ export default function AccountConnections() {
             <span>
               <strong>
                 <ShieldCheck size={14} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 5 }} />
-                {hub.subject}
+                {hub.displayName || hub.subject}
               </strong>
-              <small>Cofre DPAPI ativo · {hub.brokerUrl}</small>
+              <small>
+                ID {hub.userId || hub.subject} · Sessão cifrada localmente
+              </small>
             </span>
-            <button
-              type="button"
-              className="button secondary"
-              disabled={!!busy}
-              onClick={() => void logoutHub()}
-            >
-              <LogOut size={14} />
-              Encerrar sessão
-            </button>
           </div>
         ) : (
           <form
             className="hub-auth-form"
             onSubmit={e => {
               e.preventDefault();
-              void loginHub({ brokerUrl, username, password, register: registerMode }).then(() =>
-                setPassword(''),
-              );
+              void loginHub({ brokerUrl, username, password, register: registerMode }).then(ok => {
+                if (ok) setPassword('');
+              });
             }}
           >
             <label className="field-label">
@@ -141,17 +479,20 @@ export default function AccountConnections() {
                 type="url"
                 placeholder="https://hub.exemplo.com"
                 value={brokerUrl}
-                onChange={e => setBrokerUrl(e.target.value)}
+                onChange={e => {
+                  setBrokerUrl(e.target.value);
+                  setPreferredBrokerUrl(e.target.value);
+                }}
                 required
               />
             </label>
             <label className="field-label">
-              Usuário
+              E-mail ou usuário
               <input
                 type="text"
                 autoComplete="username"
                 minLength={3}
-                maxLength={80}
+                maxLength={160}
                 value={username}
                 onChange={e => setUsername(e.target.value)}
                 required

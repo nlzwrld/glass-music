@@ -38,6 +38,8 @@ interface State {
   clientId: string;
   hubAuthenticated: boolean;
   hubSubject: string;
+  hubDisplayName: string;
+  hubAvatar: string | null;
   protocolRegistered: boolean;
   pendingInvite: PendingInviteState | null;
   lookupState: LookupState;
@@ -76,6 +78,8 @@ export const useJam = create<State>((set, get) => ({
   clientId: '',
   hubAuthenticated: false,
   hubSubject: '',
+  hubDisplayName: '',
+  hubAvatar: null,
   protocolRegistered: false,
   pendingInvite: null,
   lookupState: { input: '', loading: false, result: null },
@@ -88,6 +92,8 @@ export const useJam = create<State>((set, get) => ({
         clientId?: string;
         hubAuthenticated?: boolean;
         hubSubject?: string;
+        hubDisplayName?: string;
+        hubAvatar?: string | null;
         protocolRegistered?: boolean;
       }>({ action: 'status' });
       if (config.clientId) {
@@ -99,6 +105,8 @@ export const useJam = create<State>((set, get) => ({
         clientId: config.clientId || '',
         hubAuthenticated: Boolean(config.hubAuthenticated),
         hubSubject: config.hubSubject || '',
+        hubDisplayName: config.hubDisplayName || config.hubSubject || '',
+        hubAvatar: config.hubAvatar || null,
         protocolRegistered: Boolean(config.protocolRegistered),
       });
     } catch (e) {

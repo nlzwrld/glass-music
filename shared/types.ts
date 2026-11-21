@@ -183,6 +183,9 @@ export interface Preferences {
   onlineConsent: boolean;
   catalogConsent: boolean;
   onboardingDone: boolean;
+  termsVersion?: string;
+  privacyVersion?: string;
+  termsAcceptedAt?: number;
 }
 
 export const defaults: Preferences = {
@@ -283,12 +286,56 @@ export interface IntegrationStatus {
   shortcuts: boolean;
 }
 
+export type HubAuthProvider = 'email' | 'discord' | 'github';
+export type HubOAuthProvider = 'discord' | 'github';
+
+export interface HubIdentityPublic {
+  provider: HubAuthProvider;
+  providerSubject: string;
+  username?: string;
+  displayName?: string;
+  email?: string;
+  avatarUrl?: string;
+  verified: boolean;
+  linkedAt: number;
+}
+
+export interface HubProviderAvailability {
+  configured: boolean;
+  label: string;
+  scopes: string[];
+}
+
+export interface HubProvidersAvailability {
+  brokerUrl: string;
+  email: {
+    enabled: boolean;
+    requiresVerification: boolean;
+  };
+  discord: HubProviderAvailability;
+  github: HubProviderAvailability;
+  termsVersion: string;
+  privacyVersion: string;
+}
+
 export interface HubSessionStatus {
   authenticated: boolean;
   subject: string;
   expiresAt: number;
   brokerUrl: string;
   tokenActive?: boolean;
+  userId?: string;
+  username?: string;
+  displayName?: string;
+  email?: string | null;
+  emailVerified?: boolean;
+  avatarUrl?: string | null;
+  hasPassword?: boolean;
+  identities?: HubIdentityPublic[];
+  termsVersion?: string | null;
+  privacyVersion?: string | null;
+  termsAcceptedAt?: number | null;
+  needsTermsAcceptance?: boolean;
 }
 
 export interface CatalogResult {
@@ -354,13 +401,61 @@ export interface GlassAPI {
     provider: string,
   ): Promise<{ snapshot: Snapshot; playlists: number; tracks: number; accounts: AccountStatus[] }>;
   hubStatus(): Promise<HubSessionStatus>;
+  hubProviders(brokerUrl?: string): Promise<HubProvidersAvailability>;
   hubLogin(payload: {
     brokerUrl: string;
-    username: string;
+    username?: string;
+    email?: string;
+    identifier?: string;
+    displayName?: string;
     password: string;
     register?: boolean;
+    termsVersion?: string;
+    privacyVersion?: string;
   }): Promise<HubSessionStatus>;
+  hubOAuthStart(payload: {
+    brokerUrl?: string;
+    provider: HubOAuthProvider;
+    mode?: 'login' | 'link';
+    termsVersion?: string;
+    privacyVersion?: string;
+  }): Promise<HubSessionStatus>;
+  hubCancelOAuth(): Promise<{ ok: boolean }>;
+  hubRefresh(brokerUrl?: string): Promise<HubSessionStatus>;
   hubLogout(): Promise<HubSessionStatus>;
+  hubUnlinkIdentity(payload: {
+    brokerUrl?: string;
+    provider: HubAuthProvider;
+  }): Promise<HubSessionStatus>;
+  hubLinkEmail(payload: {
+    brokerUrl?: string;
+    email: string;
+    password: string;
+    username?: string;
+    displayName?: string;
+  }): Promise<HubSessionStatus>;
+  hubVerifyEmail(payload: {
+    brokerUrl?: string;
+    token: string;
+  }): Promise<{ ok: boolean; status: HubSessionStatus }>;
+  hubResendVerification(payload?: {
+    brokerUrl?: string;
+    email?: string;
+  }): Promise<{ ok: boolean; sent: boolean }>;
+  hubForgotPassword(payload: {
+    brokerUrl?: string;
+    email: string;
+  }): Promise<{ ok: boolean }>;
+  hubResetPassword(payload: {
+    brokerUrl?: string;
+    token: string;
+    newPassword: string;
+  }): Promise<{ ok: boolean }>;
+  hubAcceptTerms(payload: {
+    brokerUrl?: string;
+    termsVersion: string;
+    privacyVersion: string;
+  }): Promise<HubSessionStatus>;
   offlineSource(id: string): Promise<{ url: string; duration: number } | null>;
   downloadOffline(track: Track): Promise<Snapshot>;
   removeOffline(id: string): Promise<Snapshot>;
