@@ -804,6 +804,7 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
             }
           }
         } catch (err) {
+          buffer = Buffer.alloc(0);
           sendSocket(
             managed,
             encodeWsTextFrame(
@@ -852,6 +853,7 @@ export interface CfDurableObjectState {
     put<T>(key: string, value: T): Promise<void>;
     deleteAll(): Promise<void>;
     setAlarm(scheduledTime: number): Promise<void>;
+    deleteAlarm?(): Promise<void>;
   };
   acceptWebSocket(ws: WebSocket, tags?: string[]): void;
   getWebSockets(tag?: string): WebSocket[];
@@ -876,6 +878,7 @@ export interface CfJamEnv {
   JAM_WS_MAX_PER_ROOM?: string;
   JAM_WS_MAX_PER_MEMBER?: string;
   JAM_WS_MAX_PER_IP?: string;
+  JAM_ALLOWED_ORIGINS?: string;
 }
 
 const JAM_BODY_LIMIT = 16384;
@@ -1010,6 +1013,58 @@ function cfClientAddress(request: Request) {
   return isIP(value) ? value : 'unknown';
 }
 
+function isAllowedWsOrigin(originHeader: string | null, requestOrigin: string, env: CfJamEnv): boolean {
+  // Native/desktop clients without an Origin header are permitted; browser WebViews send Origin.
+  if (!originHeader) return true;
+  const normalized = originHeader.trim();
+  if (!normalized || normalized === 'null') return false;
+  if (normalized === requestOrigin) return true;
+  const trustedExact = new Set([
+    'https://tauri.localhost',
+    'http://tauri.localhost',
+    'tauri://localhost',
+    'https://jam.test',
+  ]);
+  if (trustedExact.has(normalized)) return true;
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d{1,5})?$/.test(normalized)) return true;
+  if (env.JAM_ALLOWED_ORIGINS) {
+    const allowed = env.JAM_ALLOWED_ORIGINS.split(',')
+      .map(entry => entry.trim())
+      .filter(Boolean);
+    if (allowed.includes(normalized)) return true;
+  }
+  return false;
+}
+
+function jamLog(event: string, fields: Record<string, string | number | boolean> = {}) {
+  try {
+    console.log(JSON.stringify({ service: 'liquid-hub-jam', event, ...fields }));
+  } catch {}
+}
+
+const INVITE_LANDING_HTML = `<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Liquid Hub JAM</title>
+<style>
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#090b10;color:#eef2f7;font-family:system-ui,-apple-system,Segoe UI,sans-serif;padding:24px}
+main{max-width:460px;background:#111622;border:1px solid #242d40;border-radius:18px;padding:28px;line-height:1.5}
+h1{margin:0 0 8px;font-size:1.25rem}
+p{margin:8px 0;color:#b6c0d2;font-size:.95rem}
+code{background:#1b2335;padding:2px 6px;border-radius:6px;color:#fff}
+</style>
+</head>
+<body>
+<main>
+<h1>Liquid Hub · JAM</h1>
+<p>Este é o coordenador público de sessões JAM do <strong>Liquid Hub</strong>.</p>
+<p>Para entrar na sala, copie o link da barra de endereço (ou o código de 10 caracteres após <code>#jam=</code>) e cole em <strong>Configurações → JAM</strong> no aplicativo Liquid Hub.</p>
+</main>
+</body>
+</html>`;
+
 function cfError(error: unknown) {
   const status = error instanceof JamError ? error.status : 500;
   return Response.json(
@@ -1071,6 +1126,7 @@ export class JamRoomDO {
   private async persistRoom() {
     const room = this.room;
     if (!room) {
+      await this.ctx.storage.deleteAlarm?.();
       await this.ctx.storage.deleteAll();
       return;
     }
@@ -1164,12 +1220,15 @@ export class JamRoomDO {
       }
     }
     if (now - this.room.touched > this.ttl()) {
+      const expiredCode = this.room.code;
       this.closeAll('JAM expirada.');
       this.room = null;
       this.mutationNonces.clear();
       this.volatileNonces.clear();
       this.rates.clear();
+      await this.ctx.storage.deleteAlarm?.();
       await this.ctx.storage.deleteAll();
+      jamLog('room_expired', { code: expiredCode });
       return;
     }
     if (changed) await this.persistRoom();
@@ -1395,11 +1454,20 @@ export class JamRoomDO {
         throw new JamError('Operação inválida.');
       }
       if (action === 'sync') await this.persistRoom();
+      const sinceSequence =
+        action === 'poll' && typeof p.sinceSequence === 'number' && Number.isFinite(p.sinceSequence)
+          ? p.sinceSequence
+          : undefined;
+      const unchanged = sinceSequence !== undefined && sinceSequence === current.playback.sequence;
       const viewBody = {
         code: current.code,
         members: [...current.members.values()].map(({ id, name, host }) => ({ id, name, host })),
-        playback: current.playback,
+        playback: unchanged ? { ...current.playback, track: null } : current.playback,
         serverTime: now,
+        ...(unchanged ? { unchanged: true } : {}),
+        ...(typeof p.clientTime === 'number' && Number.isFinite(p.clientTime)
+          ? { echoClientTime: p.clientTime }
+          : {}),
       };
       if (action === 'sync') this.broadcast(viewBody);
       return new Response(JSON.stringify(viewBody), { status: 200, headers });
@@ -1445,6 +1513,8 @@ export class JamRoomDO {
           body: JSON.stringify({ ...msg, code: meta.code, token: meta.token }),
         }),
       );
+      // Successful sync already broadcast the updated room to every room socket (including sender).
+      if (msg.action === 'sync' && response.status === 200) return;
       ws.send(await response.text());
     } catch {
       try {
@@ -1453,8 +1523,19 @@ export class JamRoomDO {
     }
   }
 
-  async webSocketClose() {
-    // Hibernated socket closed cleanly; member expiry handled by seen TTL / explicit leave.
+  async webSocketClose(ws?: WebSocket, code = 1000, reason = 'Conexão encerrada.') {
+    // Cloudflare WebSocket Hibernation requires echoing close() from webSocketClose
+    // to complete the RFC 6455 closing handshake and release the hibernated socket slot.
+    try {
+      const safeCode = code === 1000 || (code >= 3000 && code <= 4999) ? code : 1000;
+      ws?.close(safeCode, reason.slice(0, 120));
+    } catch {}
+  }
+
+  async webSocketError(ws: WebSocket) {
+    try {
+      ws.close(1011, 'Erro de conexão.');
+    } catch {}
   }
 
   async alarm() {
@@ -1466,6 +1547,18 @@ export class JamRoomDO {
 
 export async function handleCloudflareJamFetch(request: Request, env: CfJamEnv): Promise<Response> {
   const url = new URL(request.url);
+  if (url.pathname === '/' && request.method === 'GET') {
+    return new Response(INVITE_LANDING_HTML, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'public, max-age=300',
+        'X-Service': 'liquid-hub-jam',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+      },
+    });
+  }
   if (url.pathname === '/health' && request.method === 'GET') {
     return Response.json(
       { service: 'liquid-hub-jam', runtime: 'cloudflare-workers-do', version: 2 },
@@ -1477,8 +1570,17 @@ export async function handleCloudflareJamFetch(request: Request, env: CfJamEnv):
   const now = Date.now();
   try {
     if (url.pathname === '/v1/jam/ws') {
+      if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
+        throw new JamError('Upgrade WebSocket obrigatório.', 426);
+      }
+      if (!isAllowedWsOrigin(request.headers.get('Origin'), url.origin, env)) {
+        jamLog('ws_origin_rejected', { status: 403 });
+        throw new JamError('Origem WebSocket não autorizada.', 403);
+      }
       const code = (url.searchParams.get('code') || '').toUpperCase();
       if (!/^[A-F0-9]{10}$/.test(code)) throw new JamError('Código da JAM inválido.', 400);
+      const token = url.searchParams.get('token') || '';
+      if (!validToken(token)) throw new JamError('Sessão WebSocket não autorizada.', 401);
       consumeCfRate(workerRates, `ip:${ip}:ws`, 60, now);
       const headers = new Headers(request.headers);
       headers.set('X-Liquid-Client-IP', ip);

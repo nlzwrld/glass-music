@@ -4,11 +4,32 @@ O coordenador JAM sincroniza faixa, play/pause e posição com compensação de 
 
 ## 1. Deploy Gratuito em Cloudflare Workers + Durable Objects (WebSocket Hibernation)
 
-Usa `new_sqlite_classes` (compatível com o plano gratuito da Cloudflare) e `WebSocketRequestResponsePair` para manter conexões hibernadas sem consumo de CPU quando ociosas:
+Usa `new_sqlite_classes` (compatível com o plano gratuito **Workers Free — R$ 0,00** da Cloudflare) e `WebSocketRequestResponsePair` (`{"action":"ping"}` → `{"pong":true}`) para manter conexões hibernadas sem consumo de CPU quando ociosas.
+
+- **Endpoint público de produção:** `https://liquid-hub-jam.nlzezwrld.workers.dev` (WSS: `wss://liquid-hub-jam.nlzezwrld.workers.dev/v1/jam/ws`).
+- **Configuração padrão do app desktop:** `src-tauri/jam.json` (pode ser sobrescrita por `LIQUID_JAM_URL` no build ou por **Configurações → JAM** para desenvolvimento local em `http://127.0.0.1:8789`).
+
+### Comandos de desenvolvimento, deploy e logs
 
 ```bash
-npx wrangler deploy --config deploy/wrangler.jam.toml
+# Autenticar na conta Cloudflare (OAuth local, sem expor tokens)
+pnpm dlx wrangler login
+
+# Rodar localmente no runtime workerd + Durable Objects SQLite
+pnpm dlx wrangler dev --config deploy/wrangler.jam.toml --local
+
+# Publicar na Cloudflare (subdomínio gratuito *.workers.dev)
+pnpm dlx wrangler deploy --config deploy/wrangler.jam.toml
+
+# Acompanhar logs estruturados em tempo real (gratuito)
+pnpm dlx wrangler tail liquid-hub-jam --config deploy/wrangler.jam.toml
 ```
+
+### Limites do plano Cloudflare Workers Free (R$ 0,00)
+
+- **Workers:** 100.000 requisições/dia, 10 ms CPU por invocação.
+- **Durable Objects (SQLite Free):** 100.000 requisições/dia, 13.000 GB-s duração/dia, 5M leituras SQLite/dia, 100.000 escritas SQLite/dia, 5 GB armazenamento total.
+- **Otimização implementada:** o cliente desktop usa WebSocket com keepalive hibernado a cada 20 s (`{"action":"ping"}`, respondido sem acordar o DO) e sincronização orientada a eventos no anfitrião (envia `sync` apenas em troca de faixa, play/pause ou seek > 0,75 s), reduzindo >98% das requisições e escritas SQLite em comparação com polling contínuo.
 
 ## 2. Deploy em Container (Oracle Cloud Free Tier ARM64/AMD64 ou Fly.io)
 

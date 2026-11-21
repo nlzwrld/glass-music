@@ -3,9 +3,20 @@ name = "liquid-hub-jam"
 main = "../server/jam.ts"
 compatibility_date = "2025-02-01"
 compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[observability]
+enabled = true
 
 [vars]
 JAM_IDLE_TTL_MS = "900000"
+JAM_REPLAY_WINDOW_MS = "60000"
+JAM_NONCE_LIMIT = "4096"
+JAM_NONCE_BYTES = "16384"
+JAM_MAX_ROOMS_PER_ISOLATE = "2500"
+JAM_WS_MAX_PER_ROOM = "64"
+JAM_WS_MAX_PER_MEMBER = "4"
+JAM_WS_MAX_PER_IP = "100"
 
 [[durable_objects.bindings]]
 name = "JAM_ROOMS"

@@ -91,6 +91,44 @@ export function isLocalJamEndpoint(endpoint?: string): boolean {
   }
 }
 
+export function jamWebSocketUrl(endpoint: string | undefined, code: string, token: string): string | null {
+  if (!endpoint || !/^[A-F0-9]{10}$/.test(code) || !token) return null;
+  try {
+    const u = new URL(endpoint);
+    if (u.username || u.password || u.pathname !== '/' || u.search || u.hash) return null;
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+    const protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${u.host}/v1/jam/ws?code=${encodeURIComponent(code)}&token=${encodeURIComponent(token)}`;
+  } catch {
+    return null;
+  }
+}
+
+export interface HostSyncSnapshot {
+  trackId: string | null;
+  playing: boolean;
+  position: number;
+  sentAt: number;
+}
+
+/**
+ * Change-driven host sync detector: avoids redundant network & SQLite writes while a track plays
+ * smoothly, triggering a sync only on initial state, track change, play/pause, or seek (> threshold).
+ */
+export function shouldHostSync(
+  last: HostSyncSnapshot | null,
+  next: { trackId: string | null; playing: boolean; position: number },
+  nowMs: number,
+  driftThresholdSec = 0.75,
+): boolean {
+  if (!last) return true;
+  if (last.trackId !== next.trackId) return true;
+  if (last.playing !== next.playing) return true;
+  const elapsedSec = last.playing ? Math.max(0, (nowMs - last.sentAt) / 1000) : 0;
+  const expectedPos = last.position + elapsedSec;
+  return Math.abs(next.position - expectedPos) > driftThresholdSec;
+}
+
 export class JamClient {
   session: JamSession | null = null;
   readonly clock = new JamClock();
@@ -153,33 +191,42 @@ export class JamClient {
     return session;
   }
 
-  async update(playback?: JamRequest['playback']) {
-    const s = this.session;
-    if (!s) throw new Error('Entre em uma JAM.');
-    const t = playback?.track,
-      clean = t
-        ? {
-            id: t.id,
-            source: t.source,
-            sourceId: t.sourceId,
-            kind: t.kind,
-            title: t.title,
-            artist: t.artist,
-            duration: t.duration,
-            url: t.url,
-            artwork: t.artwork,
-            playbackId: t.playbackId,
-            addedAt: 0,
-          }
-        : null;
-    const room = await this.request<JamRoom>({
-      action: s.host ? 'sync' : 'poll',
-      code: s.code,
-      token: s.token,
-      endpoint: s.endpoint,
-      ...(!s.host && this.lastSequence >= 0 ? { sinceSequence: this.lastSequence } : {}),
-      ...(s.host ? { playback: playback ? { ...playback, track: clean } : undefined } : {}),
+  private cleanPlayback(playback?: JamRequest['playback']) {
+    if (!playback) return undefined;
+    const t = playback.track;
+    const clean = t
+      ? {
+          id: t.id,
+          source: t.source,
+          sourceId: t.sourceId,
+          kind: t.kind,
+          title: t.title,
+          artist: t.artist,
+          duration: t.duration,
+          url: t.url,
+          artwork: t.artwork,
+          playbackId: t.playbackId,
+          addedAt: 0,
+        }
+      : null;
+    return { ...playback, track: clean };
+  }
+
+  buildSyncCommand(playback?: JamRequest['playback']): JamRequest {
+    return this.stamp({
+      action: 'sync',
+      playback: this.cleanPlayback(playback),
     });
+  }
+
+  buildPollCommand(): JamRequest {
+    return this.stamp({
+      action: 'poll',
+      ...(this.lastSequence >= 0 ? { sinceSequence: this.lastSequence } : {}),
+    });
+  }
+
+  applyRoom(room: JamRoom): JamRoom {
     if (room.unchanged && this.cachedRoom) {
       const merged: JamRoom = {
         ...room,
@@ -194,6 +241,21 @@ export class JamClient {
     this.cachedRoom = room;
     this.lastSequence = room.playback.sequence;
     return room;
+  }
+
+  async update(playback?: JamRequest['playback']) {
+    const s = this.session;
+    if (!s) throw new Error('Entre em uma JAM.');
+    const isSync = s.host && playback !== undefined;
+    const room = await this.request<JamRoom>({
+      action: isSync ? 'sync' : 'poll',
+      code: s.code,
+      token: s.token,
+      endpoint: s.endpoint,
+      ...(!isSync && this.lastSequence >= 0 ? { sinceSequence: this.lastSequence } : {}),
+      ...(isSync ? { playback: this.cleanPlayback(playback) } : {}),
+    });
+    return this.applyRoom(room);
   }
 
   /**

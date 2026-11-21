@@ -42,14 +42,27 @@ fn client() -> &'static reqwest::Client {
     })
 }
 
+fn default_endpoint() -> String {
+    if std::env::var_os("GLASS_TEST_DATA").is_some() {
+        return std::env::var("GLASS_TEST_JAM_URL").unwrap_or_default();
+    }
+    if let Some(env_url) = option_env!("LIQUID_JAM_URL").or(option_env!("GLASS_JAM_URL")) {
+        if !env_url.trim().is_empty() {
+            return env_url.trim().to_string();
+        }
+    }
+    serde_json::from_str::<Value>(include_str!("../jam.json"))
+        .ok()
+        .map(|v| s(&v, "jamUrl").trim().to_string())
+        .unwrap_or_default()
+}
+
 pub async fn call(p: &Value, endpoint: &str, consent: bool) -> Result<Value> {
-    let default_env = option_env!("LIQUID_JAM_URL")
-        .or(option_env!("GLASS_JAM_URL"))
-        .unwrap_or("");
+    let default_url = default_endpoint();
     let selected = if !s(p, "endpoint").is_empty() {
         s(p, "endpoint")
     } else if endpoint.is_empty() {
-        default_env
+        default_url.as_str()
     } else {
         endpoint
     };
@@ -180,5 +193,13 @@ mod tests {
         ] {
             assert!(validate_endpoint(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn bundled_default_jam_endpoint_is_valid_https() {
+        let cfg: Value = serde_json::from_str(include_str!("../jam.json")).expect("valid jam.json");
+        let url = s(&cfg, "jamUrl");
+        assert!(url.starts_with("https://"), "default jamUrl must use HTTPS: {url}");
+        assert!(validate_endpoint(url).is_ok(), "default jamUrl invalid: {url}");
     }
 }
