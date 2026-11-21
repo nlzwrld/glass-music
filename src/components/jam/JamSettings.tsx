@@ -3,7 +3,7 @@ import { Check, Copy, Headphones, LogOut, Radio, RefreshCw, Users } from 'lucide
 import { useApp, cleanError } from '../../stores/app';
 import { canJam } from '../../../shared/jam';
 import { useJam } from './state';
-import { parseJamInvite } from '../../lib/jam';
+import { buildJamInvite, parseJamInvite } from '../../lib/jam';
 import './jam.css';
 
 export function JamSettings() {
@@ -25,6 +25,14 @@ export function JamSettings() {
   useEffect(() => {
     setEndpoint(jam.endpoint);
   }, [jam.endpoint]);
+
+  useEffect(() => {
+    if (jam.pendingInvite) {
+      setCode(jam.pendingInvite);
+      useJam.setState({ pendingInvite: '' });
+      document.getElementById('jam-section')?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [jam.pendingInvite]);
 
   const invite = parseJamInvite(code, jam.endpoint);
   const join = async () => {
@@ -80,7 +88,7 @@ export function JamSettings() {
               aria-label="Copiar convite da JAM"
               onClick={() =>
                 void navigator.clipboard
-                  .writeText(`${jam.session!.endpoint || jam.endpoint}/#jam=${jam.session!.code}`)
+                  .writeText(buildJamInvite(jam.session!.endpoint || jam.endpoint, jam.session!.code))
                   .then(() => {
                     setCopied(true);
                     setTimeout(() => setCopied(false), 1800);
@@ -96,7 +104,7 @@ export function JamSettings() {
             className="input jam-invite"
             aria-label="Convite desta JAM"
             readOnly
-            value={`${jam.session.endpoint || jam.endpoint}/#jam=${jam.session.code}`}
+            value={buildJamInvite(jam.session.endpoint || jam.endpoint, jam.session.code)}
             onFocus={e => e.currentTarget.select()}
           />
           <div className="jam-status" role="status">

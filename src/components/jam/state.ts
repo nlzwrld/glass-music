@@ -16,6 +16,7 @@ interface State {
   connected: boolean;
   endpoint: string;
   configured: boolean;
+  pendingInvite: string;
   refresh(): Promise<void>;
   scanLan(): Promise<void>;
   enter(
@@ -37,6 +38,7 @@ export const useJam = create<State>((set, get) => ({
   connected: false,
   endpoint: '',
   configured: false,
+  pendingInvite: '',
   refresh: async () => {
     try {
       const config = await sendJam<{ endpoint: string; configured: boolean }>({ action: 'status' });

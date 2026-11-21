@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { runInNewContext } from 'node:vm';
 import {
   handleCloudflareJamFetch,
   JamRoomDO,
@@ -97,6 +98,15 @@ describe('Cloudflare JAM Worker Free-Tier hardening & zero-cost client helpers',
     expect(landing.headers.get('Content-Type')).toContain('text/html');
     expect(landing.headers.get('Content-Security-Policy')).toContain("default-src 'none'");
     expect(await landing.text()).toContain('Liquid Hub');
+
+    const script = await handleCloudflareJamFetch(new Request('https://liquid-hub-jam.workers.dev/invite.js'), env);
+    expect(script.status).toBe(200);
+    const source = await script.text();
+    const button = { href: '', hidden: true };
+    const location = { hash: '#jam=ABC1234567&endpoint=http%3A%2F%2F192.168.1.5%3A1234', origin: 'https://liquid-hub-jam.workers.dev', href: '' };
+    runInNewContext(source, { location, URL, URLSearchParams, document: { getElementById: () => button } });
+    expect(location.href).toBe('liquidhub://join?code=ABC1234567&endpoint=http%3A%2F%2F192.168.1.5%3A1234');
+    expect(button).toMatchObject({ href: location.href, hidden: false });
 
     const health = await handleCloudflareJamFetch(
       new Request('https://liquid-hub-jam.workers.dev/health'),

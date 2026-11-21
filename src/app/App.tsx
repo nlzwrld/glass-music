@@ -15,6 +15,9 @@ import Home from '../pages/Home';
 import { AutoUpdates } from '../lib/updates';
 import { LyricsWindowBridge } from '../lib/lyricsWindow';
 import { JamEngine } from '../components/jam/JamEngine';
+import { useJam } from '../components/jam/state';
+import { parseJamInvite } from '../lib/jam';
+import { getCurrent, onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import Lyrics from '../components/player/Lyrics';
 import Welcome from '../components/glass/Welcome';
 import { OpticalEngine } from '../components/glass/v3/OpticalEngine';
@@ -39,6 +42,32 @@ export default function App() {
     matchMedia('(prefers-color-scheme: light)').matches,
   );
   const artworkTracks = useApp(s => s.data.tracks);
+  const pendingInvite = useJam(s => s.pendingInvite);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const receive = (urls: string[]) => {
+      const invite = urls.find(url => url.startsWith('liquidhub://') && parseJamInvite(url).code);
+      if (invite && !disposed) useJam.setState({ pendingInvite: invite });
+    };
+    void (async () => {
+      try {
+        const off = await onOpenUrl(receive);
+        if (disposed) { off(); return; }
+        unlisten = off;
+        const urls = await getCurrent();
+        if (urls) receive(urls);
+      } catch (error) {
+        console.error('Não foi possível receber convites da JAM:', error);
+      }
+    })();
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+
+  useEffect(() => {
+    if (ready && pendingInvite) useApp.getState().setPage('settings');
+  }, [ready, pendingInvite]);
 
   useEffect(() => {
     purgeSensitiveWebStorage();

@@ -1059,11 +1059,22 @@ code{background:#1b2335;padding:2px 6px;border-radius:6px;color:#fff}
 <body>
 <main>
 <h1>Liquid Hub · JAM</h1>
-<p>Este é o coordenador público de sessões JAM do <strong>Liquid Hub</strong>.</p>
-<p>Para entrar na sala, copie o link da barra de endereço (ou o código de 10 caracteres após <code>#jam=</code>) e cole em <strong>Configurações → JAM</strong> no aplicativo Liquid Hub.</p>
+<p>Estamos abrindo o Liquid Hub. Se o navegador pedir permissão, confirme para abrir o aplicativo.</p>
+<p><a id="open" hidden style="color:#8ce2b4">Abrir Liquid Hub</a></p>
+<p>Se não abrir, instale ou atualize o Liquid Hub. Você também pode copiar este link e colar em <strong>Configurações → JAM</strong>.</p>
 </main>
+<script src="/invite.js" defer></script>
 </body>
 </html>`;
+
+const INVITE_SCRIPT = `const p=new URLSearchParams(location.hash.slice(1));
+const code=p.get('jam')||''; const endpoint=p.get('endpoint')||location.origin;
+try { const u=new URL(endpoint);
+  if(!/^[a-f0-9]{10}$/i.test(code)||!['http:','https:'].includes(u.protocol)||u.username||u.password||u.pathname!=='/'||u.search||u.hash) throw 0;
+  const link='liquidhub://join?'+new URLSearchParams({code,endpoint:u.origin});
+  const button=document.getElementById('open'); button.href=link; button.hidden=false;
+  location.href=link;
+} catch {}`;
 
 function cfError(error: unknown) {
   const status = error instanceof JamError ? error.status : 500;
@@ -1547,6 +1558,13 @@ export class JamRoomDO {
 
 export async function handleCloudflareJamFetch(request: Request, env: CfJamEnv): Promise<Response> {
   const url = new URL(request.url);
+  if (url.pathname === '/invite.js' && request.method === 'GET') {
+    return new Response(INVITE_SCRIPT, { headers: {
+      'Content-Type': 'application/javascript; charset=utf-8',
+      'Cache-Control': 'public, max-age=300',
+      'X-Content-Type-Options': 'nosniff',
+    } });
+  }
   if (url.pathname === '/' && request.method === 'GET') {
     return new Response(INVITE_LANDING_HTML, {
       status: 200,
@@ -1555,7 +1573,7 @@ export async function handleCloudflareJamFetch(request: Request, env: CfJamEnv):
         'Cache-Control': 'public, max-age=300',
         'X-Service': 'liquid-hub-jam',
         'X-Content-Type-Options': 'nosniff',
-        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
       },
     });
   }

@@ -6,9 +6,22 @@ import {
   type CfDurableObjectState,
   type CfJamEnv,
 } from '../../server/jam';
-import { computeBackoffMs, JamClient, JamClock, type JamSend } from '../../src/lib/jam';
+import { buildJamInvite, parseJamInvite, computeBackoffMs, JamClient, JamClock, type JamSend } from '../../src/lib/jam';
 import { canJam, jamDriftMs, jamPosition, type JamRoom } from '../../shared/jam';
 import type { Track } from '../../shared/types';
+
+describe('JAM invite links', () => {
+  it('preserves the room and LAN endpoint in shared and app links', () => {
+    const expected = { code: 'ABC1234567', endpoint: 'http://192.168.1.5:1234' };
+    expect(parseJamInvite(buildJamInvite(expected.endpoint, expected.code))).toEqual(expected);
+    expect(parseJamInvite('liquidhub://join?code=ABC1234567&endpoint=http%3A%2F%2F192.168.1.5%3A1234')).toEqual(expected);
+    expect(parseJamInvite('https://jam.example/#jam=ABC1234567')).toEqual({ code: expected.code, endpoint: 'https://jam.example' });
+  });
+  it('rejects malformed app links and endpoints', () => {
+    expect(parseJamInvite('liquidhub://other?code=ABC1234567&endpoint=https%3A%2F%2Fjam.example').code).toBe('');
+    expect(parseJamInvite('liquidhub://join?code=ABC1234567&endpoint=javascript%3Aalert(1)').code).toBe('');
+  });
+});
 
 const song: Track = {
   id: 'youtube:M7lc1UVf-VE',
