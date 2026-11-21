@@ -3,7 +3,7 @@ import { Check, Copy, Headphones, LogOut, Radio, RefreshCw, Users } from 'lucide
 import { useApp, cleanError } from '../../stores/app';
 import { canJam } from '../../../shared/jam';
 import { useJam } from './state';
-import { parseJamInvite } from '../../lib/jam';
+import { buildJamInvite, parseJamInvite } from '../../lib/jam';
 import './jam.css';
 
 export function JamSettings() {
@@ -26,7 +26,36 @@ export function JamSettings() {
     setEndpoint(jam.endpoint);
   }, [jam.endpoint]);
 
+  useEffect(() => {
+    if (jam.pendingInvite) {
+      setCode(jam.pendingInvite);
+      useJam.setState({ pendingInvite: '' });
+      document.getElementById('jam-section')?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [jam.pendingInvite]);
+
   const invite = parseJamInvite(code, jam.endpoint);
+  const join = async () => {
+    if (!name.trim()) {
+      useJam.setState({ error: 'Digite seu nome para entrar na JAM.' });
+      return;
+    }
+    if (!invite.code) {
+      useJam.setState({ error: 'Cole um convite válido ou digite o código de 10 caracteres.' });
+      return;
+    }
+    // A bare room code can refer to a LAN room, even when an online server is configured.
+    let target = invite.endpoint;
+    if (/^[A-F0-9]{10}$/i.test(code.trim())) {
+      await jam.scanLan();
+      target = useJam.getState().lanRooms.find(room => room.code === invite.code)?.endpoint || target;
+    }
+    if (!target) {
+      useJam.setState({ error: 'Sala não encontrada. Cole o convite completo ou configure o servidor da JAM.' });
+      return;
+    }
+    await jam.enter('join', name.trim(), invite.code, target);
+  };
   const save = async () => {
     setSaving(true);
     try {
@@ -59,7 +88,7 @@ export function JamSettings() {
               aria-label="Copiar convite da JAM"
               onClick={() =>
                 void navigator.clipboard
-                  .writeText(`${jam.session!.endpoint || jam.endpoint}/#jam=${jam.session!.code}`)
+                  .writeText(buildJamInvite(jam.session!.endpoint || jam.endpoint, jam.session!.code))
                   .then(() => {
                     setCopied(true);
                     setTimeout(() => setCopied(false), 1800);
@@ -75,7 +104,7 @@ export function JamSettings() {
             className="input jam-invite"
             aria-label="Convite desta JAM"
             readOnly
-            value={`${jam.session.endpoint || jam.endpoint}/#jam=${jam.session.code}`}
+            value={buildJamInvite(jam.session.endpoint || jam.endpoint, jam.session.code)}
             onFocus={e => e.currentTarget.select()}
           />
           <div className="jam-status" role="status">
@@ -169,12 +198,8 @@ export function JamSettings() {
               ))}
             </div>
           )}
-          <form
+          <div
             className="jam-join"
-            onSubmit={e => {
-              e.preventDefault();
-              void jam.enter('join', name, invite.code, invite.endpoint);
-            }}
           >
             <label className="field-label">
               Convite ou código
@@ -187,16 +212,21 @@ export function JamSettings() {
                 placeholder="Cole o convite"
                 value={code}
                 onChange={e => setCode(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') void join();
+                }}
               />
             </label>
             <button
               className="button secondary"
-              disabled={jam.busy || !name.trim() || !invite.code || !invite.endpoint}
+              type="button"
+              disabled={jam.busy}
+              onClick={() => void join()}
             >
               <Users size={15} />
               Entrar
             </button>
-          </form>
+          </div>
         </>
       )}
       {jam.error && (

@@ -91,9 +91,14 @@ test('two actual app windows follow JAM play pause seek and track changes', asyn
     }
 
     const [host, guest] = pages;
+    await guest.getByRole('button', { name: 'Configurações', exact: true }).click();
+    await guest.getByRole('button', { name: 'Entrar', exact: true }).click();
+    await expect(guest.getByRole('alert')).toContainText('Digite seu nome');
+    await guest.getByRole('textbox', { name: 'Seu nome na JAM', exact: true }).fill('Friend');
+    await guest.getByRole('button', { name: 'Entrar', exact: true }).click();
+    await expect(guest.getByRole('alert')).toContainText('convite válido');
     for (const [p, name] of [
       [host, 'Host'],
-      [guest, 'Friend'],
     ] as const) {
       await p.getByRole('button', { name: 'Configurações', exact: true }).click();
       await p.getByRole('textbox', { name: 'Seu nome na JAM', exact: true }).fill(name);

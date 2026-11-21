@@ -34,13 +34,25 @@ export function parseJamInvite(value: string, defaultEndpoint = '') {
   const clean = value.trim().replace(/\s/g, '');
   if (/^[A-F0-9]{10}$/i.test(clean)) return { code: clean.toUpperCase(), endpoint: defaultEndpoint };
   try {
-    const url = new URL(clean),
-      code = new URLSearchParams(url.hash.slice(1)).get('jam') || '';
-    if (/^[A-F0-9]{10}$/i.test(code) && !url.username && !url.password && url.pathname === '/') {
-      return { code: code.toUpperCase(), endpoint: url.origin };
+    const url = new URL(clean);
+    const deepLink = url.protocol === 'liquidhub:' && url.hostname === 'join' && url.pathname === '';
+    const params = deepLink ? url.searchParams : new URLSearchParams(url.hash.slice(1));
+    const code = params.get(deepLink ? 'code' : 'jam') || '';
+    const endpoint = params.get('endpoint') || (!deepLink ? url.origin : '');
+    const target = new URL(endpoint);
+    if (/^[A-F0-9]{10}$/i.test(code) && !url.username && !url.password &&
+        (deepLink || ((url.protocol === 'https:' || url.protocol === 'http:') && url.pathname === '/' && !url.search)) &&
+        (target.protocol === 'https:' || target.protocol === 'http:') && !target.username && !target.password &&
+        target.pathname === '/' && !target.search && !target.hash) {
+      return { code: code.toUpperCase(), endpoint: target.origin };
     }
   } catch {}
   return { code: '', endpoint: '' };
+}
+
+export function buildJamInvite(endpoint: string, code: string): string {
+  const params = new URLSearchParams({ jam: code, endpoint });
+  return `https://liquid-hub-jam.nlzezwrld.workers.dev/#${params}`;
 }
 
 /**

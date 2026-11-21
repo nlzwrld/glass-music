@@ -66,6 +66,7 @@
     "createUpdaterArtifacts": true
   },
   "plugins": {
+    "deep-link": { "desktop": { "schemes": ["liquidhub"] } },
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEMyNEY1RTA4OTI0MDI2NTMKUldSVEprQ1NDRjVQd2lrcWFoWnVzOG5WRm1oWm1WMWJxMklSdXVwQU1oeUwyNFY0U1pRMjlkdTMK",
       "windows": {
