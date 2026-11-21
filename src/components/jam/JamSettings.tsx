@@ -27,6 +27,27 @@ export function JamSettings() {
   }, [jam.endpoint]);
 
   const invite = parseJamInvite(code, jam.endpoint);
+  const join = async () => {
+    if (!name.trim()) {
+      useJam.setState({ error: 'Digite seu nome para entrar na JAM.' });
+      return;
+    }
+    if (!invite.code) {
+      useJam.setState({ error: 'Cole um convite válido ou digite o código de 10 caracteres.' });
+      return;
+    }
+    // A bare room code can refer to a LAN room, even when an online server is configured.
+    let target = invite.endpoint;
+    if (/^[A-F0-9]{10}$/i.test(code.trim())) {
+      await jam.scanLan();
+      target = useJam.getState().lanRooms.find(room => room.code === invite.code)?.endpoint || target;
+    }
+    if (!target) {
+      useJam.setState({ error: 'Sala não encontrada. Cole o convite completo ou configure o servidor da JAM.' });
+      return;
+    }
+    await jam.enter('join', name.trim(), invite.code, target);
+  };
   const save = async () => {
     setSaving(true);
     try {
@@ -169,12 +190,8 @@ export function JamSettings() {
               ))}
             </div>
           )}
-          <form
+          <div
             className="jam-join"
-            onSubmit={e => {
-              e.preventDefault();
-              void jam.enter('join', name, invite.code, invite.endpoint);
-            }}
           >
             <label className="field-label">
               Convite ou código
@@ -187,16 +204,21 @@ export function JamSettings() {
                 placeholder="Cole o convite"
                 value={code}
                 onChange={e => setCode(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') void join();
+                }}
               />
             </label>
             <button
               className="button secondary"
-              disabled={jam.busy || !name.trim() || !invite.code || !invite.endpoint}
+              type="button"
+              disabled={jam.busy}
+              onClick={() => void join()}
             >
               <Users size={15} />
               Entrar
             </button>
-          </form>
+          </div>
         </>
       )}
       {jam.error && (
@@ -231,3 +253,4 @@ export function JamSettings() {
     </div>
   );
 }
+
