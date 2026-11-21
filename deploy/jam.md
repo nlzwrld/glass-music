@@ -64,3 +64,13 @@ fly deploy --config deploy/fly.jam.toml
 
 - Se o endpoint Cloud falhar ou perder conectividade, o **Liquid Hub** aciona automaticamente o coordenador embutido em `src-tauri/src/jam_lan.rs` + descoberta UDP local (`239.255.77.88` / broadcast local) via `src/lib/discovery.ts`, mantendo a sala viva na rede privada sem interromper a música.
 - Defina `LIQUID_JAM_URL` (ou `GLASS_JAM_URL`) no build ou configure o endereço HTTPS em **Configurações → JAM**.
+
+## 4. Convites por Link, Deep Links (`liquidhub://`), SQLite e Autenticação Opcional
+
+- Cada sala gera um `roomId` interno e um código de convite CSPRNG curto de 8 caracteres (ex.: `K9M4P2XR`), com TTL configurável (`JAM_INVITE_TTL_MS`, padrão 2 horas) e rotação pelo anfitrião (`rotateInvite`).
+- O link compartilhável segue o formato `<endpoint>/jam/join/<CODIGO>`.
+- Ao abrir `<endpoint>/jam/join/<CODIGO>` no navegador, o servidor entrega a página de convite (`GET /jam/join/:code`) com preview da sala (nome, anfitrião, ouvintes, faixa atual), tentativa automática de abertura via protocolo `liquidhub://jam/join/<CODIGO>?endpoint=<origem>`, botão para copiar o código e link de download do Liquid Hub.
+- Consultas programáticas de preview podem usar `GET /v1/jam/invites/:code` ou `POST /v1/jam` com `{"action":"lookup","code":"..."}`.
+- `JAM_DB_PATH`: caminho para o arquivo SQLite de persistência de salas, membros e tombstones de convites encerrados/expirados no servidor Node (padrão `/tmp/liquid-hub-jam.sqlite` no Docker).
+- `JAM_REQUIRE_AUTH=1` + `JAM_AUTH_PUBLIC_KEY=<JWK_X_ED25519>`: exige JWT Ed25519 válido emitido pelo Broker Zero-Trust (`server/broker.ts`) para criar ou entrar em salas JAM.
+- `JAM_DOWNLOAD_URL`: URL pública exibida na página de convite caso o usuário não tenha o Liquid Hub instalado.

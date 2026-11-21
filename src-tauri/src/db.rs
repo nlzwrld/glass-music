@@ -489,6 +489,23 @@ impl Library {
         self.db.execute("INSERT INTO settings VALUES('preferences',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[p.to_string()]).map_err(|e|e.to_string())?;
         Ok(())
     }
+    pub fn jam_client_id(&self) -> String {
+        if let Ok(existing) = self.db.query_row(
+            "SELECT value FROM settings WHERE key='jam-client-id'",
+            [],
+            |r| r.get::<_, String>(0),
+        ) {
+            if !existing.is_empty() && existing.len() <= 80 {
+                return existing;
+            }
+        }
+        let id = format!("lh_{}", uuid::Uuid::new_v4().simple());
+        let _ = self.db.execute(
+            "INSERT OR REPLACE INTO settings VALUES('jam-client-id',?)",
+            [id.as_str()],
+        );
+        id
+    }
     pub fn save(&self, t: &Value, path: Option<&str>) -> Result<()> {
         validate_track(t)?;
         let mut t = t.clone();

@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import type { JamRealtimeEvent } from '../../shared/jam';
 import type { GlassAPI, MediaCommand, Snapshot, IntegrationStatus } from '../../shared/types';
 
 let resourceBase = '';
@@ -100,6 +101,32 @@ export const glass: GlassAPI = {
     let disposed = false;
     let off: (() => void) | undefined;
     void listen<MediaCommand>('media', event => callback(event.payload)).then(unlisten => {
+      if (disposed) unlisten();
+      else off = unlisten;
+    });
+    return () => {
+      disposed = true;
+      off?.();
+    };
+  },
+  consumeDeepLink: () => call<string | null>('consumeDeepLink'),
+  dispatchDeepLink: url => call<boolean>('dispatchDeepLink', url),
+  onDeepLink: callback => {
+    let disposed = false;
+    let off: (() => void) | undefined;
+    void listen<string>('deep-link', event => callback(event.payload)).then(unlisten => {
+      if (disposed) unlisten();
+      else off = unlisten;
+    });
+    return () => {
+      disposed = true;
+      off?.();
+    };
+  },
+  onJamEvent: callback => {
+    let disposed = false;
+    let off: (() => void) | undefined;
+    void listen<JamRealtimeEvent>('jam-event', event => callback(event.payload)).then(unlisten => {
       if (disposed) unlisten();
       else off = unlisten;
     });

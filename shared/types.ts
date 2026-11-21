@@ -449,6 +449,10 @@ export interface GlassAPI {
     silent?: boolean;
   }): Promise<void>;
   onMedia(callback: (command: MediaCommand) => void): () => void;
+  consumeDeepLink(): Promise<string | null>;
+  dispatchDeepLink(url: string): Promise<boolean>;
+  onDeepLink(callback: (url: string) => void): () => void;
+  onJamEvent(callback: (event: import('./jam').JamRealtimeEvent) => void): () => void;
 }
 
 declare global {

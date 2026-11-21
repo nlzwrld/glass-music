@@ -1,3 +1,8 @@
+import { generateKeyPairSync, randomBytes, sign, createHash } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { createConnection } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createJam,
@@ -6,8 +11,27 @@ import {
   type CfDurableObjectState,
   type CfJamEnv,
 } from '../../server/jam';
-import { buildJamInvite, parseJamInvite, computeBackoffMs, JamClient, JamClock, type JamSend } from '../../src/lib/jam';
-import { canJam, jamDriftMs, jamPosition, type JamRoom } from '../../shared/jam';
+import {
+  buildDiscordShareText,
+  buildJamDeepLink,
+  buildJamInvite,
+  buildJamInviteUrl,
+  buildWhatsAppShareUrl,
+  computeBackoffMs,
+  JamClient,
+  JamClock,
+  parseJamInvite,
+  type JamSend,
+} from '../../src/lib/jam';
+import {
+  canJam,
+  jamDriftMs,
+  jamPosition,
+  normalizeJamCode,
+  type JamInviteLookupResult,
+  type JamInvitePreview,
+  type JamRoom,
+} from '../../shared/jam';
 import type { Track } from '../../shared/types';
 
 describe('JAM invite links', () => {
@@ -291,7 +315,9 @@ describe('JAM coordinator and two independent clients', () => {
         friend = new JamClient(send);
       const h = await host.enter('create', 'Casa');
       const f = await friend.enter('join', 'Amigo', h.code);
-      expect(h.code).toMatch(/^[A-F0-9]{10}$/);
+      expect(h.code).toMatch(/^[A-HJ-NP-Z2-9]{8}$/);
+      expect(h.roomId).toMatch(/^jam_/);
+      expect(h.roomId).not.toBe(h.code);
       expect(h.token).not.toBe(f.token);
       expect(f.members).toHaveLength(2);
       expect(JSON.stringify(f.members)).not.toContain(h.token);
@@ -685,7 +711,13 @@ describe('JAM coordinator and two independent clients', () => {
     // Host starts on Cloud, then Cloud dies -> fallbackToLan migrates room & playback to LAN
     const host = new JamClient(lanSend as JamSend, lanDiscovery);
     host.session = {
+      roomId: 'jam_cloud_host',
       code: '1122334455',
+      roomName: 'Host Cloud',
+      status: 'active',
+      maxParticipants: 8,
+      inviteExpiresAt: Date.now() + 7_200_000,
+      createdAt: Date.now(),
       token: 'cloud-host-token',
       host: true,
       memberId: 'c-host',
@@ -704,7 +736,13 @@ describe('JAM coordinator and two independent clients', () => {
     // Guest on Cloud discovers the migrated room on LAN via UDP discovery and rejoins
     const guest = new JamClient(lanSend as JamSend, lanDiscovery);
     guest.session = {
+      roomId: 'jam_cloud_guest',
       code: '1122334455',
+      roomName: 'Host Cloud',
+      status: 'active',
+      maxParticipants: 8,
+      inviteExpiresAt: Date.now() + 7_200_000,
+      createdAt: Date.now(),
       token: 'cloud-guest-token',
       host: false,
       memberId: 'c-guest',
@@ -1172,7 +1210,13 @@ describe('JAM timing & drift compensation', () => {
 
   it('never seeks behind zero or beyond the end and does not advance a paused song', () => {
     const room: JamRoom = {
-      code: '0000000000',
+      roomId: 'jam_0',
+      code: '00000000',
+      roomName: 'Teste',
+      status: 'active',
+      maxParticipants: 8,
+      inviteExpiresAt: 99999999,
+      createdAt: 0,
       members: [],
       serverTime: 1000,
       playback: { track: song, playing: true, position: 179.5, updatedAt: 1000, sequence: 1 },
@@ -1180,5 +1224,422 @@ describe('JAM timing & drift compensation', () => {
     expect(jamPosition(room.playback, 900000)).toBe(180);
     expect(jamPosition({ ...room.playback, playing: false }, 900000)).toBe(179.5);
     expect(jamPosition({ ...room.playback, position: 0 }, 0)).toBe(0);
+  });
+});
+
+async function withV3Server(
+  run: (ctx: {
+    baseUrl: string;
+    port: number;
+    send: JamSend;
+    raw: (body: unknown, headers?: Record<string, string>) => Promise<Response>;
+    clock: { now: number };
+  }) => Promise<void>,
+  env: NodeJS.ProcessEnv = {},
+) {
+  const clock = { now: Date.now() },
+    server = createJam(env, () => clock.now);
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const raw = (body: unknown, headers: Record<string, string> = {}) =>
+    fetch(`${baseUrl}/v1/jam`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+  const send: JamSend = async <T>(body: unknown) => {
+    const reqBody = body as { action?: string; code?: string; endpoint?: string };
+    if (reqBody.action === 'lookup') {
+      const targetBase = reqBody.endpoint || baseUrl;
+      const response = await fetch(`${targetBase}/v1/jam`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'lookup', code: reqBody.code }),
+      });
+      const val = (await response.json()) as Record<string, unknown>;
+      if (response.ok) {
+        return {
+          found: true,
+          preview: { ...(val as object), endpoint: targetBase, mode: 'cloud' },
+        } as T;
+      }
+      return {
+        found: false,
+        error: String(val.error || 'Erro'),
+        errorCode: val.errorCode,
+        preview: val.preview ?? null,
+      } as T;
+    }
+    const response = await raw(body),
+      value = await response.json();
+    if (!response.ok) throw new Error(value.error);
+    return value as T;
+  };
+  try {
+    await run({ baseUrl, port, send, raw, clock });
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+}
+
+function mintTestEd25519Jwt(
+  privateKey: ReturnType<typeof generateKeyPairSync>['privateKey'],
+  sub: string,
+  nowMs: number,
+  expOffsetSec = 600,
+) {
+  const iat = Math.floor(nowMs / 1000);
+  const header = Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'JWT' })).toString('base64url');
+  const claims = Buffer.from(
+    JSON.stringify({
+      iss: 'liquid-hub-auth',
+      aud: 'liquid-hub-desktop',
+      sub,
+      fam: 'fam_test',
+      iat,
+      exp: iat + expOffsetSec,
+    }),
+  ).toString('base64url');
+  const signingInput = `${header}.${claims}`;
+  const sig = sign(null, Buffer.from(signingInput, 'ascii'), privateKey).toString('base64url');
+  return `${signingInput}.${sig}`;
+}
+
+describe('JAM v3 invites, persistence, real-time SSE, deduplication and Ed25519 auth', () => {
+  it('supports invite lookup, case-insensitive codes, tombstones, rotation, locking and HTML landing bridge', async () => {
+    await withV3Server(
+      async ({ baseUrl, send, raw, clock }) => {
+        const host = new JamClient(send);
+        const h = await host.enter('create', 'Ana <script>', undefined, baseUrl, {
+          roomName: 'Chill & Lo-Fi "Night"',
+          inviteTtlMs: 120_000,
+        });
+
+        const lowerCode = `${h.code.slice(0, 4).toLowerCase()}-${h.code.slice(4).toLowerCase()}`;
+        const lookupRes = await host.lookup(lowerCode, baseUrl);
+        expect(lookupRes.found).toBe(true);
+        expect(lookupRes.preview?.code).toBe(h.code);
+        expect(lookupRes.preview?.roomId).toBe(h.roomId);
+        expect(lookupRes.preview?.roomName).toBe('Chill & Lo-Fi "Night"');
+        expect(lookupRes.preview?.hostName).toBe('Ana <script>');
+        expect(lookupRes.preview?.participantCount).toBe(1);
+        expect(lookupRes.preview?.canJoin).toBe(true);
+
+        const restPreviewRes = await fetch(`${baseUrl}/v1/jam/invites/${lowerCode}`);
+        expect(restPreviewRes.status).toBe(200);
+        const restPreview = (await restPreviewRes.json()) as JamInvitePreview;
+        expect(restPreview.code).toBe(h.code);
+
+        const htmlRes = await fetch(`${baseUrl}/jam/join/${h.code}`);
+        expect(htmlRes.status).toBe(200);
+        expect(htmlRes.headers.get('content-type')).toContain('text/html');
+        const html = await htmlRes.text();
+        expect(html).not.toContain('Ana <script>');
+        expect(html).toContain('Ana &lt;script&gt;');
+        expect(html).toContain(`liquidhub://jam/join/${h.code}?endpoint=`);
+        expect(html).toContain('Abrir no Liquid Hub');
+        expect(html).toContain('Baixar ou instalar Liquid Hub');
+
+        const unknown = await host.lookup('ZZZZ9999', baseUrl);
+        expect(unknown.found).toBe(false);
+        expect(unknown.errorCode).toBe('INVITE_NOT_FOUND');
+
+        const invalid = await host.lookup('12', baseUrl);
+        expect(invalid.found).toBe(false);
+        expect(invalid.errorCode).toBe('INVITE_INVALID');
+
+        await host.updateRoom({ locked: true });
+        const lockedLookup = await host.lookup(h.code, baseUrl);
+        expect(lockedLookup.preview?.status).toBe('locked');
+        expect(lockedLookup.preview?.canJoin).toBe(false);
+        const lockedJoin = await raw({ action: 'join', code: h.code, name: 'Bloqueado' });
+        expect(lockedJoin.status).toBe(403);
+        await host.updateRoom({ locked: false });
+
+        const oldCode = h.code;
+        const rotated = await host.rotateInvite();
+        expect(rotated.code).not.toBe(oldCode);
+        const expiredLookup = (await host.lookup(oldCode, baseUrl)) as JamInviteLookupResult;
+        expect(expiredLookup.found).toBe(false);
+        expect(expiredLookup.errorCode).toBe('INVITE_EXPIRED');
+
+        clock.now += 125_000;
+        const ttlExpired = await host.lookup(rotated.code, baseUrl);
+        expect(ttlExpired.found).toBe(false);
+        expect(ttlExpired.errorCode).toBe('INVITE_EXPIRED');
+
+        await host.leave();
+        const endedLookup = await host.lookup(rotated.code, baseUrl);
+        expect(endedLookup.found).toBe(false);
+        expect(endedLookup.errorCode).toBe('ROOM_ENDED');
+        expect(endedLookup.preview?.status).toBe('ended');
+        const endedHtml = await fetch(`${baseUrl}/jam/join/${rotated.code}`);
+        expect(endedHtml.status).toBe(410);
+      },
+      { JAM_REPLAY_WINDOW_MS: '300000' },
+    );
+  });
+
+  it('persists rooms, members and tombstones in SQLite across server restarts', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'liquid-jam-sqlite-'));
+    const dbPath = join(dir, 'jam.sqlite');
+    let savedCode = '';
+    let hostToken = '';
+    let guestToken = '';
+
+    try {
+      await withV3Server(
+        async ({ send }) => {
+          const host = new JamClient(send);
+          const guest = new JamClient(send);
+          const h = await host.enter('create', 'PersistHost', undefined, undefined, {
+            roomName: 'Sala Persistida',
+          });
+          const g = await guest.enter('join', 'PersistGuest', h.code);
+          await host.update({ track: song, playing: true, position: 15 });
+          savedCode = h.code;
+          hostToken = h.token;
+          guestToken = g.token;
+        },
+        { JAM_DB_PATH: dbPath },
+      );
+
+      await withV3Server(
+        async ({ baseUrl, send, raw }) => {
+          const lookup = await new JamClient(send).lookup(savedCode, baseUrl);
+          expect(lookup.found).toBe(true);
+          expect(lookup.preview?.roomName).toBe('Sala Persistida');
+          expect(lookup.preview?.participantCount).toBe(2);
+          expect(lookup.preview?.currentTrack?.id).toBe(song.id);
+
+          const pollRes = await raw({ action: 'poll', code: savedCode, token: guestToken });
+          expect(pollRes.status).toBe(200);
+          const pollRoom = (await pollRes.json()) as JamRoom;
+          expect(pollRoom.playback.track?.id).toBe(song.id);
+
+          const leaveRes = await raw({ action: 'leave', code: savedCode, token: hostToken });
+          expect(leaveRes.status).toBe(200);
+        },
+        { JAM_DB_PATH: dbPath },
+      );
+
+      await withV3Server(
+        async ({ baseUrl, send }) => {
+          const ended = await new JamClient(send).lookup(savedCode, baseUrl);
+          expect(ended.found).toBe(false);
+          expect(ended.errorCode).toBe('ROOM_ENDED');
+        },
+        { JAM_DB_PATH: dbPath },
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('pushes real-time events over SSE and WebSocket and handles kick cleanly', async () => {
+    await withV3Server(async ({ baseUrl, port, send }) => {
+      const host = new JamClient(send);
+      const guest = new JamClient(send);
+      const h = await host.enter('create', 'StreamHost');
+      const g = await guest.enter('join', 'StreamGuest', h.code);
+
+      const sseController = new AbortController();
+      const sseRes = await fetch(`${baseUrl}/v1/jam/events?code=${h.code}`, {
+        headers: { Authorization: `Bearer ${g.token}` },
+        signal: sseController.signal,
+      });
+      expect(sseRes.status).toBe(200);
+      expect(sseRes.headers.get('content-type')).toContain('text/event-stream');
+
+      const reader = sseRes.body!.getReader();
+      const decoder = new TextDecoder();
+      let sseBuffer = '';
+      const readNextEvents = async (needle: string) => {
+        const deadline = Date.now() + 3000;
+        while (!sseBuffer.includes(needle) && Date.now() < deadline) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          sseBuffer += decoder.decode(value, { stream: true });
+        }
+        return sseBuffer;
+      };
+
+      await readNextEvents('event: state');
+      expect(sseBuffer).toContain('StreamGuest');
+
+      const wsChunks: string[] = [];
+      const wsSock = createConnection({ host: '127.0.0.1', port });
+      await new Promise<void>((resolve, reject) => {
+        const key = randomBytes(16).toString('base64');
+        const expectedAccept = createHash('sha1')
+          .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+          .digest('base64');
+        wsSock.once('data', chunk => {
+          const text = chunk.toString('utf8');
+          if (!text.includes(`Sec-WebSocket-Accept: ${expectedAccept}`)) {
+            reject(new Error('Invalid WS handshake'));
+            return;
+          }
+          wsChunks.push(text);
+          resolve();
+        });
+        wsSock.on('error', reject);
+        wsSock.write(
+          `GET /v1/jam/ws?code=${h.code}&token=${h.token} HTTP/1.1\r\n` +
+            `Host: 127.0.0.1:${port}\r\n` +
+            `Upgrade: websocket\r\n` +
+            `Connection: Upgrade\r\n` +
+            `Sec-WebSocket-Key: ${key}\r\n` +
+            `Sec-WebSocket-Version: 13\r\n\r\n`,
+        );
+      });
+      wsSock.on('data', chunk => wsChunks.push(chunk.toString('utf8')));
+
+      await host.update({ track: song, playing: true, position: 12 });
+      await readNextEvents('event: playback');
+      expect(sseBuffer).toContain(song.id);
+      await vi.waitFor(() => {
+        expect(wsChunks.join('')).toContain(song.id);
+      });
+
+      await host.kick(g.memberId);
+      await readNextEvents('event: kicked');
+      expect(sseBuffer).toContain('KICKED');
+
+      await reader.cancel().catch(() => {});
+      sseController.abort();
+      wsSock.destroy();
+    });
+  });
+
+  it('prevents duplicate participants, handles concurrent joins/8th-slot races and supports resume after disconnect', async () => {
+    await withV3Server(async ({ send, raw, clock }) => {
+      const host = new JamClient(send);
+      const h = await host.enter('create', 'Host');
+
+      const g1 = new JamClient(send);
+      const g2 = new JamClient(send);
+      const [s1, s2] = await Promise.all([
+        g1.enter('join', 'UserA', h.code, undefined, { clientId: 'cid_user_a_001' }),
+        g2.enter('join', 'UserB', h.code, undefined, { clientId: 'cid_user_b_002' }),
+      ]);
+      expect(s1.memberId).not.toBe(s2.memberId);
+      expect((await host.update({ track: null, playing: false, position: 0 })).members).toHaveLength(3);
+
+      const dupRes = await (
+        await raw({
+          action: 'join',
+          code: h.code,
+          name: 'UserA',
+          clientId: 'cid_user_a_001',
+        })
+      ).json();
+      expect(dupRes.memberId).toBe(s1.memberId);
+      expect(dupRes.members).toHaveLength(3);
+
+      clock.now += 36_000;
+      const pruned = await host.update({ track: null, playing: false, position: 0 });
+      expect(pruned.members).toHaveLength(1);
+      await expect(g1.update()).rejects.toThrow(/expirou/);
+
+      const resumed = await g1.resume();
+      expect(resumed.code).toBe(h.code);
+      expect(resumed.memberId).toBe(s1.memberId);
+      expect(resumed.members).toHaveLength(2);
+
+      for (let i = 0; i < 5; i++) {
+        await new JamClient(send).enter('join', `G${i}`, h.code);
+      }
+      const [rA, rB] = await Promise.all([
+        raw({ action: 'join', code: h.code, name: 'RaceA' }),
+        raw({ action: 'join', code: h.code, name: 'RaceB' }),
+      ]);
+      const statuses = [rA.status, rB.status].sort();
+      expect(statuses).toEqual([200, 409]);
+    });
+  });
+
+  it('enforces server-side Ed25519 authentication when JAM_REQUIRE_AUTH=1', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const jwk = publicKey.export({ format: 'jwk' }) as { x: string };
+
+    await withV3Server(
+      async ({ raw, clock }) => {
+        const unauthCreate = await raw({ action: 'create', name: 'Anon' });
+        expect(unauthCreate.status).toBe(401);
+        expect((await unauthCreate.json()).errorCode).toBe('AUTH_REQUIRED');
+
+        const expiredJwt = mintTestEd25519Jwt(privateKey, 'usr_alice', clock.now - 1200_000, 600);
+        const expiredCreate = await raw(
+          { action: 'create', name: 'Alice' },
+          { authorization: `Bearer ${expiredJwt}` },
+        );
+        expect(expiredCreate.status).toBe(401);
+
+        const aliceJwt = mintTestEd25519Jwt(privateKey, 'usr_alice', clock.now);
+        const aliceCreate = await raw(
+          { action: 'create', name: 'Alice' },
+          { authorization: `Bearer ${aliceJwt}` },
+        );
+        expect(aliceCreate.status).toBe(201);
+        const created = await aliceCreate.json();
+
+        const unauthJoin = await raw({ action: 'join', code: created.code, name: 'Anon' });
+        expect(unauthJoin.status).toBe(401);
+
+        const bobJwt = mintTestEd25519Jwt(privateKey, 'usr_bob', clock.now);
+        const bobJoin = await raw(
+          { action: 'join', code: created.code, name: 'Bob' },
+          { authorization: `Bearer ${bobJwt}` },
+        );
+        expect(bobJoin.status).toBe(200);
+        const joined = await bobJoin.json();
+        expect(joined.members).toHaveLength(2);
+      },
+      { JAM_REQUIRE_AUTH: '1', JAM_AUTH_PUBLIC_KEY: jwk.x },
+    );
+  });
+
+  it('parses shareable URLs, deep links, pasted messages, raw codes and generates WhatsApp/Discord shares', () => {
+    expect(normalizeJamCode('k9m4-p2xr')).toBe('K9M4P2XR');
+    expect(parseJamInvite('https://liquidhub.app/jam/join/k9m4p2xr')).toEqual({
+      code: 'K9M4P2XR',
+      endpoint: 'https://liquidhub.app',
+    });
+    expect(
+      parseJamInvite('liquidhub://jam/join/K9M4P2XR?endpoint=https%3A%2F%2Fjam.liquidhub.app'),
+    ).toEqual({
+      code: 'K9M4P2XR',
+      endpoint: 'https://jam.liquidhub.app',
+    });
+    expect(parseJamInvite('http://192.168.1.42:8789/jam/join/abc12345')).toEqual({
+      code: 'ABC12345',
+      endpoint: 'http://192.168.1.42:8789',
+    });
+    expect(parseJamInvite('Bora ouvir música! https://liquidhub.app/jam/join/XYZ98765')).toEqual({
+      code: 'XYZ98765',
+      endpoint: 'https://liquidhub.app',
+    });
+    expect(parseJamInvite('k9m4 p2xr', 'https://jam.liquidhub.app')).toEqual({
+      code: 'K9M4P2XR',
+      endpoint: 'https://jam.liquidhub.app',
+    });
+    expect(parseJamInvite('javascript:alert(1)')).toEqual({ code: '', endpoint: '' });
+    expect(parseJamInvite('http://evil.example/jam/join/K9M4P2XR')).toEqual({
+      code: '',
+      endpoint: '',
+    });
+
+    const inviteUrl = buildJamInviteUrl('K9M4P2XR', 'https://liquidhub.app');
+    expect(inviteUrl).toBe('https://liquidhub.app/jam/join/K9M4P2XR');
+    expect(buildJamDeepLink('K9M4P2XR', 'https://liquidhub.app')).toBe(
+      'liquidhub://jam/join/K9M4P2XR?endpoint=https%3A%2F%2Fliquidhub.app',
+    );
+    expect(buildWhatsAppShareUrl('Sextou', inviteUrl, 'K9M4P2XR')).toContain(
+      'https://wa.me/?text=',
+    );
+    expect(buildDiscordShareText('Sextou', inviteUrl, 'K9M4P2XR')).toContain(inviteUrl);
   });
 });

@@ -15,6 +15,7 @@ import Home from '../pages/Home';
 import { AutoUpdates } from '../lib/updates';
 import { LyricsWindowBridge } from '../lib/lyricsWindow';
 import { JamEngine } from '../components/jam/JamEngine';
+import { JamInviteModal } from '../components/jam/JamInviteModal';
 import { useJam } from '../components/jam/state';
 import { parseJamInvite } from '../lib/jam';
 import { getCurrent, onOpenUrl } from '@tauri-apps/plugin-deep-link';
@@ -42,14 +43,29 @@ export default function App() {
     matchMedia('(prefers-color-scheme: light)').matches,
   );
   const artworkTracks = useApp(s => s.data.tracks);
-  const pendingInvite = useJam(s => s.pendingInvite);
+  const queuedDeepLink = useRef('');
 
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    const pendingInviteCode = () => {
+      const pInvite = useJam.getState().pendingInvite;
+      if (!pInvite) return '';
+      return pInvite.result?.preview?.code || parseJamInvite(pInvite.raw).code;
+    };
+    const openOrQueue = (url: string) => {
+      const parsed = parseJamInvite(url);
+      if (!parsed.code || disposed) return;
+      if (!useApp.getState().ready) {
+        queuedDeepLink.current = url;
+        return;
+      }
+      if (pendingInviteCode() === parsed.code) return;
+      void useJam.getState().openInviteModal(url);
+    };
     const receive = (urls: string[]) => {
       const invite = urls.find(url => url.startsWith('liquidhub://') && parseJamInvite(url).code);
-      if (invite && !disposed) useJam.setState({ pendingInvite: invite });
+      if (invite) openOrQueue(invite);
     };
     void (async () => {
       try {
@@ -66,8 +82,18 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (ready && pendingInvite) useApp.getState().setPage('settings');
-  }, [ready, pendingInvite]);
+    if (!ready || !queuedDeepLink.current) return;
+    const queued = queuedDeepLink.current;
+    queuedDeepLink.current = '';
+    const parsed = parseJamInvite(queued);
+    const pInvite = useJam.getState().pendingInvite;
+    const currentCode = pInvite
+      ? pInvite.result?.preview?.code || parseJamInvite(pInvite.raw).code
+      : '';
+    if (parsed.code && currentCode !== parsed.code) {
+      void useJam.getState().openInviteModal(queued);
+    }
+  }, [ready]);
 
   useEffect(() => {
     purgeSensitiveWebStorage();
@@ -224,6 +250,7 @@ export default function App() {
           </div>
           <LyricsWindowBridge />
           <JamEngine />
+          <JamInviteModal />
           <ExpandedPlayer />
           <Queue />
           <Lyrics />

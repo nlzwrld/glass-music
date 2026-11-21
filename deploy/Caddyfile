@@ -1,4 +1,4 @@
-(security_headers) {
+(api_security_headers) {
     header {
         Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
         Content-Security-Policy "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
@@ -12,6 +12,17 @@
     }
 }
 
+(jam_gateway_headers) {
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "no-referrer"
+        Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+        -Server
+    }
+}
+
 {$CATALOG_DOMAIN} {
     encode zstd gzip
     request_body {
@@ -21,7 +32,7 @@
         header_up X-Liquid-Client-IP {remote_host}
         header_up X-Glass-Client-IP {remote_host}
     }
-    import security_headers
+    import api_security_headers
 }
 
 {$JAM_DOMAIN:jam.localhost} {
@@ -29,8 +40,15 @@
     request_body {
         max_size 16KB
     }
+    @jam_html {
+        path /jam/join/* /join/*
+    }
+    @jam_api {
+        not path /jam/join/* /join/*
+    }
     reverse_proxy jam:8789 {
         header_up X-Liquid-Client-IP {remote_host}
     }
-    import security_headers
+    header @jam_api Content-Security-Policy "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+    import jam_gateway_headers
 }

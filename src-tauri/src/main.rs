@@ -5,6 +5,7 @@ mod catalog;
 mod collections;
 mod corners;
 mod db;
+mod deeplink;
 mod desktop_backdrop;
 mod direct_catalog;
 mod jam;
@@ -77,6 +78,27 @@ struct State {
     accounts: accounts::Accounts,
     offline: offline::Downloads,
     notifications: Mutex<media::NotificationGate>,
+    pending_deep_link: Mutex<Option<String>>,
+    jam_realtime: jam::JamRealtime,
+}
+
+fn dispatch_deep_link(app: &tauri::AppHandle, raw: &str) -> bool {
+    let Some(canonical) = deeplink::parse_and_validate(raw) else {
+        return false;
+    };
+    if let Some(st) = app.try_state::<State>() {
+        if let Ok(mut pending) = st.pending_deep_link.lock() {
+            *pending = Some(canonical.clone());
+        }
+    }
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        let _ = app.emit_to("main", "glass-visual-visible", true);
+    }
+    let _ = app.emit_to("main", "deep-link", canonical);
+    true
 }
 
 fn status(st: &State) -> Value {
@@ -260,6 +282,8 @@ async fn call(
                 }
                 if p["onlineConsent"] == true && p["onboardingDone"] == true {
                     direct_catalog::warm_visitor();
+                } else {
+                    st.jam_realtime.stop();
                 }
             }
             Ok(p)
@@ -1259,11 +1283,23 @@ async fn call(
         "jam" => {
             let pref = st.db.lock().unwrap().pref();
             jam::call(
+                &app,
+                &st.db,
+                &st.secrets,
+                &st.jam_realtime,
                 &p,
                 db::s(&pref, "jamEndpoint"),
                 pref["onlineConsent"] == true && pref["onboardingDone"] == true,
             )
             .await
+        }
+        "consumeDeepLink" => {
+            let link = st.pending_deep_link.lock().unwrap().take();
+            Ok(json!(link))
+        }
+        "dispatchDeepLink" => {
+            let raw = p.as_str().unwrap_or("");
+            Ok(json!(dispatch_deep_link(&app, raw)))
         }
         "updateStatus" => {
             let pref = st.db.lock().unwrap().pref();
@@ -1380,7 +1416,11 @@ fn debug_test_webview_data_dir() -> Option<PathBuf> {
 fn main() {
     let builder = tauri::Builder::default();
     let builder = if std::env::var_os("GLASS_TEST_DATA").is_none() {
-        builder.plugin(tauri_plugin_single_instance::init(|app, _, _| {
+        builder.plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            if let Some(link) = deeplink::extract_from_args(args.iter().skip(1)) {
+                dispatch_deep_link(app, &link);
+                return;
+            }
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
                 let _ = w.unminimize();
@@ -1439,7 +1479,9 @@ fn main() {
             std::fs::create_dir_all(&data)?;
             if !is_test {
                 migrate_legacy_profile_if_needed(&data);
+                let _ = deeplink::register_windows_protocol();
             }
+            let initial_deep_link = deeplink::extract_from_args(std::env::args().skip(1));
             let db = Library::open(&data.join("library.sqlite"))?;
             media::seed(&db, &app.path().resource_dir()?)?;
             let pref = db.pref();
@@ -1462,6 +1504,8 @@ fn main() {
                 catalog_url: catalog::configured_url()?,
                 direct: direct_catalog::DirectCatalog::new(app.path().resource_dir()?),
                 notifications: Mutex::new(media::NotificationGate::new()),
+                pending_deep_link: Mutex::new(initial_deep_link),
+                jam_realtime: jam::JamRealtime::new(),
             });
             let menu = Menu::with_items(
                 app,

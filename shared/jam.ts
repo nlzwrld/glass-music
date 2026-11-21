@@ -3,6 +3,21 @@ import type { Track } from './types';
 /** Only public metadata and playback state leave the device; never audio or local paths. */
 export type JamTransportMode = 'cloud' | 'lan' | 'lan-fallback';
 
+export type JamRoomStatus = 'active' | 'full' | 'locked' | 'ended' | 'expired';
+
+export type JamErrorCode =
+  | 'INVITE_INVALID'
+  | 'INVITE_NOT_FOUND'
+  | 'INVITE_EXPIRED'
+  | 'ROOM_ENDED'
+  | 'ROOM_FULL'
+  | 'ROOM_LOCKED'
+  | 'AUTH_REQUIRED'
+  | 'SESSION_EXPIRED'
+  | 'FORBIDDEN'
+  | 'KICKED'
+  | 'UNAVAILABLE';
+
 export interface JamPlayback {
   track: Track | null;
   playing: boolean;
@@ -15,10 +30,49 @@ export interface JamMember {
   id: string;
   name: string;
   host: boolean;
+  avatar?: string;
+  online?: boolean;
+  joinedAt?: number;
+}
+
+export interface JamInvitePreview {
+  roomId: string;
+  code: string;
+  roomName: string;
+  hostName: string;
+  hostAvatar?: string;
+  participantCount: number;
+  maxParticipants: number;
+  status: JamRoomStatus;
+  canJoin: boolean;
+  reason?: string;
+  requireAuth?: boolean;
+  currentTrack?: Pick<Track, 'id' | 'title' | 'artist' | 'artwork' | 'source'> | null;
+  playing?: boolean;
+  inviteExpiresAt: number;
+  createdAt: number;
+  serverTime: number;
+  endpoint?: string;
+  mode?: JamTransportMode;
+}
+
+export interface JamInviteLookupResult {
+  found: boolean;
+  preview?: JamInvitePreview | null;
+  error?: string;
+  errorCode?: JamErrorCode;
 }
 
 export interface JamRoom {
+  roomId: string;
   code: string;
+  roomName: string;
+  status: JamRoomStatus;
+  locked?: boolean;
+  requireAuth?: boolean;
+  maxParticipants: number;
+  inviteExpiresAt: number;
+  createdAt: number;
   members: JamMember[];
   playback: JamPlayback;
   serverTime: number;
@@ -30,26 +84,50 @@ export interface JamSession extends JamRoom {
   token: string;
   memberId: string;
   host: boolean;
+  clientId?: string;
   endpoint?: string;
   mode?: JamTransportMode;
+  inviteUrl?: string;
+  deepLinkUrl?: string;
 }
 
 export interface LanJamAnnouncement {
+  roomId?: string;
   code: string;
+  roomName?: string;
   endpoint: string;
   hostName: string;
   members: number;
+  maxParticipants?: number;
+  status?: JamRoomStatus;
+  currentTrackTitle?: string;
+  currentTrackArtist?: string;
   updatedAt: number;
+}
+
+export interface JamRealtimeEvent {
+  event: 'state' | 'playback' | 'closed' | 'kicked' | 'stream_open' | 'stream_closed';
+  room?: JamRoom;
+  reason?: string;
+  errorCode?: JamErrorCode;
+  serverTime?: number;
 }
 
 export type JamAction =
   | 'create'
   | 'createLocal'
+  | 'lookup'
   | 'join'
+  | 'resume'
   | 'poll'
   | 'sync'
   | 'ping'
   | 'discoverLan'
+  | 'rotateInvite'
+  | 'updateRoom'
+  | 'kick'
+  | 'subscribe'
+  | 'unsubscribe'
   | 'leave';
 
 export interface JamRequest {
@@ -57,7 +135,15 @@ export interface JamRequest {
   code?: string;
   preferredCode?: string;
   token?: string;
+  resumeToken?: string;
   name?: string;
+  roomName?: string;
+  avatar?: string;
+  clientId?: string;
+  memberId?: string;
+  locked?: boolean;
+  requireAuth?: boolean;
+  inviteTtlMs?: number;
   endpoint?: string;
   nonce?: string;
   timestamp?: number;
@@ -70,6 +156,11 @@ export interface JamPingResponse {
   pong: true;
   serverTime: number;
   echoClientTime?: number;
+}
+
+export function normalizeJamCode(raw: string): string {
+  const cleaned = raw.trim().replace(/[\s-]+/g, '').toUpperCase();
+  return /^[A-Z0-9]{6,16}$/.test(cleaned) ? cleaned : '';
 }
 
 export function jamPosition(playback: JamPlayback, serverTime: number) {

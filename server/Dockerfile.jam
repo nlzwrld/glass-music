@@ -5,6 +5,7 @@ ENV NODE_ENV=production \
     JAM_HOST=0.0.0.0 \
     PORT=8789 \
     JAM_STRICT_REPLAY=1 \
+    JAM_DB_PATH=/tmp/liquid-hub-jam.sqlite \
     UV_THREADPOOL_SIZE=4 \
     NODE_OPTIONS="--max-old-space-size=192"
 COPY --chown=node:node server/jam.ts ./server/

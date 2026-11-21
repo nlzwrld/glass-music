@@ -1,10 +1,12 @@
 import { invoke } from '@tauri-apps/api/core';
-import type {
-  JamPingResponse,
-  JamRequest,
-  JamRoom,
-  JamSession,
-  LanJamAnnouncement,
+import {
+  normalizeJamCode,
+  type JamInviteLookupResult,
+  type JamPingResponse,
+  type JamRequest,
+  type JamRoom,
+  type JamSession,
+  type LanJamAnnouncement,
 } from '../../shared/jam';
 import { discoverLanJamRooms } from './discovery';
 
@@ -30,29 +32,171 @@ export function computeBackoffMs(
   return Math.max(baseMs, Math.min(maxMs, Math.round(exp + jitter)));
 }
 
-export function parseJamInvite(value: string, defaultEndpoint = '') {
-  const clean = value.trim().replace(/\s/g, '');
-  if (/^[A-F0-9]{10}$/i.test(clean)) return { code: clean.toUpperCase(), endpoint: defaultEndpoint };
+function isLocalHostname(host: string): boolean {
+  const low = host.toLowerCase();
+  if (low === 'localhost' || low === '[::1]') return true;
+  if (/^127\./.test(low) || /^10\./.test(low) || /^192\.168\./.test(low)) return true;
+  const m172 = /^172\.(\d{1,3})\./.exec(low);
+  if (m172) {
+    const second = Number(m172[1]);
+    if (second >= 16 && second <= 31) return true;
+  }
+  return low.startsWith('[fc') || low.startsWith('[fd');
+}
+
+export function validateSafeEndpoint(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
   try {
-    const url = new URL(clean);
-    const deepLink = url.protocol === 'liquidhub:' && url.hostname === 'join' && url.pathname === '';
-    const params = deepLink ? url.searchParams : new URLSearchParams(url.hash.slice(1));
-    const code = params.get(deepLink ? 'code' : 'jam') || '';
-    const endpoint = params.get('endpoint') || (!deepLink ? url.origin : '');
-    const target = new URL(endpoint);
-    if (/^[A-F0-9]{10}$/i.test(code) && !url.username && !url.password &&
-        (deepLink || ((url.protocol === 'https:' || url.protocol === 'http:') && url.pathname === '/' && !url.search)) &&
-        (target.protocol === 'https:' || target.protocol === 'http:') && !target.username && !target.password &&
-        target.pathname === '/' && !target.search && !target.hash) {
-      return { code: code.toUpperCase(), endpoint: target.origin };
+    const u = new URL(trimmed);
+    if (u.username || u.password || u.search || u.hash || u.pathname !== '/') {
+      return '';
+    }
+    if (u.protocol === 'https:') return u.origin;
+    if (u.protocol === 'http:' && isLocalHostname(u.hostname)) return u.origin;
+  } catch {}
+  return '';
+}
+
+export function parseJamInvite(value: string, defaultEndpoint = ''): { code: string; endpoint: string } {
+  const trimmed = value.trim();
+  const safeDefault = validateSafeEndpoint(defaultEndpoint);
+  if (!trimmed) return { code: '', endpoint: '' };
+
+  // Direct raw invite code (e.g. "K9M4P2XR", "k9m4-p2xr", "ABCDEF0123")
+  const directCode = normalizeJamCode(trimmed);
+  if (directCode) {
+    return { code: directCode, endpoint: safeDefault };
+  }
+
+  // Extract URL even if user pasted a shared chat message from WhatsApp/Discord
+  const urlMatch = /(liquidhub:\/\/[^\s<>"']+|https?:\/\/[^\s<>"']+)/i.exec(trimmed);
+  const candidate = urlMatch ? urlMatch[1]!.replace(/[),.;!?]+$/, '') : trimmed;
+
+  try {
+    const url = new URL(candidate);
+    if (url.username || url.password) return { code: '', endpoint: '' };
+
+    if (url.protocol === 'liquidhub:') {
+      const segs = url.pathname
+        .split('/')
+        .map(s => decodeURIComponent(s.trim()))
+        .filter(Boolean);
+      const host = url.hostname.toLowerCase();
+      let rawCode = '';
+      if (host === 'jam') {
+        if (segs.length === 2 && segs[0]!.toLowerCase() === 'join') rawCode = segs[1]!;
+        else if (segs.length === 1) rawCode = segs[0]!;
+        else if (segs.length === 0) rawCode = url.searchParams.get('code') || url.searchParams.get('jam') || '';
+        else return { code: '', endpoint: '' };
+      } else if (host === 'join') {
+        if (segs.length === 1) rawCode = segs[0]!;
+        else if (segs.length === 0) rawCode = url.searchParams.get('code') || url.searchParams.get('jam') || '';
+        else return { code: '', endpoint: '' };
+      } else {
+        return { code: '', endpoint: '' };
+      }
+
+      const code = normalizeJamCode(rawCode);
+      if (!code) return { code: '', endpoint: '' };
+
+      const epParam = url.searchParams.get('endpoint') || '';
+      const resolvedEp = epParam ? validateSafeEndpoint(epParam) : safeDefault;
+      if (epParam && !resolvedEp) return { code: '', endpoint: '' };
+      return { code, endpoint: resolvedEp };
+    }
+
+    if (url.protocol === 'https:' || url.protocol === 'http:') {
+      const origin = validateSafeEndpoint(url.origin);
+      if (!origin) return { code: '', endpoint: '' };
+
+      const segs = url.pathname
+        .split('/')
+        .map(s => decodeURIComponent(s.trim()))
+        .filter(Boolean);
+      let rawCode = '';
+      let epParam = url.searchParams.get('endpoint') || '';
+      if (segs.length === 3 && segs[0]!.toLowerCase() === 'jam' && segs[1]!.toLowerCase() === 'join') {
+        rawCode = segs[2]!;
+      } else if (segs.length === 2 && segs[0]!.toLowerCase() === 'join') {
+        rawCode = segs[1]!;
+      } else {
+        rawCode = url.searchParams.get('jam') || url.searchParams.get('code') || '';
+      }
+      if (!rawCode && url.hash) {
+        const frag = url.hash.replace(/^#[?/]?/, '');
+        const hashParams = new URLSearchParams(frag);
+        rawCode = hashParams.get('jam') || hashParams.get('code') || '';
+        if (!epParam) epParam = hashParams.get('endpoint') || '';
+      }
+      const code = normalizeJamCode(rawCode);
+      if (!code) return { code: '', endpoint: '' };
+      const targetEndpoint = epParam ? validateSafeEndpoint(epParam) : origin;
+      if (epParam && !targetEndpoint) return { code: '', endpoint: '' };
+      return { code, endpoint: targetEndpoint };
     }
   } catch {}
+
   return { code: '', endpoint: '' };
 }
 
 export function buildJamInvite(endpoint: string, code: string): string {
-  const params = new URLSearchParams({ jam: code, endpoint });
-  return `https://liquid-hub-jam.nlzezwrld.workers.dev/#${params}`;
+  const cleanCode = normalizeJamCode(code) || code.trim().toUpperCase();
+  const cleanEp = validateSafeEndpoint(endpoint) || endpoint.trim().replace(/\/+$/, '');
+  if (cleanEp && !cleanEp.includes('liquid-hub-jam.nlzezwrld.workers.dev') && isLocalJamEndpoint(cleanEp)) {
+    const params = new URLSearchParams({ jam: cleanCode, endpoint: cleanEp });
+    return `https://liquid-hub-jam.nlzezwrld.workers.dev/#${params}`;
+  }
+  return buildJamInviteUrl(cleanCode, cleanEp);
+}
+
+export function buildJamInviteUrl(code: string, endpoint?: string): string {
+  const cleanCode = normalizeJamCode(code) || code.trim().toUpperCase();
+  const cleanEp = (endpoint || '').trim().replace(/\/+$/, '');
+  if (cleanEp) {
+    return `${cleanEp}/jam/join/${cleanCode}`;
+  }
+  return `liquidhub://jam/join/${cleanCode}`;
+}
+
+export function buildJamDeepLink(code: string, endpoint?: string): string {
+  const cleanCode = normalizeJamCode(code) || code.trim().toUpperCase();
+  const cleanEp = (endpoint || '').trim().replace(/\/+$/, '');
+  return cleanEp
+    ? `liquidhub://jam/join/${cleanCode}?endpoint=${encodeURIComponent(cleanEp)}`
+    : `liquidhub://jam/join/${cleanCode}`;
+}
+
+export function buildWhatsAppShareUrl(roomName: string, inviteUrl: string, code: string): string {
+  const text = `Entre na minha JAM "${roomName}" no Liquid Hub!\nLink: ${inviteUrl}\nCódigo: ${code}`;
+  return `https://wa.me/?text=${encodeURIComponent(text)}`;
+}
+
+export function buildDiscordShareText(roomName: string, inviteUrl: string, code: string): string {
+  return `🎧 **${roomName}** — Entra na minha JAM no Liquid Hub!\n🔗 ${inviteUrl}\n🔑 Código: \`${code}\``;
+}
+
+export async function shareNativeInvite(opts: {
+  roomName: string;
+  inviteUrl: string;
+  code: string;
+}): Promise<'shared' | 'copied'> {
+  if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+    try {
+      await navigator.share({
+        title: `${opts.roomName} · Liquid Hub JAM`,
+        text: `Entre na minha JAM "${opts.roomName}" no Liquid Hub (código ${opts.code})`,
+        url: opts.inviteUrl,
+      });
+      return 'shared';
+    } catch (e) {
+      if (e instanceof Error && e.name === 'AbortError') {
+        throw e;
+      }
+    }
+  }
+  await navigator.clipboard.writeText(opts.inviteUrl);
+  return 'copied';
 }
 
 /**
@@ -104,13 +248,14 @@ export function isLocalJamEndpoint(endpoint?: string): boolean {
 }
 
 export function jamWebSocketUrl(endpoint: string | undefined, code: string, token: string): string | null {
-  if (!endpoint || !/^[A-F0-9]{10}$/.test(code) || !token) return null;
+  const cleanCode = normalizeJamCode(code);
+  if (!endpoint || !cleanCode || cleanCode.length < 8 || !token) return null;
   try {
     const u = new URL(endpoint);
     if (u.username || u.password || u.pathname !== '/' || u.search || u.hash) return null;
     if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
     const protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${protocol}//${u.host}/v1/jam/ws?code=${encodeURIComponent(code)}&token=${encodeURIComponent(token)}`;
+    return `${protocol}//${u.host}/v1/jam/ws?code=${encodeURIComponent(cleanCode)}&token=${encodeURIComponent(token)}`;
   } catch {
     return null;
   }
@@ -145,13 +290,28 @@ export class JamClient {
   session: JamSession | null = null;
   readonly clock = new JamClock();
   private lastKnownName = 'Ouvinte';
+  private lastRoomName = '';
+  private lastAvatar = '';
+  private clientId = '';
   private lastSequence = -1;
   private cachedRoom: JamRoom | null = null;
+  private enterLock: Promise<JamSession> | null = null;
+  private send: JamSend;
+  private lanDiscovery: (code?: string) => Promise<LanJamAnnouncement[]>;
 
   constructor(
-    private send: JamSend = sendJam,
-    private lanDiscovery: (code?: string) => Promise<LanJamAnnouncement[]> = discoverLanJamRooms,
-  ) {}
+    send: JamSend = sendJam,
+    lanDiscovery: (code?: string) => Promise<LanJamAnnouncement[]> = discoverLanJamRooms,
+  ) {
+    this.send = send;
+    this.lanDiscovery = lanDiscovery;
+  }
+
+  setClientId(id: string) {
+    if (id && /^[A-Za-z0-9_-]{8,80}$/.test(id)) {
+      this.clientId = id;
+    }
+  }
 
   private stamp(request: JamRequest): JamRequest {
     const now = Date.now();
@@ -171,6 +331,16 @@ export class JamClient {
     return value;
   }
 
+  private decorateSession(session: JamSession, fallbackEndpoint?: string): JamSession {
+    const ep = session.endpoint || fallbackEndpoint || '';
+    return {
+      ...session,
+      ...(ep ? { endpoint: ep } : {}),
+      inviteUrl: buildJamInviteUrl(session.code, ep),
+      deepLinkUrl: buildJamDeepLink(session.code, ep),
+    };
+  }
+
   async ping(endpoint?: string): Promise<number> {
     const targetEndpoint = endpoint ?? this.session?.endpoint;
     const start = Date.now();
@@ -182,25 +352,134 @@ export class JamClient {
     return Math.max(0, end - start);
   }
 
+  async lookup(codeOrUrl: string, defaultEndpoint = ''): Promise<JamInviteLookupResult> {
+    const parsed = parseJamInvite(codeOrUrl, defaultEndpoint);
+    if (!parsed.code) {
+      return {
+        found: false,
+        errorCode: 'INVITE_INVALID',
+        error: 'Digite um código válido (6 a 16 letras/números) ou cole um link de convite.',
+      };
+    }
+    return this.send<JamInviteLookupResult>({
+      action: 'lookup',
+      code: parsed.code,
+      ...(parsed.endpoint ? { endpoint: parsed.endpoint } : {}),
+    });
+  }
+
   async enter(
     action: 'create' | 'createLocal' | 'join',
     name: string,
     code?: string,
     endpoint?: string,
-  ) {
-    this.clock.reset();
-    this.lastSequence = -1;
-    this.cachedRoom = null;
-    this.lastKnownName = name || 'Ouvinte';
-    const session = await this.request<JamSession>({ action, name, code, endpoint });
-    session.mode =
-      action === 'createLocal' || isLocalJamEndpoint(session.endpoint || endpoint)
-        ? 'lan'
-        : 'cloud';
-    this.session = session;
-    this.cachedRoom = session;
-    this.lastSequence = session.playback.sequence;
-    return session;
+    opts?: {
+      roomName?: string;
+      avatar?: string;
+      clientId?: string;
+      requireAuth?: boolean;
+      inviteTtlMs?: number;
+    },
+  ): Promise<JamSession> {
+    if (this.enterLock) return this.enterLock;
+    const task = (async () => {
+      this.clock.reset();
+      this.lastSequence = -1;
+      this.cachedRoom = null;
+      this.lastKnownName = name.trim() || 'Ouvinte';
+      if (opts?.roomName !== undefined) this.lastRoomName = opts.roomName.trim();
+      if (opts?.avatar !== undefined) this.lastAvatar = opts.avatar.trim();
+      const cid = opts?.clientId || this.clientId || undefined;
+      const normCode = code ? normalizeJamCode(code) || code.trim().toUpperCase() : undefined;
+
+      const rawSession = await this.request<JamSession>({
+        action,
+        name: this.lastKnownName,
+        ...(normCode ? { code: normCode } : {}),
+        ...(endpoint ? { endpoint } : {}),
+        ...(this.lastRoomName ? { roomName: this.lastRoomName } : {}),
+        ...(this.lastAvatar ? { avatar: this.lastAvatar } : {}),
+        ...(cid ? { clientId: cid } : {}),
+        ...(opts?.requireAuth !== undefined ? { requireAuth: opts.requireAuth } : {}),
+        ...(opts?.inviteTtlMs !== undefined ? { inviteTtlMs: opts.inviteTtlMs } : {}),
+      });
+      rawSession.mode =
+        action === 'createLocal' || isLocalJamEndpoint(rawSession.endpoint || endpoint)
+          ? 'lan'
+          : 'cloud';
+      const session = this.decorateSession(rawSession, endpoint);
+      this.session = session;
+      this.cachedRoom = session;
+      this.lastSequence = session.playback.sequence;
+      return session;
+    })();
+    this.enterLock = task;
+    try {
+      return await task;
+    } finally {
+      if (this.enterLock === task) this.enterLock = null;
+    }
+  }
+
+  async resume(): Promise<JamSession> {
+    const s = this.session;
+    if (!s) throw new Error('Nenhuma sessão JAM para restaurar.');
+    const rawSession = await this.request<JamSession>({
+      action: 'resume',
+      code: s.code,
+      resumeToken: s.token,
+      name: this.lastKnownName,
+      ...(s.clientId || this.clientId ? { clientId: s.clientId || this.clientId } : {}),
+      ...(s.endpoint ? { endpoint: s.endpoint } : {}),
+    });
+    rawSession.mode = s.mode || (isLocalJamEndpoint(rawSession.endpoint || s.endpoint) ? 'lan' : 'cloud');
+    const restored = this.decorateSession(rawSession, s.endpoint);
+    this.session = restored;
+    this.cachedRoom = restored;
+    this.lastSequence = restored.playback.sequence;
+    return restored;
+  }
+
+  async rotateInvite(): Promise<JamRoom> {
+    const s = this.session;
+    if (!s) throw new Error('Entre em uma JAM.');
+    const room = await this.request<JamRoom>({
+      action: 'rotateInvite',
+      code: s.code,
+      token: s.token,
+      endpoint: s.endpoint,
+    });
+    return this.applyPush(room);
+  }
+
+  async updateRoom(patch: {
+    roomName?: string;
+    locked?: boolean;
+    requireAuth?: boolean;
+  }): Promise<JamRoom> {
+    const s = this.session;
+    if (!s) throw new Error('Entre em uma JAM.');
+    const room = await this.request<JamRoom>({
+      action: 'updateRoom',
+      code: s.code,
+      token: s.token,
+      endpoint: s.endpoint,
+      ...patch,
+    });
+    return this.applyPush(room);
+  }
+
+  async kick(memberId: string): Promise<JamRoom> {
+    const s = this.session;
+    if (!s) throw new Error('Entre em uma JAM.');
+    const room = await this.request<JamRoom>({
+      action: 'kick',
+      code: s.code,
+      token: s.token,
+      endpoint: s.endpoint,
+      memberId,
+    });
+    return this.applyPush(room);
   }
 
   private cleanPlayback(playback?: JamRequest['playback']) {
@@ -239,20 +518,32 @@ export class JamClient {
   }
 
   applyRoom(room: JamRoom): JamRoom {
-    if (room.unchanged && this.cachedRoom) {
-      const merged: JamRoom = {
-        ...room,
-        playback: {
-          ...room.playback,
-          track: room.playback.track ?? this.cachedRoom.playback.track,
+    return this.applyPush(room);
+  }
+
+  applyPush(room: JamRoom): JamRoom {
+    const merged: JamRoom =
+      room.unchanged && this.cachedRoom
+        ? {
+            ...room,
+            playback: {
+              ...room.playback,
+              track: room.playback.track ?? this.cachedRoom.playback.track,
+            },
+          }
+        : room;
+    this.cachedRoom = merged;
+    this.lastSequence = merged.playback.sequence;
+    if (this.session) {
+      this.session = this.decorateSession(
+        {
+          ...this.session,
+          ...merged,
         },
-      };
-      this.cachedRoom = merged;
-      return merged;
+        this.session.endpoint,
+      );
     }
-    this.cachedRoom = room;
-    this.lastSequence = room.playback.sequence;
-    return room;
+    return merged;
   }
 
   async update(playback?: JamRequest['playback']) {
@@ -267,7 +558,7 @@ export class JamClient {
       ...(!isSync && this.lastSequence >= 0 ? { sinceSequence: this.lastSequence } : {}),
       ...(isSync ? { playback: this.cleanPlayback(playback) } : {}),
     });
-    return this.applyRoom(room);
+    return this.applyPush(room);
   }
 
   /**
@@ -280,18 +571,27 @@ export class JamClient {
     if (!current || current.mode === 'lan' || current.mode === 'lan-fallback') return null;
 
     if (current.host) {
-      const migrated = await this.request<JamSession>({
+      const migratedRaw = await this.request<JamSession>({
         action: 'createLocal',
         name: this.lastKnownName,
+        roomName: current.roomName || this.lastRoomName || undefined,
         preferredCode: current.code,
+        ...(this.clientId || current.clientId ? { clientId: this.clientId || current.clientId } : {}),
       });
-      migrated.mode = 'lan-fallback';
+      migratedRaw.mode = 'lan-fallback';
+      let migrated = this.decorateSession(migratedRaw);
       this.session = migrated;
       this.cachedRoom = migrated;
       this.lastSequence = migrated.playback.sequence;
       if (playback) {
         const synced = await this.update(playback);
-        this.session = { ...migrated, playback: synced.playback, members: synced.members };
+        migrated = this.decorateSession({
+          ...migrated,
+          ...synced,
+          playback: synced.playback,
+          members: synced.members,
+        });
+        this.session = migrated;
       }
       return this.session;
     }
@@ -299,24 +599,30 @@ export class JamClient {
     const matches = await this.lanDiscovery(current.code);
     const target = matches[0];
     if (!target?.endpoint) return null;
-    const rejoined = await this.request<JamSession>({
+    const rejoinedRaw = await this.request<JamSession>({
       action: 'join',
       name: this.lastKnownName,
       code: target.code,
       endpoint: target.endpoint,
+      ...(this.clientId || current.clientId ? { clientId: this.clientId || current.clientId } : {}),
     });
-    rejoined.mode = 'lan-fallback';
+    rejoinedRaw.mode = 'lan-fallback';
+    const rejoined = this.decorateSession(rejoinedRaw, target.endpoint);
     this.session = rejoined;
     this.cachedRoom = rejoined;
     this.lastSequence = rejoined.playback.sequence;
     return rejoined;
   }
 
-  async leave() {
-    const s = this.session;
+  clearLocal() {
     this.session = null;
     this.cachedRoom = null;
     this.lastSequence = -1;
+  }
+
+  async leave() {
+    const s = this.session;
+    this.clearLocal();
     if (s) {
       await this.request<{ serverTime: number }>({
         action: 'leave',
