@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { resolve, join } from 'node:path';
 import { createCatalog } from '../../server/catalog';
-import { navButton } from './ui';
+import { navButton, waitForCdp } from './ui';
 
 // The desktop and catalog server are real. Only external platform responses are fixtures.
 // This test never sends owner credentials or fixture search terms to a real platform.
@@ -39,8 +39,8 @@ test('shared catalog: consent, discovery, search, pagination and recovery withou
   expect(targetVersion).toBeTruthy();
   let page: Page;
   try {
-    processHandle = spawn(process.env.GLASS_EXE || join(process.env.LOCALAPPDATA!, 'Liquid Hub/liquid-hub.exe'), [], { windowsHide: true, env: { ...process.env, GLASS_TEST_DATA: profile, GLASS_TEST_CATALOG_URL: base, WEBVIEW2_USER_DATA_FOLDER: join(profile, 'webview'), WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=9339' } });
-    for (let i = 0; i < 90; i++) { try { if ((await fetch('http://127.0.0.1:9339/json/version')).ok) break; } catch {} await new Promise(r => setTimeout(r, 300)); }
+    processHandle = spawn(process.env.GLASS_EXE || join(process.env.LOCALAPPDATA!, 'Liquid Hub/liquid-hub.exe'), [], { windowsHide: true, env: { ...process.env, GLASS_TEST_DATA: profile, GLASS_TEST_CATALOG_URL: base, GLASS_TEST_DISABLE_DIRECT: '1', WEBVIEW2_USER_DATA_FOLDER: join(profile, 'webview'), WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=9339' } });
+    await waitForCdp(processHandle, 9339, 90, 300);
     browser = await chromium.connectOverCDP('http://127.0.0.1:9339');
     page = browser.contexts()[0].pages()[0];
     page.on('pageerror', e => errors.push(e.message));
@@ -65,17 +65,24 @@ test('shared catalog: consent, discovery, search, pagination and recovery withou
     await page.keyboard.press('Control+k');
     await page.getByRole('textbox', { name: 'Buscar músicas, artistas e playlists' }).fill('ambient');
     await page.getByRole('button', { name: 'Músicas', exact: true }).click();
-    await expect(page.locator('.search-page .track-row')).toHaveCount(2);
-    await page.getByRole('button', { name: 'Carregar mais', exact: true }).click();
-    await expect(page.locator('.search-page .track-row')).toHaveCount(4);
-    await expect(page.getByRole('button', { name: 'Carregar mais', exact: true })).toHaveCount(0);
+    // Keep the fixture offline: "Todas" also includes Deezer, which is not a shared-catalog provider.
+    const rows = page.locator('.search-page .track-row');
+    for (const source of ['YouTube', 'SoundCloud']) {
+      await page.getByRole('button', { name: source, exact: true }).click();
+      await expect(rows).toHaveCount(1);
+      await page.getByRole('button', { name: 'Carregar mais', exact: true }).click();
+      await expect(rows).toHaveCount(2);
+      await expect(page.getByRole('button', { name: 'Carregar mais', exact: true })).toHaveCount(0);
+    }
     failSoundcloud = true;
-    const request = { query: 'recover', kind: 'track' as const, source: 'all' as const, requestId: 'recover-one' };
+    const request = { query: 'recover', kind: 'track' as const, source: 'soundcloud' as const, requestId: 'recover-one' };
+    const healthy = await page.evaluate(r => window.glass.search(r), { ...request, source: 'youtube' as const, requestId: 'recover-youtube' });
+    expect(healthy.items.map(t => t.source)).toEqual(['youtube']); expect(healthy.notices).toEqual([]);
     const partial = await page.evaluate(r => window.glass.search(r), request);
-    expect(partial.items.map(t => t.source)).toEqual(['youtube']); expect(partial.notices).toHaveLength(1);
+    expect(partial.items).toEqual([]); expect(partial.notices).toHaveLength(1);
     failSoundcloud = false;
     const recovered = await page.evaluate(r => window.glass.search(r), { ...request, requestId: 'recover-two' });
-    expect(recovered.items.map(t => t.source)).toEqual(['youtube', 'soundcloud']); expect(recovered.notices).toEqual([]);
+    expect(recovered.items.map(t => t.source)).toEqual(['soundcloud']); expect(recovered.notices).toEqual([]);
     await navButton(page,'Configurações').click();
     await page.getByRole('switch', { name: 'Acesso online' }).click();
     await expect.poll(() => page.evaluate(async () => (await window.glass.bootstrap()).preferences.catalogConsent)).toBe(false);
@@ -86,7 +93,7 @@ test('shared catalog: consent, discovery, search, pagination and recovery withou
     const after = await page.evaluate(r => window.glass.search(r), { ...request, requestId: 'after-revoke' });
     expect(after.items).toEqual([]); expect(after.notices.join()).toContain('Ative as integrações'); expect(traffic).toHaveLength(count);
     expect(errors).toEqual([]);
-    await writeFile('test-results/catalog-validation.json', JSON.stringify({ version: '2.0.1', testedAt: new Date().toISOString(), desktop: 'real Tauri/WebView2', catalog: 'real HTTP server', platformResponses: 'test fixtures, no live credentials', consentBeforeNetwork: true, noEndUserKeys: true, discoveryBothSources: true, paginationItems: 4, transientFailureRecovery: true, revocationBlocksNetwork: true, responsive920: true, errors }, null, 2));
+    await writeFile('test-results/catalog-validation.json', JSON.stringify({ version: targetVersion, testedAt: new Date().toISOString(), desktop: 'real Tauri/WebView2', catalog: 'real HTTP server', platformResponses: 'test fixtures, no live credentials', consentBeforeNetwork: true, noEndUserKeys: true, discoveryBothSources: true, paginationItems: 4, transientFailureRecovery: true, revocationBlocksNetwork: true, responsive920: true, errors }, null, 2));
   } finally {
     if (processHandle && !processHandle.killed) processHandle.kill();
     if (browser) await browser.close().catch(() => {});

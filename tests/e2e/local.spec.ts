@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { mkdir,mkdtemp,writeFile } from 'node:fs/promises';
 import { join,resolve } from 'node:path';
 import { defaults } from '../../shared/types';
-import { activeAudio, navButton } from './ui';
+import { activeAudio, navButton, waitForCdp } from './ui';
 
 test('existing local audio remains playable offline with the optical engine',async()=>{
  test.setTimeout(45000);await mkdir('.test-data/profiles',{recursive:true});await mkdir('test-results',{recursive:true});
@@ -18,7 +18,7 @@ test('existing local audio remains playable offline with the optical engine',asy
  let browser:Browser|undefined;const errors:string[]=[];
  const proc=spawn(process.env.GLASS_EXE||join(process.env.LOCALAPPDATA!,'Liquid Hub/liquid-hub.exe'),[],{windowsHide:true,env:{...process.env,GLASS_TEST_DATA:profile,GLASS_TEST_DISABLE_DIRECT:'1',WEBVIEW2_USER_DATA_FOLDER:join(profile,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9347'}});
  try{
-  for(let i=0;i<90;i++){try{if((await fetch('http://127.0.0.1:9347/json/version')).ok)break;}catch{}await new Promise(r=>setTimeout(r,200));}
+  await waitForCdp(proc, 9347, 90, 200);
   browser=await chromium.connectOverCDP('http://127.0.0.1:9347');const page=browser.contexts()[0].pages()[0];page.on('pageerror',e=>errors.push(e.message));
   await expect(page.locator('.welcome-screen')).toHaveCount(0,{timeout:15000});await navButton(page,'Biblioteca').click();await page.getByRole('button',{name:`Reproduzir ${track.title}`,exact:true}).click();
   await expect.poll(()=>activeAudio(page).evaluate((a:HTMLAudioElement)=>a.currentTime)).toBeGreaterThan(.8);await expect(page.locator('html')).toHaveAttribute('data-optical-engine',/webgl|css/);

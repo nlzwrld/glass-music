@@ -1348,6 +1348,35 @@ async fn call(
     }
 }
 
+#[cfg(any(debug_assertions, test))]
+fn parse_debug_cdp_port(raw: &str) -> Option<u16> {
+    raw.trim()
+        .strip_prefix("--remote-debugging-port=")?
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port >= 1024)
+}
+
+#[cfg(debug_assertions)]
+fn debug_test_browser_args() -> Option<String> {
+    std::env::var_os("GLASS_TEST_DATA")?;
+    let raw = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").ok()?;
+    let port = parse_debug_cdp_port(&raw)?;
+    // Pass the CDP port programmatically via CoreWebView2EnvironmentOptions so WebView2 v150+
+    // honors it inside elevated CI runners (e.g. GitHub Actions windows-latest).
+    Some(format!(
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --remote-debugging-port={port}"
+    ))
+}
+
+#[cfg(debug_assertions)]
+fn debug_test_webview_data_dir() -> Option<PathBuf> {
+    std::env::var_os("GLASS_TEST_DATA")?;
+    std::env::var_os("WEBVIEW2_USER_DATA_FOLDER")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
 fn main() {
     let builder = tauri::Builder::default();
     let builder = if std::env::var_os("GLASS_TEST_DATA").is_none() {
@@ -1374,12 +1403,33 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![call])
         .setup(|app| {
-            if let Some(window) = app.get_webview_window("main") {
-                window.set_size(main_window_size(&window))?;
-                let _ = window.center();
-                if let Ok(hwnd) = window.hwnd() {
-                    corners::attach(hwnd.0);
+            let window = {
+                let main_config = app
+                    .config()
+                    .app
+                    .windows
+                    .iter()
+                    .find(|w| w.label == "main")
+                    .ok_or("Configuração da janela principal ausente.")?;
+                #[cfg_attr(not(debug_assertions), allow(unused_mut))]
+                let mut main_builder =
+                    tauri::WebviewWindowBuilder::from_config(app.handle(), main_config)?;
+                #[cfg(debug_assertions)]
+                {
+                    if let Some(dir) = debug_test_webview_data_dir() {
+                        std::fs::create_dir_all(&dir)?;
+                        main_builder = main_builder.data_directory(dir);
+                    }
+                    if let Some(args) = debug_test_browser_args() {
+                        main_builder = main_builder.additional_browser_args(&args);
+                    }
                 }
+                main_builder.build()?
+            };
+            window.set_size(main_window_size(&window))?;
+            let _ = window.center();
+            if let Ok(hwnd) = window.hwnd() {
+                corners::attach(hwnd.0);
             }
             let is_test = std::env::var_os("GLASS_TEST_DATA").is_some();
             let data = std::env::var_os("GLASS_TEST_DATA")
@@ -1392,9 +1442,7 @@ fn main() {
             let db = Library::open(&data.join("library.sqlite"))?;
             media::seed(&db, &app.path().resource_dir()?)?;
             let pref = db.pref();
-            if let Some(window) = app.get_webview_window("main") {
-                native_environment(&window, &pref);
-            }
+            native_environment(&window, &pref);
             let keys = secrets::Secrets::load(&data.join("credentials.dpapi"))?;
             let db = Arc::new(Mutex::new(db));
             let audio = Arc::new(audio::AudioStreams::new());
@@ -1429,7 +1477,7 @@ fn main() {
                     &MenuItem::with_id(app, "quit", "Sair", true, None::<&str>)?,
                 ],
             )?;
-            TrayIconBuilder::with_id("main-tray")
+            if let Err(err) = TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("Liquid Hub")
                 .menu(&menu)
@@ -1448,7 +1496,10 @@ fn main() {
                     }
                     _ => {}
                 })
-                .build(app)?;
+                .build(app)
+            {
+                eprintln!("Aviso: ícone da bandeja indisponível: {err}");
+            }
             if pref["globalShortcuts"] == true {
                 app.state::<State>()
                     .shortcuts
@@ -1498,4 +1549,19 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("Falha ao iniciar Liquid Hub");
+}
+
+#[cfg(test)]
+mod main_tests {
+    use super::parse_debug_cdp_port;
+
+    #[test]
+    fn parse_debug_cdp_port_accepts_valid_unprivileged_port_only() {
+        assert_eq!(parse_debug_cdp_port("--remote-debugging-port=9347"), Some(9347));
+        assert_eq!(parse_debug_cdp_port("  --remote-debugging-port=9339  "), Some(9339));
+        assert_eq!(parse_debug_cdp_port("--remote-debugging-port=80"), None);
+        assert_eq!(parse_debug_cdp_port("--remote-debugging-port=9347 --disable-web-security"), None);
+        assert_eq!(parse_debug_cdp_port("--disable-web-security"), None);
+        assert_eq!(parse_debug_cdp_port(""), None);
+    }
 }
