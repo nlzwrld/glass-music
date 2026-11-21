@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -120,5 +121,58 @@ describe('catalog provenance', () => {
       expect(await readFile(join(assetsDir, ...path.split('/')), 'utf8')).toBe(bytes);
     }
     expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it('extracts root-level yt-dlp archive entries into yt-dlp/ while preserving repo licenses and plugins', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'liquid-catalog-zip-'));
+    roots.push(root);
+    const assetsDir = join(root, 'catalog');
+    const archiveSrc = join(root, 'archive-src');
+    const zipPath = join(root, 'yt-dlp_win.zip');
+
+    const repoFiles: Record<string, string> = {
+      'plugins/liquid_hub/extractor/fixture.py': 'valid plugin\n',
+      'yt-dlp-LICENSE': 'unlicense\n',
+      'yt-dlp-THIRD_PARTY_LICENSES.txt': 'third party\n',
+    };
+    for (const [path, bytes] of Object.entries(repoFiles)) {
+      const target = join(assetsDir, ...path.split('/'));
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, bytes);
+    }
+
+    const archiveFiles: Record<string, string> = {
+      'yt-dlp.exe': 'fake-ytdlp-binary',
+      '_internal/mod.pyd': 'fake-pyd-binary',
+    };
+    for (const [path, bytes] of Object.entries(archiveFiles)) {
+      const target = join(archiveSrc, ...path.split('/'));
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, bytes);
+    }
+    const created = spawnSync('tar', ['-a', '-cf', zipPath, '-C', archiveSrc, 'yt-dlp.exe', '_internal'], {
+      windowsHide: true,
+    });
+    expect(created.status).toBe(0);
+    const zipBytes = await readFile(zipPath);
+
+    const declared: Record<string, string> = {
+      ...Object.fromEntries(Object.entries(repoFiles).map(([path, bytes]) => [path, hash(bytes)])),
+      'yt-dlp/yt-dlp.exe': hash(archiveFiles['yt-dlp.exe']),
+      'yt-dlp/_internal/mod.pyd': hash(archiveFiles['_internal/mod.pyd']),
+    };
+    await writeFile(
+      join(assetsDir, 'PROVENANCE.json'),
+      JSON.stringify({ version: '2026.10.26', asset: 'yt-dlp_win.zip', sha256: hash(zipBytes), files: declared }),
+    );
+
+    const fetchImpl = vi.fn(async () => new Response(zipBytes));
+    const result = await ensureCatalogBinaries({ assetsDir, fetchImpl });
+    expect(result).toEqual({ verified: true, downloaded: true, version: '2026.10.26' });
+    expect(await readFile(join(assetsDir, 'yt-dlp', 'yt-dlp.exe'), 'utf8')).toBe('fake-ytdlp-binary');
+    expect(await readFile(join(assetsDir, 'yt-dlp', '_internal', 'mod.pyd'), 'utf8')).toBe('fake-pyd-binary');
+    expect(await readFile(join(assetsDir, 'yt-dlp-LICENSE'), 'utf8')).toBe('unlicense\n');
+    expect(await readFile(join(assetsDir, 'yt-dlp-THIRD_PARTY_LICENSES.txt'), 'utf8')).toBe('third party\n');
+    expect(await readFile(join(assetsDir, 'plugins', 'liquid_hub', 'extractor', 'fixture.py'), 'utf8')).toBe('valid plugin\n');
   });
 });

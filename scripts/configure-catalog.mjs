@@ -9,7 +9,7 @@ import { TextDecoder } from 'node:util';
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const catalogAssetsDir = join(rootDir, 'assets', 'catalog');
 const catalogJsonPath = join(rootDir, 'src-tauri', 'catalog.json');
-const archiveManagedEntries = new Set(['yt-dlp', 'yt-dlp-LICENSE', 'yt-dlp-THIRD_PARTY_LICENSES.txt']);
+const archiveManagedEntries = new Set(['yt-dlp']);
 
 function sha256Bytes(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
@@ -224,19 +224,15 @@ export async function ensureCatalogBinaries({
     }
 
     await copyCatalogMetadata(assetsDir, stagedCatalog);
+    const stagedYtDlpDir = join(stagedCatalog, 'yt-dlp');
+    await mkdir(stagedYtDlpDir, { recursive: true });
     await writeFile(tempZip, zipBuffer);
-    const extract = process.platform === 'win32'
-      ? spawnSyncImpl(
-          'powershell.exe',
-          [
-            '-NoProfile',
-            '-NonInteractive',
-            '-Command',
-            `Expand-Archive -LiteralPath '${tempZip.replace(/'/g, "''")}' -DestinationPath '${stagedCatalog.replace(/'/g, "''")}' -Force`,
-          ],
-          { stdio: 'inherit', windowsHide: true },
-        )
-      : spawnSyncImpl('tar', ['-xf', tempZip, '-C', stagedCatalog], { stdio: 'inherit' });
+    // Use bsdtar on Windows too: avoids Windows PowerShell 5.1 Expand-Archive crashing
+    // when invoked from PowerShell 7 (pwsh) steps with PS7 modules on PSModulePath.
+    const extract = spawnSyncImpl('tar', ['-xf', tempZip, '-C', stagedYtDlpDir], {
+      stdio: 'inherit',
+      windowsHide: true,
+    });
     if (extract.error) throw extract.error;
     if (extract.status !== 0) throw new Error(`Falha ao extrair ${asset} (status ${extract.status}).`);
 

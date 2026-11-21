@@ -150,11 +150,27 @@ export function createGitHubCliAdapter({ repository, env = process.env, spawn = 
     }
   };
   return {
-    getRelease(tag) {
-      return apiJson(['api', `repos/${repository}/releases/tags/${encodeURIComponent(tag)}`], true);
+    async getRelease(tag) {
+      const published = await apiJson(
+        ['api', `repos/${repository}/releases/tags/${encodeURIComponent(tag)}`],
+        true,
+      );
+      if (published) return published;
+      // GitHub's /releases/tags/{tag} endpoint returns 404 for draft releases; list includes drafts.
+      const list = await apiJson(['api', `repos/${repository}/releases?per_page=100`], false);
+      return Array.isArray(list) ? list.find(item => item?.tag_name === tag) || null : null;
     },
     async resolveTag(tag) {
-      const payload = await apiJson(['api', `repos/${repository}/commits/${encodeURIComponent(tag)}`], true);
+      const ref = await apiJson(
+        ['api', `repos/${repository}/git/ref/tags/${encodeURIComponent(tag)}`],
+        true,
+      );
+      if (!ref?.object?.sha) return null;
+      if (ref.object.type === 'commit') return ref.object.sha;
+      const payload = await apiJson(
+        ['api', `repos/${repository}/commits/${encodeURIComponent(tag)}`],
+        true,
+      );
       return payload?.sha || null;
     },
     async createDraft({ tag, commit, title, notesPath }) {

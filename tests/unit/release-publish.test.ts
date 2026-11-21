@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { reconcileRelease } from '../../scripts/publish-release.mjs';
+import { createGitHubCliAdapter, reconcileRelease } from '../../scripts/publish-release.mjs';
 import type { GitHubAdapter, GitHubRelease, GitHubReleaseAsset } from '../../scripts/publish-release.mjs';
 import type { ReleaseInventory } from '../../scripts/update-manifest.mjs';
 
@@ -110,5 +110,33 @@ describe('publish reconciliation', () => {
     github.getRelease.mockRejectedValue(new Error('HTTP 401: bad credentials'));
     await expect(reconcileRelease({ github, inventory, commit })).rejects.toThrow('HTTP 401');
     expect(github.mutations).toEqual([]);
+  });
+
+  it('finds draft releases via releases list and resolves missing/existing tags via git/ref/tags', async () => {
+    const calls: string[][] = [];
+    const adapter = createGitHubCliAdapter({
+      repository: 'owner/repo',
+      spawn: ((_cmd: string, args: string[]) => {
+        calls.push(args);
+        if (args[1] === 'repos/owner/repo/releases/tags/v1.2.3') {
+          return { status: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)' };
+        }
+        if (args[1] === 'repos/owner/repo/releases?per_page=100') {
+          return { status: 0, stdout: JSON.stringify([{ tag_name: 'v1.2.3', draft: true, assets: [] }]), stderr: '' };
+        }
+        if (args[1] === 'repos/owner/repo/git/ref/tags/v1.2.3') {
+          return { status: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)' };
+        }
+        if (args[1] === 'repos/owner/repo/git/ref/tags/v1.2.2') {
+          return { status: 0, stdout: JSON.stringify({ object: { type: 'commit', sha: commit } }), stderr: '' };
+        }
+        return { status: 1, stdout: '', stderr: `unexpected ${args.join(' ')}` };
+      }) as never,
+    });
+
+    expect(await adapter.getRelease('v1.2.3')).toEqual({ tag_name: 'v1.2.3', draft: true, assets: [] });
+    expect(await adapter.resolveTag('v1.2.3')).toBeNull();
+    expect(await adapter.resolveTag('v1.2.2')).toBe(commit);
+    expect(calls.some(args => args[1]?.includes('/commits/v1.2.3'))).toBe(false);
   });
 });
