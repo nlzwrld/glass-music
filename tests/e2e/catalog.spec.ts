@@ -2,6 +2,7 @@ import { test, expect, chromium, type Browser, type Page } from '@playwright/tes
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { resolve, join } from 'node:path';
+import { createBroker } from '../../server/broker';
 import { createCatalog } from '../../server/catalog';
 import { navButton, waitForCdp } from './ui';
 
@@ -31,6 +32,18 @@ test('shared catalog: consent, discovery, search, pagination and recovery withou
   const server = createCatalog({ YOUTUBE_API_KEY: 'fixture-owner-key', SOUNDCLOUD_CLIENT_ID: 'fixture-owner-id', SOUNDCLOUD_CLIENT_SECRET: 'fixture-owner-secret' }, api as typeof fetch);
   server.on('request', req => traffic.push(req.url || ''));
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+  const brokerServer = createBroker(
+    {
+      BROKER_ACCESS_TOKEN: 'catalog-e2e-broker-secret-token-123456',
+      SOUNDCLOUD_CLIENT_ID: 'catalog-sc-id',
+      SOUNDCLOUD_CLIENT_SECRET: 'catalog-sc-secret',
+    },
+    async () => new Response(JSON.stringify({ access_token: 'sc', expires_in: 3600 })),
+    Date.now,
+    { argon2Params: { memory: 1024, passes: 1, parallelism: 1, tagLength: 16 } },
+  );
+  await new Promise<void>(done => brokerServer.listen(0, '127.0.0.1', done));
+  const brokerUrl = `http://127.0.0.1:${(brokerServer.address() as { port: number }).port}`;
   await mkdir('.test-data/profiles', { recursive: true });
   const profile = await mkdtemp(resolve('.test-data/profiles/catalog-'));
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -39,7 +52,7 @@ test('shared catalog: consent, discovery, search, pagination and recovery withou
   expect(targetVersion).toBeTruthy();
   let page: Page;
   try {
-    processHandle = spawn(process.env.GLASS_EXE || join(process.env.LOCALAPPDATA!, 'Liquid Hub/liquid-hub.exe'), [], { windowsHide: true, env: { ...process.env, GLASS_TEST_DATA: profile, GLASS_TEST_CATALOG_URL: base, GLASS_TEST_DISABLE_DIRECT: '1', WEBVIEW2_USER_DATA_FOLDER: join(profile, 'webview'), WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=9339' } });
+    processHandle = spawn(process.env.GLASS_EXE || join(process.env.LOCALAPPDATA!, 'Liquid Hub/liquid-hub.exe'), [], { windowsHide: true, env: { ...process.env, GLASS_TEST_DATA: profile, GLASS_TEST_CATALOG_URL: base, GLASS_TEST_DISABLE_DIRECT: '1', LIQUID_HUB_BROKER_URL: brokerUrl, WEBVIEW2_USER_DATA_FOLDER: join(profile, 'webview'), WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=9339' } });
     await waitForCdp(processHandle, 9339, 90, 300);
     browser = await chromium.connectOverCDP('http://127.0.0.1:9339');
     const context = browser.contexts()[0];
@@ -53,6 +66,15 @@ test('shared catalog: consent, discovery, search, pagination and recovery withou
     expect(denied).toBe(true); expect(traffic).toEqual([]);
     await page.getByRole('button', { name: 'Permitir e continuar', exact: true }).click();
     await expect.poll(() => page.evaluate(async () => (await window.glass.bootstrap()).preferences.catalogConsent)).toBe(true);
+    const gate = page.locator('.auth-gate');
+    await expect(gate).toBeVisible({ timeout: 15000 });
+    await gate.getByRole('button', { name: 'Entrar com e-mail', exact: true }).click();
+    await gate.getByRole('button', { name: 'Criar conta com e-mail', exact: true }).click();
+    await gate.getByLabel('Nome de exibição').fill('CatalogTester');
+    await gate.getByLabel('E-mail').fill('catalog-qa@liquidhub.dev');
+    await gate.getByLabel('Senha (mínimo 12 caracteres)').fill('CatalogStrongPass!2026');
+    await gate.getByRole('button', { name: 'Criar conta', exact: true }).click();
+    await expect(page.locator('.sidebar .brand')).toBeVisible({ timeout: 15000 });
     await page.getByRole('button', { name: 'Início', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Música em alta no YouTube · BR' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Eletrônica no SoundCloud' })).toBeVisible();
@@ -99,5 +121,6 @@ test('shared catalog: consent, discovery, search, pagination and recovery withou
     if (processHandle && !processHandle.killed) processHandle.kill();
     if (browser) await browser.close().catch(() => {});
     server.closeAllConnections(); await new Promise<void>(done => server.close(() => done()));
+    brokerServer.closeAllConnections(); await new Promise<void>(done => brokerServer.close(() => done()));
   }
 });
