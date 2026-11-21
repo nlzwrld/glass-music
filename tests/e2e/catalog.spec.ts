@@ -42,7 +42,8 @@ test('shared catalog: consent, discovery, search, pagination and recovery withou
     processHandle = spawn(process.env.GLASS_EXE || join(process.env.LOCALAPPDATA!, 'Liquid Hub/liquid-hub.exe'), [], { windowsHide: true, env: { ...process.env, GLASS_TEST_DATA: profile, GLASS_TEST_CATALOG_URL: base, GLASS_TEST_DISABLE_DIRECT: '1', WEBVIEW2_USER_DATA_FOLDER: join(profile, 'webview'), WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=9339' } });
     await waitForCdp(processHandle, 9339, 90, 300);
     browser = await chromium.connectOverCDP('http://127.0.0.1:9339');
-    page = browser.contexts()[0].pages()[0];
+    const context = browser.contexts()[0];
+    page = context.pages()[0] || await context.waitForEvent('page', { timeout: 15000 });
     page.on('pageerror', e => errors.push(e.message));
     await expect(page.getByRole('button',{name:'Permitir e continuar'})).toBeVisible({timeout:15000});
     await expect(page.getByRole('dialog', { name: 'Permitir acesso online?' }).getByRole('button', { name: 'Agora não', exact: true })).toBeVisible();
