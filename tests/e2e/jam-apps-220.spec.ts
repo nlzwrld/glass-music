@@ -198,4 +198,3 @@ test('two actual app windows follow JAM play pause seek and track changes', asyn
     await Promise.all(browsers.map(b => b.close().catch(() => {})));
   }
 });
-
