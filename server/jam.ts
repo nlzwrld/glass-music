@@ -3306,10 +3306,11 @@ export async function handleCloudflareJamFetch(request: Request, env: CfJamEnv):
       const forwarded = new Request(request.url, {
         method: request.method,
         headers,
+        redirect: 'manual',
         body:
           request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined,
       });
-      return env.JAM_ROOMS.get(env.JAM_ROOMS.idFromName('__hub_auth_v1__')).fetch(forwarded);
+      return await env.JAM_ROOMS.get(env.JAM_ROOMS.idFromName('__hub_auth_v1__')).fetch(forwarded);
     }
 
     if (url.pathname.startsWith('/v1/jam/invites/') && request.method === 'GET') {

@@ -149,17 +149,18 @@ export function createDoSqliteAdapter(
       }
     },
     prepare(query: string): StatementLike {
+      const sanitize = (params: unknown[]) => params.map(p => (p === undefined ? null : p));
       return {
         run(...params: unknown[]) {
-          sql.exec(query, ...params);
+          sql.exec(query, ...sanitize(params));
           return {};
         },
         get(...params: unknown[]) {
-          const rows = sql.exec(query, ...params).toArray();
+          const rows = sql.exec(query, ...sanitize(params)).toArray();
           return rows[0];
         },
         all(...params: unknown[]) {
-          return sql.exec(query, ...params).toArray();
+          return sql.exec(query, ...sanitize(params)).toArray();
         },
       };
     },
