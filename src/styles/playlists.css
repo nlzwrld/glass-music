@@ -178,6 +178,11 @@ html:not([data-ui-style='glass']) .track-table.is-reorderable .track-table-headi
 .sidebar-bottom>.sidebar-account-btn{flex:1;min-width:0}
 .sidebar-profile-link{width:30px;height:30px;flex:none;border-radius:10px}
 
+.platform-icon.youtube-icon{width:17px;height:12px}
+.platform-icon.soundcloud-icon{width:19px;height:11px}
+.cover[data-yt-thumb='true']>img{transform:scale(1.35)}
+.track-card:hover .card-cover>.cover[data-yt-thumb='true']>img{transform:scale(1.38)}
+
 .track-table:not(.is-reorderable) .track-table-heading,.track-table:not(.is-reorderable) .track-row{grid-template-columns:30px minmax(100px,1fr) 103px 96px 52px}
 .track-row>time{text-align:right;font-variant-numeric:tabular-nums}
 

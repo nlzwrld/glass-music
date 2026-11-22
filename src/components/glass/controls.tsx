@@ -107,11 +107,19 @@ export function Toggle({
 
 export function PlatformIcon({ source, url }: { source: string; url?: string }) {
   const kind = detectPlatform(source, url);
-  if (kind === 'youtube' || kind === 'ytmusic')
+  if (kind === 'youtube')
     return (
       <svg className="platform-icon youtube-icon" viewBox="0 0 28 20" aria-hidden="true">
-        <rect width="28" height="20" rx="5" fill="#ff1717" />
-        <path d="m11 5 8 5-8 5z" fill="white" />
+        <rect width="28" height="20" rx="6" fill="#ff0033" />
+        <path d="m11 5.5 8 4.5-8 4.5V5.5Z" fill="#ffffff" />
+      </svg>
+    );
+  if (kind === 'ytmusic')
+    return (
+      <svg className="platform-icon ytmusic-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="10" fill="#ff0033" />
+        <circle cx="12" cy="12" r="5.6" fill="none" stroke="#ffffff" strokeWidth="1.35" opacity="0.9" />
+        <path d="m10.4 9.3 4.5 2.7-4.5 2.7V9.3Z" fill="#ffffff" />
       </svg>
     );
   if (kind === 'soundcloud')
@@ -199,11 +207,13 @@ export function SourceBadge({
     streamProvider && streamProvider !== 'local'
       ? detectPlatform(streamProvider)
       : undefined;
-  const crossStream =
-    streamKind &&
-    streamKind !== catalogKind &&
-    !(catalogKind === 'youtube' && streamKind === 'ytmusic');
-  const streamLabel = crossStream ? platformLabels[streamKind] : undefined;
+  const isSameYoutubeFamily =
+    (catalogKind === 'youtube' || catalogKind === 'ytmusic') &&
+    (streamKind === 'youtube' || streamKind === 'ytmusic');
+  const crossStream = Boolean(
+    streamKind && streamKind !== catalogKind && !isSameYoutubeFamily,
+  );
+  const streamLabel = crossStream ? platformLabels[streamKind!] : undefined;
 
   const tooltip = streamLabel
     ? `Importado do ${catalogLabel} • Tocando via ${streamLabel}`
@@ -218,9 +228,6 @@ export function SourceBadge({
       aria-label={tooltip}
     >
       <PlatformIcon source={catalogSource || source} url={url} />
-      {crossStream && compact && (
-        <PlatformIcon source={streamProvider!} />
-      )}
       {!compact && (
         <span>
           {catalogKind === 'local' ? 'Local' : catalogLabel}

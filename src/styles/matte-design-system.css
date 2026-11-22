@@ -883,8 +883,18 @@ html:not([data-ui-style='glass']) .card-caption p {
 }
 
 html:not([data-ui-style='glass']) .platform-icon {
-  width: 14px;
-  height: 14px;
+  width: 15px;
+  height: 15px;
+}
+
+html:not([data-ui-style='glass']) .platform-icon.youtube-icon {
+  width: 16px;
+  height: 11.5px;
+}
+
+html:not([data-ui-style='glass']) .platform-icon.soundcloud-icon {
+  width: 18px;
+  height: 11px;
 }
 
 html:not([data-ui-style='glass']) .source-badge {
