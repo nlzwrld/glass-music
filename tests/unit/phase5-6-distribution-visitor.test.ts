@@ -299,7 +299,7 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
       const gradle = readFileSync(join(tempRoot, 'app', 'build.gradle.kts'), 'utf8');
       expect(gradle).toContain('minSdk = 26');
       expect(gradle).toContain('targetSdk = 35');
-      expect(gradle).toContain('compileSdk = 35');
+      expect(gradle).toContain('compileSdk = 36');
       expect(gradle).toContain('LIQUID_ANDROID_KEYSTORE_PATH');
 
       // Second run must be idempotent without duplicating manifest entries

@@ -648,13 +648,16 @@ export function patchAppBuildGradle(gradle, config) {
   let out = gradle;
   const minSdk = Number(config.minSdkVersion || 26);
   const targetSdk = Number(config.targetSdkVersion || 35);
-  const compileSdk = Number(config.compileSdkVersion || 35);
+  const compileSdk = Math.max(Number(config.compileSdkVersion || 36), 36);
   const versionCode = Number(process.env.LIQUID_ANDROID_VERSION_CODE || config.versionCode || 20200);
   const versionName = String(
     process.env.LIQUID_ANDROID_VERSION_NAME || config.versionName || '2.2.0-beta.1',
   );
 
-  out = out.replace(/compileSdk\s*=\s*\d+/, `compileSdk = ${compileSdk}`);
+  out = out.replace(/compileSdk\s*=\s*\d+/, m => {
+    const existing = Number(m.match(/\d+/)?.[0] || 0);
+    return `compileSdk = ${Math.max(existing, compileSdk)}`;
+  });
   out = out.replace(/minSdk\s*=\s*\d+/, `minSdk = ${minSdk}`);
   out = out.replace(/targetSdk\s*=\s*\d+/, `targetSdk = ${targetSdk}`);
   out = out.replace(/versionCode\s*=\s*[^\n]+/, `versionCode = ${versionCode}`);
@@ -676,7 +679,7 @@ export function patchAppBuildGradle(gradle, config) {
 `;
     out = out.replace(/buildTypes\s*\{/, `${signingBlock}\n    buildTypes {`);
     out = out.replace(
-      /(getByName\("release"\)\s*\{)/,
+      /((?:getByName\("release"\)|release)\s*\{)/,
       `$1\n            if (!System.getenv("LIQUID_ANDROID_KEYSTORE_PATH").isNullOrBlank()) {\n                signingConfig = signingConfigs.getByName("release")\n            }`,
     );
   }

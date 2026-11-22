@@ -6,7 +6,7 @@
   "stack": "tauri-mobile-v2",
   "minSdkVersion": 26,
   "targetSdkVersion": 35,
-  "compileSdkVersion": 35,
+  "compileSdkVersion": 36,
   "permissions": [
     "android.permission.INTERNET",
     "android.permission.ACCESS_NETWORK_STATE",

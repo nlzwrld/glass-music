@@ -42,7 +42,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Configure Android SDK 35 & NDK 27
+      - name: Configure Android SDK 36 & NDK 27
         shell: bash
         run: |
           set -euo pipefail
@@ -59,8 +59,8 @@ jobs:
           yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null || true
           "$SDKMANAGER" --sdk_root="$SDK_ROOT" \
             "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
             "ndk;27.2.12479018"
 
           NDK_DIR="$SDK_ROOT/ndk/27.2.12479018"
@@ -69,7 +69,7 @@ jobs:
           echo "NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$NDK_DIR" >> "$GITHUB_ENV"
-          echo "$SDK_ROOT/build-tools/35.0.0" >> "$GITHUB_PATH"
+          echo "$SDK_ROOT/build-tools/36.0.0" >> "$GITHUB_PATH"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
