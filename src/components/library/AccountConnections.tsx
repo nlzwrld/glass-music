@@ -31,12 +31,10 @@ export default function AccountConnections() {
     busy,
     notice,
     refresh,
-    configure,
     connect,
     sync,
     disconnect,
     cancel,
-    loginHub,
     oauthHub,
     cancelHubOAuth,
     linkEmail,
@@ -45,15 +43,11 @@ export default function AccountConnections() {
     updateProfile,
     logoutHub,
     openAuthModal,
-    setPreferredBrokerUrl,
   } = useAccounts();
   const p = useApp(s => s.data.preferences),
     online = p.onlineConsent && p.catalogConsent && p.onboardingDone;
 
   const [brokerUrl, setBrokerUrl] = useState(preferredBrokerUrl || hub.brokerUrl || ''),
-    [username, setUsername] = useState(''),
-    [password, setPassword] = useState(''),
-    [registerMode, setRegisterMode] = useState(false),
     [linkEmailOpen, setLinkEmailOpen] = useState(false),
     [newEmail, setNewEmail] = useState(''),
     [newEmailPassword, setNewEmailPassword] = useState(''),
@@ -193,11 +187,9 @@ export default function AccountConnections() {
                     </div>
                     <div className="hub-profile-meta">
                       <strong>{hub.displayName || hub.subject}</strong>
-                      <small>
-                        @{hub.publicHandle || hub.username || hub.subject} · Sessão protegida no cofre local
-                      </small>
-                      <div className="hub-badge-row">
-                        {hub.email && (
+                      <small>@{hub.publicHandle || hub.username || hub.subject}</small>
+                      {hub.email && (
+                        <div className="hub-badge-row">
                           <span className={`hub-badge ${hub.emailVerified ? '' : 'warn'}`}>
                             {hub.emailVerified ? (
                               <CheckCircle2 size={11} />
@@ -206,21 +198,8 @@ export default function AccountConnections() {
                             )}
                             {hub.email} ({hub.emailVerified ? 'Verificado' : 'Não verificado'})
                           </span>
-                        )}
-                        {hub.termsVersion && (
-                          <span
-                            className="hub-badge"
-                            title={
-                              hub.termsAcceptedAt
-                                ? `Aceito em ${new Date(hub.termsAcceptedAt).toLocaleString()}`
-                                : undefined
-                            }
-                          >
-                            <ShieldCheck size={11} />
-                            Termos v. {hub.termsVersion}
-                          </span>
-                        )}
-                      </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -395,13 +374,6 @@ export default function AccountConnections() {
                           </div>
                         )}
                       </div>
-
-                      {shareHttpUrl && (
-                        <small className="fine-print">
-                          Link público: <code>{shareHttpUrl}</code> · App:{' '}
-                          <code>liquidhub://profile/{activeHandle}</code>
-                        </small>
-                      )}
 
                       <div className="hub-form-actions">
                         <button
@@ -726,88 +698,6 @@ export default function AccountConnections() {
           </div>
         )}
       </div>
-
-      {!hub.authenticated && (
-        <details className="account-setup">
-          <summary>Conexão avançada de servidor (Zero-Trust)</summary>
-          <form
-            className="hub-auth-form"
-            onSubmit={e => {
-              e.preventDefault();
-              void loginHub({ brokerUrl, username, password, register: registerMode }).then(ok => {
-                if (ok) setPassword('');
-              });
-            }}
-          >
-            <label className="field-label">
-              Servidor HTTPS (ou loopback)
-              <input
-                type="url"
-                className="input"
-                placeholder="https://hub.exemplo.com"
-                value={brokerUrl}
-                onChange={e => {
-                  setBrokerUrl(e.target.value);
-                  setPreferredBrokerUrl(e.target.value);
-                }}
-                required
-              />
-            </label>
-            <label className="field-label">
-              E-mail ou usuário
-              <input
-                type="text"
-                className="input"
-                autoComplete="username"
-                minLength={3}
-                maxLength={160}
-                value={username}
-                onChange={e => setUsername(e.target.value)}
-                required
-              />
-            </label>
-            <label className="field-label">
-              Senha (mínimo 12 caracteres · Argon2id)
-              <input
-                type="password"
-                className="input"
-                autoComplete={registerMode ? 'new-password' : 'current-password'}
-                minLength={12}
-                maxLength={256}
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                required
-              />
-            </label>
-            <div className="settings-actions-row">
-              <button
-                type="submit"
-                className="button primary"
-                disabled={!!busy || !online || !brokerUrl.trim() || password.length < 12}
-              >
-                {registerMode ? 'Criar conta segura' : 'Entrar com PKCE'}
-              </button>
-              <button
-                type="button"
-                className="text-button"
-                onClick={() => setRegisterMode(v => !v)}
-              >
-                {registerMode ? 'Já tenho conta' : 'Registrar nova conta'}
-              </button>
-            </div>
-          </form>
-        </details>
-      )}
-
-      <details className="account-setup">
-        <summary>Credenciais OAuth personalizadas (opcional)</summary>
-        <p className="fine-print">
-          Playlists públicas podem ser importadas diretamente por link sem conectar conta.
-        </p>
-        <button className="text-button" disabled={!!busy} onClick={() => void configure()}>
-          Carregar arquivo JSON…
-        </button>
-      </details>
     </section>
   );
 }

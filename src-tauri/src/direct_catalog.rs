@@ -307,7 +307,7 @@ fn collect_mix_renderers(value: &Value, depth: usize, out: &mut Vec<Value>) {
                 "artist": if artist.is_empty() { "YouTube".into() } else { artist },
                 "duration": duration as f64,
                 "url": format!("https://www.youtube.com/watch?v={id}"),
-                "artwork": format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg"),
+                "artwork": format!("https://i.ytimg.com/vi/{id}/mqdefault.jpg"),
                 "addedAt": now()
             }));
         }
@@ -654,7 +654,7 @@ fn ytmusic_songs(value: &Value, depth: usize, rows: &mut Vec<Value>) {
                     "title": title,
                     "uploader": if artist.is_empty() { "YouTube Music - Topic".into() } else { artist },
                     "duration": duration,
-                    "thumbnails": [{ "url": format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg") }]
+                    "thumbnails": [{ "url": format!("https://i.ytimg.com/vi/{video_id}/mqdefault.jpg") }]
                 }));
             }
         }
@@ -733,7 +733,7 @@ fn youtube_videos(value:&Value,depth:usize,rows:&mut Vec<Value>){
         let id=s(video,"videoId");let title=youtube_text(&video["title"]);let artist=youtube_text(&video["ownerText"]);
         let length=youtube_text(&video["lengthText"]);let duration=length.split(':').try_fold(0_u64,|sum,p|p.parse::<u64>().ok().and_then(|n|sum.checked_mul(60)?.checked_add(n))).unwrap_or(0);
         if id.len()==11&&id.bytes().all(|b|b.is_ascii_alphanumeric()||b"_-".contains(&b))&&!title.is_empty()&&duration>0&&duration<=604800{
-            rows.push(json!({"id":id,"title":title,"uploader":artist,"duration":duration,"thumbnails":[{"url":format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg")}]}));
+            rows.push(json!({"id":id,"title":title,"uploader":artist,"duration":duration,"thumbnails":[{"url":format!("https://i.ytimg.com/vi/{id}/mqdefault.jpg")}]}));
         }return;
     }
     match value{Value::Object(map)=>for child in map.values(){youtube_videos(child,depth+1,rows)},Value::Array(list)=>for child in list{youtube_videos(child,depth+1,rows)},_=>{}}

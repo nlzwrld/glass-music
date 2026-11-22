@@ -25,7 +25,9 @@
 .nav-item-badge{margin-left:auto;min-width:20px;height:20px;padding:0 6px;display:inline-flex;align-items:center;justify-content:center;border-radius:999px;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;background:var(--hover);border:1px solid var(--line);color:var(--text)}
 .transport>.icon-button:first-child,.transport>.icon-button:last-child{width:30px}
 .shuffle-transport-btn,.repeat-transport-btn{position:relative}
-.transport-active-dot{position:absolute;bottom:2px;left:50%;width:4px;height:4px;border-radius:50%;background:currentColor;transform:translateX(-50%);pointer-events:none}
+.shuffle-transport-btn.is-smart{background:color-mix(in srgb,var(--accent) 14%,transparent)!important;border:1px solid color-mix(in srgb,var(--accent) 32%,transparent)!important}
+.transport-active-dot{position:absolute;bottom:2px;left:50%;width:4px;height:4px;border-radius:50%;background:currentColor;transform:translateX(-50%);pointer-events:none;transition:width .16s ease,border-radius .16s ease}
+.transport-active-dot.is-smart{width:11px;height:3px;border-radius:99px;box-shadow:0 0 6px currentColor}
 .spotify-provenance-banner{display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:9px 12px;border-radius:12px;background:var(--surface);border:1px solid var(--line);font-size:12px;color:var(--muted)}
 .spotify-provenance-banner svg{flex:none}
 .link-import-preview{display:flex;align-items:center;gap:8px;margin-top:8px;padding:7px 10px;border-radius:11px;background:var(--hover);border:1px solid var(--line);font-size:12px;color:var(--text)}

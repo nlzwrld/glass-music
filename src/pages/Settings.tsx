@@ -88,8 +88,8 @@ const SETTINGS_CATEGORIES: readonly CategoryMeta[] = [
   },
   {
     id: 'about',
-    label: 'Sobre e Marca',
-    keywords: 'sobre versao atualizacao update nova logo identidade marca splash android',
+    label: 'Sobre',
+    keywords: 'sobre versao atualizacao update diagnostico reparo backup',
     Icon: Info,
   },
 ];
@@ -235,68 +235,15 @@ function AudioSettings() {
 
 function BrandPreviewGallery() {
   return (
-    <section className="settings-section brand-preview-section" aria-label="Nova identidade visual">
-      <h2>Propostas da Nova Logo Liquid Hub</h2>
-      <p className="subtle">
-        Conceito de gota em vidro líquido com fones modernos em alta legibilidade. Prévias preparadas para desktop, Android, splash screen e instalador antes da substituição dos binários finais.
-      </p>
-
-      <div className="brand-preview-grid">
-        <div className="brand-preview-card is-dark">
-          <div className="brand-preview-stage">
-            <img src="/brand/liquid-hub-dark.svg" alt="Logo Liquid Hub variante escura" width={64} height={64} />
-          </div>
-          <strong>Desktop Escura</strong>
-          <small>Ícone principal e barra escura</small>
-        </div>
-
-        <div className="brand-preview-card is-light">
-          <div className="brand-preview-stage">
-            <img src="/brand/liquid-hub-light.svg" alt="Logo Liquid Hub variante clara" width={64} height={64} />
-          </div>
-          <strong>Variante Clara</strong>
-          <small>Fundos claros e contraste alto</small>
-        </div>
-
-        <div className="brand-preview-card">
-          <div className="brand-preview-stage">
-            <img src="/brand/liquid-hub-mono.svg" alt="Logo Liquid Hub monocromática" width={64} height={64} />
-          </div>
-          <strong>Monocromática</strong>
-          <small>Bandeja do sistema e notificação</small>
-        </div>
-
-        <div className="brand-preview-card">
-          <div className="brand-preview-stage">
-            <img
-              src="/brand/liquid-hub-android-adaptive.svg"
-              alt="Logo Liquid Hub Android adaptativa"
-              width={64}
-              height={64}
-              style={{ borderRadius: '50%' }}
-            />
-          </div>
-          <strong>Android Adaptativo</strong>
-          <small>Zona segura 108dp</small>
-        </div>
-
-        <div className="brand-preview-card">
-          <div className="brand-preview-stage">
-            <LiquidHubLogo size={54} variant="adaptive" />
-          </div>
-          <strong>Vetor Dinâmico (UI)</strong>
-          <small>Emblema vetorial usado no app</small>
-        </div>
-      </div>
-
-      <div className="brand-splash-preview">
-        <img
-          src="/brand/liquid-hub-splash.svg"
-          alt="Prévia Splash Screen e Instalador Liquid Hub"
-        />
-        <small className="subtle">
-          Prévia horizontal para Splash Screen, tela de boas-vindas e instalador.
-        </small>
+    <section className="settings-section brand-preview-section" aria-label="Identidade do Liquid Hub">
+      <div className="setting-row" style={{ borderBottom: 0 }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <LiquidHubLogo size={38} variant="adaptive" />
+          <span>
+            <strong>Liquid Hub</strong>
+            <small>Plataforma musical unificada com catálogos, letras sincronizadas e JAM ao vivo.</small>
+          </span>
+        </span>
       </div>
     </section>
   );
@@ -504,13 +451,6 @@ export default function Settings() {
                 checked={p.onlineConsent}
                 onChange={v => prefUI({ onlineConsent: v, catalogConsent: v })}
               />
-              <div className="setting-row">
-                <span>
-                  <strong>Cofre de credenciais</strong>
-                  <small>Tokens sensíveis protegidos nativamente no dispositivo; nunca expostos em respostas públicas</small>
-                </span>
-                <span className="entity-badge entity-badge-user">Ativo</span>
-              </div>
               <div className="settings-actions-row">
                 <button className="text-button" onClick={() => prefUI({ onboardingDone: false })}>
                   Revisar Termos e Política de Privacidade
@@ -647,10 +587,10 @@ function InstallationMaintenanceSection() {
       className="settings-section"
       aria-label="Manutenção, integridade e reparo da instalação"
     >
-      <h2>Manutenção e Integridade da Instalação</h2>
+      <h2>Diagnóstico e Reparo</h2>
       <p className="fine-print">
-        Verifica a integridade do banco SQLite local, do cofre criptografado, remove arquivos
-        temporários órfãos e gera um ponto de restauração seguro sem afetar suas playlists.
+        Verifica a integridade da biblioteca local, limpa arquivos temporários incompletos e cria um
+        ponto de restauração seguro sem afetar suas playlists.
       </p>
       <div className="settings-actions-row">
         <button
@@ -667,22 +607,21 @@ function InstallationMaintenanceSection() {
           disabled={maintBusy}
           onClick={() => void runMaintenance(true)}
         >
-          {maintBusy ? 'Reparando…' : 'Reparar instalação e criar backup'}
+          {maintBusy ? 'Reparando…' : 'Reparar e criar backup'}
         </button>
       </div>
       {report && (
         <div role="status" className="maintenance-report-card">
-          <strong>{report.message}</strong>
+          <strong>
+            {report.ok
+              ? report.repaired
+                ? 'Reparo concluído e backup preventivo atualizado com sucesso.'
+                : 'Biblioteca e instalação verificadas sem erros.'
+              : 'Foram encontradas inconsistências que exigem reparo.'}
+          </strong>
           <div className="maintenance-report-grid">
-            <span>Banco SQLite: {report.dbIntegrityOk ? 'Íntegro' : 'Requer reparo'}</span>
-            <span>Cofre local: {report.vaultReadable ? 'Legível' : 'Erro'}</span>
-            <span>Backups locais: {report.backupsCount}</span>
-            <span>
-              Temporários órfãos:{' '}
-              {report.repaired
-                ? `${report.removedOrphanedTempFiles} removidos`
-                : report.orphanedTempFiles}
-            </span>
+            <span>Biblioteca local: {report.dbIntegrityOk ? 'OK' : 'Requer reparo'}</span>
+            <span>Backups salvos: {report.backupsCount}</span>
           </div>
         </div>
       )}

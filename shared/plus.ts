@@ -107,13 +107,13 @@ export const PLUS_PLAN_CATALOG: readonly PlusPlanDefinition[] = [
   {
     id: 'plus_annual',
     name: 'Liquid Plus Anual',
-    tagline: 'Todos os benefícios do Liquid Plus em ciclo anual (estrutura em preparação).',
+    tagline: 'Todos os benefícios do Liquid Plus em ciclo anual.',
     commercialStatus: 'planned',
     checkoutEnabled: false,
     entitlements: PLUS_ENTITLEMENTS,
     highlights: [
       'Todos os benefícios de visual limpo, temas exclusivos e organização musical',
-      'Cobrança e preços comerciais ainda desativados até aprovação final',
+      'Sincronização unificada entre Desktop e Android',
     ],
   },
 ] as const;

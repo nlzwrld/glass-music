@@ -34,10 +34,9 @@ export function LiquidPlusSection() {
           <span className="collection-type-label">
             <Sparkles size={12} /> Liquid Plus
           </span>
-          <h2>Estrutura de assinatura e benefícios</h2>
+          <h2>Planos e benefícios</h2>
           <p className="subtle">
-            Plano verificado no servidor: <strong>{activePlanName}</strong>
-            {plusStatus.active ? ' (Ativo)' : ' (Grátis)'}
+            Plano atual: <strong>{activePlanName}</strong>
           </p>
         </div>
         <button
@@ -54,24 +53,17 @@ export function LiquidPlusSection() {
       <div className="notice plus-policy-banner" role="note">
         <VolumeX size={18} />
         <div>
-          <strong>Música sem anúncios em áudio — nativo e gratuito para todos</strong>
+          <strong>Música sem anúncios em áudio — gratuito para todos</strong>
           <small style={{ display: 'block', marginTop: 2 }}>
-            Política garantida ({AUDIO_ADS_POLICY.audioInterruptionsAllowed ? '' : '0 interrupções sonoras'}):
-            o Liquid Hub nunca insere propagandas de áudio entre músicas. Qualquer publicidade visual futura permanece muda por padrão e só reproduz som por ação explícita.
+            {AUDIO_ADS_POLICY.audioInterruptionsAllowed ? '' : 'Zero interrupções sonoras: '}
+            ouça suas músicas favoritas continuamente sem propagandas de áudio entre as faixas.
           </small>
         </div>
       </div>
 
-      <div className="plus-status-notice">
-        <ShieldCheck size={16} />
-        <span>
-          Estrutura técnica preparada com entitlements verificados no servidor. Cobranças, preços comerciais e checkouts permanecem desativados até aprovação oficial.
-        </span>
-      </div>
-
       {!hub.authenticated && (
         <p className="fine-print">
-          Entre na sua conta Liquid Hub na aba <strong>Conta &amp; Perfil</strong> para sincronizar seus benefícios entre desktop e Android.
+          Entre na sua conta Liquid Hub na aba <strong>Conta</strong> para sincronizar seus benefícios entre desktop e Android.
         </p>
       )}
 
@@ -92,7 +84,7 @@ export function LiquidPlusSection() {
                   {isCurrent
                     ? 'Plano atual'
                     : plan.commercialStatus === 'planned'
-                      ? 'Em preparação'
+                      ? 'Em breve'
                       : 'Disponível'}
                 </span>
               </div>
@@ -107,8 +99,8 @@ export function LiquidPlusSection() {
               <div className="plus-plan-foot">
                 <small className="subtle">
                   {plan.id === 'free'
-                    ? 'Reprodução musical, playlists, busca e JAM permanecem acessíveis.'
-                    : 'Sem cobrança ativa — aguardando definição comercial.'}
+                    ? 'Inclui reprodução musical, playlists, busca, letras e JAM ao vivo.'
+                    : 'Disponível em breve.'}
                 </small>
               </div>
             </article>

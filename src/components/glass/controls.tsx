@@ -52,6 +52,33 @@ const platformLabels: Record<PlatformKind, string> = {
   link: 'Link',
 };
 
+export function SmartShuffleIcon({ size = 15 }: { size?: number }) {
+  return (
+    <svg
+      className="lucide lucide-smart-shuffle"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path
+        d="M5.2 1.2 L6.35 4.15 L9.3 5.3 L6.35 6.45 L5.2 9.4 L4.05 6.45 L1.1 5.3 L4.05 4.15 Z"
+        fill="currentColor"
+        stroke="none"
+      />
+      <path d="m18 14 4 4-4 4" />
+      <path d="m18 2 4 4-4 4" />
+      <path d="M2 18h1.973a4 4 0 0 0 3.3-1.7l5.454-8.6a4 4 0 0 1 3.3-1.7H22" />
+      <path d="M12.2 13.7 12.73 14.5a4 4 0 0 0 3.3 1.7H22" />
+    </svg>
+  );
+}
+
 export function IconButton({
   label,
   children,

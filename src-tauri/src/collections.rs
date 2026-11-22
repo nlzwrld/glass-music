@@ -129,7 +129,7 @@ pub fn youtube_track(v: &Value) -> Option<Value> {
         "artist": artist,
         "duration": v["duration"].as_f64().unwrap_or(0.0),
         "url": format!("https://www.youtube.com/watch?v={id}"),
-        "artwork": format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg"),
+        "artwork": format!("https://i.ytimg.com/vi/{id}/mqdefault.jpg"),
         "addedAt": now()
     });
     db::validate_track(&t).ok()?;

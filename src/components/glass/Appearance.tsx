@@ -339,7 +339,7 @@ export default function Appearance() {
           </div>
 
           <details className="advanced-appearance">
-            <summary>Ajustes óticos avançados</summary>
+            <summary style={{ display: 'none' }}>Ajustes óticos avançados</summary>
             {range('refraction', 'Refração', 0, 12, 0.1)}
             {range('ior', 'Índice de refração', 1, 2, 0.01)}
             {range('fresnel', 'Fresnel', 0, 1, 0.01)}

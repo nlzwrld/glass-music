@@ -2,6 +2,7 @@ import { Pause, Play, Shuffle } from 'lucide-react';
 import type { Track } from '../../../shared/types';
 import { shufflePlay } from '../../lib/playback';
 import { useApp } from '../../stores/app';
+import { SmartShuffleIcon } from '../glass/controls';
 import { transport } from '../player/engine';
 
 /**
@@ -60,7 +61,7 @@ export function CollectionPlaybackActions({
       </button>
       <button
         type="button"
-        className={`collection-action-btn playlist-shuffle-play ${shuffle ? 'is-active' : ''}`}
+        className={`collection-action-btn playlist-shuffle-play ${shuffle ? 'is-active' : ''} ${shuffle && shuffleMode === 'smart' ? 'is-smart' : ''}`}
         disabled={!tracks.length}
         aria-label={shuffleLabel}
         title={shuffleTitle}
@@ -69,8 +70,17 @@ export function CollectionPlaybackActions({
         data-shuffle-mode={shuffle ? shuffleMode : 'off'}
         onClick={() => shufflePlay(tracks)}
       >
-        <Shuffle size={15} />
-        {shuffle && <span className="action-active-dot" aria-hidden="true" />}
+        {shuffle && shuffleMode === 'smart' ? (
+          <SmartShuffleIcon size={16} />
+        ) : (
+          <Shuffle size={15} />
+        )}
+        {shuffle && (
+          <span
+            className={`action-active-dot ${shuffleMode === 'smart' ? 'is-smart' : ''}`}
+            aria-hidden="true"
+          />
+        )}
       </button>
     </div>
   );

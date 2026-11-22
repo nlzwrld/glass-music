@@ -35,7 +35,7 @@ import { useJam } from '../jam/state';
 import { openJamWindow } from '../../lib/jamWindow';
 import { PlayerEngine, transport } from './engine';
 import Cover from '../glass/Cover';
-import { IconButton, OfflineIndicator, SourceBadge } from '../glass/controls';
+import { IconButton, OfflineIndicator, SmartShuffleIcon, SourceBadge } from '../glass/controls';
 import {
   GlassContextMenu,
   GlassMaterial,
@@ -99,7 +99,7 @@ export function PlaybackControls({
         active={p.shuffle}
         aria-pressed={p.shuffle}
         data-shuffle-mode={p.shuffle ? shuffleMode : 'off'}
-        className="shuffle-transport-btn"
+        className={`shuffle-transport-btn ${p.shuffle && shuffleMode === 'smart' ? 'is-smart' : ''}`}
         onClick={() => {
           if (!p.shuffle) {
             setPreferencesFromUI({ shuffle: true, shuffleMode: 'smart' });
@@ -110,7 +110,11 @@ export function PlaybackControls({
           }
         }}
       >
-        <Shuffle size={15} />
+        {p.shuffle && shuffleMode === 'smart' ? (
+          <SmartShuffleIcon size={16} />
+        ) : (
+          <Shuffle size={15} />
+        )}
         {p.shuffle && (
           <span
             className={`transport-active-dot ${shuffleMode === 'smart' ? 'is-smart' : ''}`}
