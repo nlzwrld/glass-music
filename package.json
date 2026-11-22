@@ -12,6 +12,7 @@
     "start": "node scripts/tauri.mjs dev",
     "test": "vitest run",
     "android:check": "node scripts/android-beta.mjs check",
+    "android:setup": "node scripts/android-beta.mjs setup",
     "android:apk": "node scripts/android-beta.mjs apk",
     "android:aab": "node scripts/android-beta.mjs aab",
     "test:native": "node scripts/cargo.mjs test --manifest-path src-tauri/Cargo.toml",

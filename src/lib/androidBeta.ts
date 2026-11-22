@@ -3,6 +3,33 @@ import { useApp } from '../stores/app';
 import { transport } from '../components/player/engine';
 import type { Track } from '../../shared/types';
 
+export interface LiquidHubAndroidBridge {
+  isNativeBridgeReady?: () => boolean;
+  updatePlayback?: (
+    title: string,
+    artist: string,
+    album: string,
+    playing: boolean,
+    positionMs: number,
+    durationMs: number,
+  ) => void;
+  stopPlayback?: () => void;
+}
+
+declare global {
+  interface Window {
+    LiquidHubAndroid?: LiquidHubAndroidBridge;
+  }
+}
+
+let lastNativeSyncKey = '';
+let lastNativeSyncAt = 0;
+
+export function resetAndroidNativeSyncCache(): void {
+  lastNativeSyncKey = '';
+  lastNativeSyncAt = 0;
+}
+
 export const ANDROID_BETA_MANIFEST_SUMMARY = {
   applicationId: 'com.nlzwrld.liquidhub',
   minSdk: 26,
@@ -111,6 +138,40 @@ export function syncMediaSessionMetadata(
   durationSec = 0,
   mediaSessionObj?: MediaSession | null,
 ): void {
+  const nativeBridge = typeof window !== 'undefined' ? window.LiquidHubAndroid : undefined;
+  if (nativeBridge) {
+    if (!track) {
+      if (lastNativeSyncKey !== 'stopped') {
+        lastNativeSyncKey = 'stopped';
+        lastNativeSyncAt = Date.now();
+        try {
+          nativeBridge.stopPlayback?.();
+        } catch {
+          // Ignore Android bridge errors during teardown
+        }
+      }
+    } else {
+      const stateKey = `${track.id}|${track.title}|${track.artist}|${playing ? '1' : '0'}`;
+      const now = Date.now();
+      if (stateKey !== lastNativeSyncKey || (playing && now - lastNativeSyncAt >= 5000)) {
+        lastNativeSyncKey = stateKey;
+        lastNativeSyncAt = now;
+        try {
+          nativeBridge.updatePlayback?.(
+            track.title || 'Liquid Hub',
+            track.artist || 'Artista desconhecido',
+            track.album || 'Liquid Hub',
+            playing,
+            Math.round(Math.max(0, positionSec) * 1000),
+            Math.round(Math.max(0, durationSec) * 1000),
+          );
+        } catch {
+          // Ignore Android bridge errors
+        }
+      }
+    }
+  }
+
   const ms =
     mediaSessionObj ??
     (typeof navigator !== 'undefined' && 'mediaSession' in navigator
@@ -225,10 +286,11 @@ export function useAndroidBetaLifecycle(): { isMobile: boolean; isAndroid: boole
   const duration = useApp(s => s.duration);
 
   useEffect(() => {
+    document.documentElement.dataset.platform = isAndroid ? 'android' : 'desktop';
     const onResize = () => setIsMobile(isMobileViewport());
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
-  }, []);
+  }, [isAndroid]);
 
   useEffect(() => {
     const focusManager = createAudioFocusManager({
@@ -249,6 +311,25 @@ export function useAndroidBetaLifecycle(): { isMobile: boolean; isAndroid: boole
       },
       onStop: () => transport.pause(),
     });
+
+    const onNativeMediaAction = (e: Event) => {
+      const detail = (e as CustomEvent<{ action?: string; positionMs?: number }>).detail;
+      const action = detail?.action;
+      if (action === 'play') transport.play();
+      else if (action === 'pause' || action === 'stop') transport.pause();
+      else if (action === 'toggle') {
+        if (useApp.getState().playing) transport.pause();
+        else transport.play();
+      } else if (action === 'next') useApp.getState().next(true);
+      else if (action === 'previous') useApp.getState().previous();
+      else if (
+        action === 'seek' &&
+        typeof detail?.positionMs === 'number' &&
+        Number.isFinite(detail.positionMs)
+      ) {
+        transport.seek(Math.max(0, detail.positionMs / 1000));
+      }
+    };
 
     const onCustomAudioFocus = (e: Event) => {
       const detail = (e as CustomEvent<{ state?: string }>).detail;
@@ -273,11 +354,13 @@ export function useAndroidBetaLifecycle(): { isMobile: boolean; isAndroid: boole
       }
     };
 
+    window.addEventListener('liquid:android-media', onNativeMediaAction);
     window.addEventListener('liquid:audio-focus', onCustomAudioFocus);
     navigator.mediaDevices?.addEventListener?.('devicechange', onDeviceChange);
 
     return () => {
       unregister();
+      window.removeEventListener('liquid:android-media', onNativeMediaAction);
       window.removeEventListener('liquid:audio-focus', onCustomAudioFocus);
       navigator.mediaDevices?.removeEventListener?.('devicechange', onDeviceChange);
     };

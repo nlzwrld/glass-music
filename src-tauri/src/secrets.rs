@@ -1,9 +1,16 @@
 use crate::db::Result;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+#[cfg(any(not(windows), test))]
+use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
+#[cfg(any(not(windows), test))]
+use ring::rand::{SecureRandom, SystemRandom};
 use ring::signature::{UnparsedPublicKey, ED25519};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{fs, path::Path};
+#[cfg(not(windows))]
+use std::{path::PathBuf, sync::OnceLock};
+#[cfg(windows)]
 use windows_sys::Win32::{
     Foundation::LocalFree,
     Security::Cryptography::{
@@ -112,6 +119,110 @@ fn zeroize_bytes(buf: &mut [u8]) {
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 }
 
+#[cfg(any(not(windows), test))]
+const VAULT_MAGIC: &[u8; 4] = b"LHAG";
+#[cfg(not(windows))]
+const VAULT_KEY_FILE: &str = ".liquid_vault_key";
+
+#[cfg(not(windows))]
+static VAULT_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+#[cfg(not(windows))]
+static EPHEMERAL_KEY: OnceLock<[u8; 32]> = OnceLock::new();
+
+pub(crate) fn init_vault_dir(_dir: &Path) {
+    #[cfg(not(windows))]
+    {
+        let _ = VAULT_DIR.set(_dir.to_path_buf());
+    }
+}
+
+#[cfg(any(not(windows), test))]
+fn aes_gcm_seal(key_bytes: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>> {
+    let rng = SystemRandom::new();
+    let mut nonce_bytes = [0u8; 12];
+    rng.fill(&mut nonce_bytes)
+        .map_err(|_| "Falha ao gerar nonce seguro para o cofre.")?;
+    let unbound = UnboundKey::new(&AES_256_GCM, key_bytes)
+        .map_err(|_| "Chave de cofre AES-256-GCM inválida.")?;
+    let key = LessSafeKey::new(unbound);
+    let mut in_out = plaintext.to_vec();
+    key.seal_in_place_append_tag(
+        Nonce::assume_unique_for_key(nonce_bytes),
+        Aad::from(VAULT_MAGIC.as_slice()),
+        &mut in_out,
+    )
+    .map_err(|_| "Falha ao cifrar credenciais no cofre.")?;
+    let mut out = Vec::with_capacity(4 + 12 + in_out.len());
+    out.extend_from_slice(VAULT_MAGIC);
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&in_out);
+    Ok(out)
+}
+
+#[cfg(any(not(windows), test))]
+fn aes_gcm_open(key_bytes: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>> {
+    if ciphertext.len() < 4 + 12 + 16 || &ciphertext[..4] != VAULT_MAGIC {
+        return Err("Formato de cofre protegido inválido.".into());
+    }
+    let mut nonce_bytes = [0u8; 12];
+    nonce_bytes.copy_from_slice(&ciphertext[4..16]);
+    let unbound = UnboundKey::new(&AES_256_GCM, key_bytes)
+        .map_err(|_| "Chave de cofre AES-256-GCM inválida.")?;
+    let key = LessSafeKey::new(unbound);
+    let mut in_out = ciphertext[16..].to_vec();
+    let plain_len = key
+        .open_in_place(
+            Nonce::assume_unique_for_key(nonce_bytes),
+            Aad::from(VAULT_MAGIC.as_slice()),
+            &mut in_out,
+        )
+        .map_err(|_| "O cofre local recusou a autenticação das credenciais.")?
+        .len();
+    in_out.truncate(plain_len);
+    Ok(in_out)
+}
+
+#[cfg(not(windows))]
+fn load_or_create_dir_key(dir: &Path) -> Result<[u8; 32]> {
+    fs::create_dir_all(dir).map_err(|_| "Não foi possível preparar o diretório do cofre.")?;
+    let key_path = dir.join(VAULT_KEY_FILE);
+    if key_path.is_file() {
+        let raw = fs::read(&key_path).map_err(|_| "Não foi possível ler a chave do cofre.")?;
+        if raw.len() == 32 {
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&raw);
+            return Ok(key);
+        }
+    }
+    let mut key = [0u8; 32];
+    SystemRandom::new()
+        .fill(&mut key)
+        .map_err(|_| "Falha ao gerar chave criptográfica do cofre.")?;
+    let pending = dir.join(".liquid_vault_key.pending");
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&pending)
+            .map_err(|_| "Não foi possível criar a chave do cofre.")?;
+        f.write_all(&key)
+            .map_err(|_| "Não foi possível gravar a chave do cofre.")?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(&pending, &key).map_err(|_| "Não foi possível gravar a chave do cofre.")?;
+    }
+    fs::rename(&pending, &key_path).map_err(|_| "Não foi possível salvar a chave do cofre.")?;
+    Ok(key)
+}
+
+#[cfg(windows)]
 pub(crate) fn protect(bytes: &[u8], encrypt: bool) -> Result<Vec<u8>> {
     let input = CRYPT_INTEGER_BLOB {
         cbData: bytes.len() as u32,
@@ -150,6 +261,41 @@ pub(crate) fn protect(bytes: &[u8], encrypt: bool) -> Result<Vec<u8>> {
         let result = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
         LocalFree(output.pbData as _);
         Ok(result)
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn protect(bytes: &[u8], encrypt: bool) -> Result<Vec<u8>> {
+    let key = if let Some(dir) = VAULT_DIR.get() {
+        load_or_create_dir_key(dir)?
+    } else {
+        *EPHEMERAL_KEY.get_or_init(|| {
+            let mut k = [0u8; 32];
+            let _ = SystemRandom::new().fill(&mut k);
+            k
+        })
+    };
+    if encrypt {
+        aes_gcm_seal(&key, bytes)
+    } else {
+        aes_gcm_open(&key, bytes)
+    }
+}
+
+pub(crate) fn protect_in_dir(dir: &Path, bytes: &[u8], encrypt: bool) -> Result<Vec<u8>> {
+    #[cfg(windows)]
+    {
+        let _ = dir;
+        protect(bytes, encrypt)
+    }
+    #[cfg(not(windows))]
+    {
+        let key = load_or_create_dir_key(dir)?;
+        if encrypt {
+            aes_gcm_seal(&key, bytes)
+        } else {
+            aes_gcm_open(&key, bytes)
+        }
     }
 }
 
@@ -225,8 +371,9 @@ impl Secrets {
         if !path.exists() {
             return Ok(Self::default());
         }
+        let dir = path.parent().unwrap_or_else(|| Path::new("."));
         let bytes = fs::read(path).map_err(|e| e.to_string())?;
-        let mut decrypted = protect(&bytes, false)?;
+        let mut decrypted = protect_in_dir(dir, &bytes, false)?;
         let parsed = serde_json::from_slice(&decrypted)
             .map_err(|_| "Não foi possível ler as credenciais protegidas.".to_string());
         zeroize_bytes(&mut decrypted);
@@ -234,8 +381,9 @@ impl Secrets {
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
+        let dir = path.parent().unwrap_or_else(|| Path::new("."));
         let mut raw = serde_json::to_vec(self).map_err(|e| e.to_string())?;
-        let encrypted = protect(&raw, true);
+        let encrypted = protect_in_dir(dir, &raw, true);
         zeroize_bytes(&mut raw);
         let bytes = encrypted?;
         let pending = path.with_extension("pending");
@@ -407,5 +555,23 @@ mod tests {
             r#"{"iss":"liquid-hub-auth","aud":"liquid-hub-desktop","sub":"admin","fam":"fam_1","iat":1000,"exp":1900}"#,
         );
         assert!(verify_ed25519_jwt(&format!("{header}.{bad_claims}.{sig}"), &jwk_x, 1_200_000).is_err());
+    }
+
+    #[test]
+    fn aes_gcm_vault_roundtrip_and_tamper_rejection() {
+        let key = [0x42u8; 32];
+        let secret = b"{\"refreshToken\":\"rt_mobile_secret_123\"}";
+        let c1 = aes_gcm_seal(&key, secret).unwrap();
+        let c2 = aes_gcm_seal(&key, secret).unwrap();
+        assert_ne!(c1, c2, "fresh random nonces must produce distinct ciphertexts");
+        assert!(!c1.windows(secret.len()).any(|w| w == secret));
+        assert_eq!(aes_gcm_open(&key, &c1).unwrap(), secret);
+        assert_eq!(aes_gcm_open(&key, &c2).unwrap(), secret);
+
+        let mut tampered = c1.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0xff;
+        assert!(aes_gcm_open(&key, &tampered).is_err());
+        assert!(aes_gcm_open(&[0x99u8; 32], &c1).is_err());
     }
 }

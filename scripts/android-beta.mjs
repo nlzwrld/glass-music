@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+import { setupAndroidProject } from './android-setup.mjs';
 
 export function validateAndroidBetaConfig(rootDir = process.cwd()) {
   const configPath = resolve(rootDir, 'src-tauri', 'android-beta.json');
@@ -48,11 +50,16 @@ export function validateAndroidBetaConfig(rootDir = process.cwd()) {
   };
 }
 
-if (import.meta.url === `file://${process.argv[1]?.replace(/\\/g, '/')}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const mode = process.argv[2] || 'check';
   const summary = validateAndroidBetaConfig();
   if (mode === 'check') {
     console.log(JSON.stringify(summary, null, 2));
+    process.exit(0);
+  }
+  if (mode === 'setup') {
+    const res = setupAndroidProject(process.cwd());
+    console.log(JSON.stringify(res, null, 2));
     process.exit(0);
   }
   if (mode === 'apk' || mode === 'aab') {
@@ -62,6 +69,17 @@ if (import.meta.url === `file://${process.argv[1]?.replace(/\\/g, '/')}`) {
       );
       process.exit(1);
     }
+    const genDir = resolve(process.cwd(), 'src-tauri', 'gen', 'android');
+    if (!existsSync(genDir)) {
+      const initRes = spawnSync('pnpm', ['tauri', 'android', 'init', '--ci'], {
+        stdio: 'inherit',
+        shell: true,
+      });
+      if ((initRes.status ?? 1) !== 0) {
+        process.exit(initRes.status ?? 1);
+      }
+    }
+    setupAndroidProject(process.cwd());
     const flag = mode === 'apk' ? '--apk' : '--aab';
     const res = spawnSync('pnpm', ['tauri', 'android', 'build', flag], {
       stdio: 'inherit',

@@ -1,5 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   APP_VERSION,
@@ -16,6 +17,8 @@ import {
   isAndroidPlatform,
   isMobileViewport,
   registerMediaSessionBridge,
+  resetAndroidNativeSyncCache,
+  syncMediaSessionMetadata,
 } from '../../src/lib/androidBeta';
 import {
   VISITOR_VISUAL_AD_SPEC,
@@ -24,6 +27,8 @@ import {
 } from '../../src/components/glass/VisitorVisualAdBanner';
 // @ts-expect-error ESM script module
 import { validateAndroidBetaConfig } from '../../scripts/android-beta.mjs';
+// @ts-expect-error ESM script module
+import { setupAndroidProject } from '../../scripts/android-setup.mjs';
 
 describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Android Beta & Visitor Mode', () => {
   it('evaluates semantic versions and mandatory minimum version policies accurately (Seção 18)', () => {
@@ -212,6 +217,140 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
     focus.handleAudioFocusChange('gain');
     expect(isPlaying).toBe(false);
     expect(paused).toBe(0);
+  });
+
+  it('patches generated Tauri Android project idempotently with foreground MediaSession service, deep links, network security & signing', () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'liquid-android-setup-'));
+    try {
+      const appMain = join(tempRoot, 'app', 'src', 'main');
+      mkdirSync(appMain, { recursive: true });
+      writeFileSync(
+        join(appMain, 'AndroidManifest.xml'),
+        `<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application android:label="Liquid Hub">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>`,
+        'utf8',
+      );
+      writeFileSync(
+        join(tempRoot, 'app', 'build.gradle.kts'),
+        `android {
+    compileSdk = 34
+    defaultConfig {
+        minSdk = 24
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0"
+    }
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = true
+        }
+    }
+}`,
+        'utf8',
+      );
+
+      const first = setupAndroidProject(process.cwd(), { androidDir: tempRoot });
+      expect(first.ok).toBe(true);
+      expect(first.applicationId).toBe('com.nlzwrld.liquidhub');
+
+      const manifest = readFileSync(join(appMain, 'AndroidManifest.xml'), 'utf8');
+      expect(manifest).toContain('android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK');
+      expect(manifest).toContain('android.permission.BLUETOOTH_CONNECT');
+      expect(manifest).toContain('android.permission.WAKE_LOCK');
+      expect(manifest).toContain('android:networkSecurityConfig="@xml/network_security_config"');
+      expect(manifest).toContain('android:launchMode="singleTask"');
+      expect(manifest).toContain('android:scheme="liquidhub"');
+      expect(manifest).toContain('.media.LiquidHubMediaPlaybackService');
+      expect(manifest).toContain('android:foregroundServiceType="mediaPlayback"');
+
+      const netSec = readFileSync(
+        join(appMain, 'res', 'xml', 'network_security_config.xml'),
+        'utf8',
+      );
+      expect(netSec).toContain('cleartextTrafficPermitted="false"');
+      expect(netSec).toContain('<domain includeSubdomains="false">127.0.0.1</domain>');
+
+      const serviceKt = readFileSync(
+        join(appMain, 'java', 'com', 'nlzwrld', 'liquidhub', 'media', 'LiquidHubMediaPlaybackService.kt'),
+        'utf8',
+      );
+      expect(serviceKt).toContain('FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK');
+      expect(serviceKt).toContain('ACTION_AUDIO_BECOMING_NOISY');
+      expect(serviceKt).toContain('PARTIAL_WAKE_LOCK');
+      expect(serviceKt).toContain('liquid:android-media');
+
+      const mainKt = readFileSync(
+        join(appMain, 'java', 'com', 'nlzwrld', 'liquidhub', 'MainActivity.kt'),
+        'utf8',
+      );
+      expect(mainKt).toContain('addJavascriptInterface(LiquidHubAndroidBridge(this), "LiquidHubAndroid")');
+      expect(mainKt).toContain('LiquidHubMediaPlaybackService.isCurrentlyPlaying()');
+
+      const gradle = readFileSync(join(tempRoot, 'app', 'build.gradle.kts'), 'utf8');
+      expect(gradle).toContain('minSdk = 26');
+      expect(gradle).toContain('targetSdk = 35');
+      expect(gradle).toContain('compileSdk = 35');
+      expect(gradle).toContain('LIQUID_ANDROID_KEYSTORE_PATH');
+
+      // Second run must be idempotent without duplicating manifest entries
+      setupAndroidProject(process.cwd(), { androidDir: tempRoot });
+      const manifestAfter = readFileSync(join(appMain, 'AndroidManifest.xml'), 'utf8');
+      expect(manifestAfter.match(/LiquidHubMediaPlaybackService/g)?.length).toBe(1);
+      expect(manifestAfter.match(/android:scheme="liquidhub"/g)?.length).toBe(5);
+
+      // Verify native Android WebView bridge syncing
+      resetAndroidNativeSyncCache();
+      const updatePlayback = vi.fn();
+      const stopPlayback = vi.fn();
+      const prevWindow = (globalThis as { window?: unknown }).window;
+      (globalThis as { window?: unknown }).window = {
+        LiquidHubAndroid: { updatePlayback, stopPlayback },
+      };
+      try {
+        syncMediaSessionMetadata(
+          {
+            id: 'youtube:abc12345678',
+            source: 'youtube',
+            sourceId: 'abc12345678',
+            kind: 'track',
+            title: 'Neon Drift',
+            artist: 'Liquid Artist',
+            album: 'Beta Album',
+            duration: 180,
+            addedAt: Date.now(),
+          },
+          true,
+          12.5,
+          180,
+          null,
+        );
+        expect(updatePlayback).toHaveBeenCalledWith(
+          'Neon Drift',
+          'Liquid Artist',
+          'Beta Album',
+          true,
+          12500,
+          180000,
+        );
+        syncMediaSessionMetadata(null, false, 0, 0, null);
+        expect(stopPlayback).toHaveBeenCalledTimes(1);
+      } finally {
+        (globalThis as { window?: unknown }).window = prevWindow;
+        resetAndroidNativeSyncCache();
+      }
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it('enforces Visitor Mode permissions and visual-only non-audio ad policy (Seção 21)', () => {

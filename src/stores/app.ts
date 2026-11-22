@@ -34,6 +34,7 @@ export type Page =
   | 'history'
   | 'downloads'
   | 'local'
+  | 'jam'
   | 'settings'
   | 'collection'
   | `playlist:${string}`

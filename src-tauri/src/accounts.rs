@@ -102,7 +102,7 @@ impl Accounts {
         let path = dir.join("accounts.dpapi");
         let vault = if path.exists() {
             let raw = std::fs::read(&path).map_err(|_| "Não foi possível ler as conexões.")?;
-            serde_json::from_slice(&crate::secrets::protect(&raw, false)?)
+            serde_json::from_slice(&crate::secrets::protect_in_dir(dir, &raw, false)?)
                 .map_err(|_| "Conexões salvas inválidas.")?
         } else {
             Vault::default()
@@ -117,7 +117,9 @@ impl Accounts {
     }
 
     fn save(&self, vault: &Vault) -> Result<()> {
-        let bytes = crate::secrets::protect(
+        let dir = self.path.parent().unwrap_or_else(|| Path::new("."));
+        let bytes = crate::secrets::protect_in_dir(
+            dir,
             &serde_json::to_vec(vault).map_err(|_| "Conexões inválidas.")?,
             true,
         )?;

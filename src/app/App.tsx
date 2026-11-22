@@ -38,6 +38,9 @@ const Search = lazy(() => import('../pages/Search'));
 const Library = lazy(() => import('../pages/Library'));
 const Collection = lazy(() => import('../pages/Collection'));
 const Downloads = lazy(() => import('../pages/Downloads'));
+const JamPage = lazy(() =>
+  import('../components/jam/JamSettings').then(m => ({ default: m.JamSettings })),
+);
 const Settings = lazy(() => import('../pages/Settings'));
 const UserProfile = lazy(() => import('../pages/UserProfile'));
 const SharedPlaylist = lazy(() => import('../pages/SharedPlaylist'));
@@ -245,34 +248,36 @@ export default function App() {
         className={`${mini ? 'mini' : ''} ${external ? 'has-external' : ''} ${expanded ? 'is-expanded' : ''} ${collapsed ? 'sidebar-collapsed' : ''} ${sideOpen ? 'side-open' : ''}`}
       >
         <OpticalEngine>
-          <header
-            className="titlebar"
-            data-tauri-drag-region
-            onDoubleClick={() => void window.glass.window('maximize')}
-          >
-            <span data-tauri-drag-region />
-            <div>
-              <button
-                aria-label="Minimizar janela"
-                onClick={() => void window.glass.window('minimize')}
-              >
-                <Minus size={15} />
-              </button>
-              <button
-                aria-label="Maximizar janela"
-                onClick={() => void window.glass.window('maximize')}
-              >
-                <Square size={13} />
-              </button>
-              <button
-                className="window-close"
-                aria-label="Fechar janela"
-                onClick={() => void window.glass.window('close')}
-              >
-                <X size={16} />
-              </button>
-            </div>
-          </header>
+          {!isAndroid && (
+            <header
+              className="titlebar"
+              data-tauri-drag-region
+              onDoubleClick={() => void window.glass.window('maximize')}
+            >
+              <span data-tauri-drag-region />
+              <div>
+                <button
+                  aria-label="Minimizar janela"
+                  onClick={() => void window.glass.window('minimize')}
+                >
+                  <Minus size={15} />
+                </button>
+                <button
+                  aria-label="Maximizar janela"
+                  onClick={() => void window.glass.window('maximize')}
+                >
+                  <Square size={13} />
+                </button>
+                <button
+                  className="window-close"
+                  aria-label="Fechar janela"
+                  onClick={() => void window.glass.window('close')}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            </header>
+          )}
           {lockedByAuth ? (
             <>
               <JamEngine />
@@ -310,6 +315,8 @@ export default function App() {
                           <Collection />
                         ) : page === 'downloads' ? (
                           <Downloads />
+                        ) : page === 'jam' ? (
+                          <JamPage />
                         ) : page === 'settings' ? (
                           <Settings />
                         ) : page.startsWith('profile:') ? (

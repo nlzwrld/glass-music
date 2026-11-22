@@ -336,10 +336,23 @@ impl DirectCatalog {
                 && std::env::var("GLASS_TEST_DISABLE_DIRECT").as_deref() == Ok("1") }
     }
     pub fn available(&self) -> bool {
+        if self.disabled {
+            return false;
+        }
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        {
+            true
+        }
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            self.has_ytdlp()
+        }
+    }
+    fn has_ytdlp(&self) -> bool {
         !self.disabled && self.root.join("yt-dlp/yt-dlp.exe").is_file() && self.root.join(PLUGIN).is_file()
     }
     async fn extract(&self, source: &str, kind: &str, query: &str, offset: usize) -> Result<Value> {
-        if !self.available() { return Err("Componente de busca ausente. Reinstale esta edição do Liquid Hub.".into()); }
+        if !self.has_ytdlp() { return Err("Componente de busca ausente. Reinstale esta edição do Liquid Hub.".into()); }
         let _permit = tokio::time::timeout(Duration::from_secs(15), self.slots.acquire()).await
             .map_err(|_| "Há outras buscas em andamento. Tente novamente.")?
             .map_err(|_| "Busca indisponível.")?;
@@ -381,7 +394,7 @@ impl DirectCatalog {
         let offset = parse_cursor(s(&request["cursor"], source))?;
         // Public search metadata can be read without launching a complete extractor process.
         // Keep the extractor for continuations, unsupported result types and site changes.
-        if !self.disabled && source == "youtube" && offset == 0 && ["track","all"].contains(&s(request,"kind")) {
+        if !self.disabled && source == "youtube" && offset == 0 && (["track","all"].contains(&s(request,"kind")) || !self.has_ytdlp()) {
             if let Ok(value) = youtube_search(s(request,"query")).await { return Ok(value); }
         }
         let value = self.extract(source, s(request, "kind"), s(request, "query"), offset).await?;
@@ -409,7 +422,7 @@ impl DirectCatalog {
         {
             return Err("URL SoundCloud não autorizada.".into());
         }
-        if !self.available() {
+        if !self.has_ytdlp() {
             return Err("Extrator de áudio indisponível.".into());
         }
         let _permit = tokio::time::timeout(Duration::from_secs(15), self.audio_slots.acquire())
@@ -485,7 +498,7 @@ impl DirectCatalog {
                 return Ok(fast);
             }
         }
-        if !self.available(){return Err("O componente de áudio está ausente. Reinstale esta edição.".into());}
+        if !self.has_ytdlp(){return Err("O componente de áudio está ausente. Reinstale esta edição.".into());}
         let _permit=tokio::time::timeout(Duration::from_secs(15),self.audio_slots.acquire()).await.map_err(|_|"Há outra música sendo preparada.")?.map_err(|_|"Áudio indisponível.")?;
         let mut cmd=Command::new(self.root.join("yt-dlp/yt-dlp.exe"));
         cmd.current_dir(&self.root).args(["--ignore-config","--no-cache-dir","--no-plugin-dirs","--no-js-runtimes","--no-remote-components",
@@ -539,7 +552,7 @@ impl DirectCatalog {
         Ok(json!({"sections":sections,"notices":notices}))
     }
     pub async fn collection(&self,url:&str)->Result<Value>{
-        if !self.available(){return Err("Componente de importação ausente.".into());}
+        if !self.has_ytdlp(){return Err("Componente de importação ausente.".into());}
         let _permit=self.slots.acquire().await.map_err(|_|"Importação indisponível.")?;
         let mut cmd=Command::new(self.root.join("yt-dlp/yt-dlp.exe"));
         cmd.current_dir(&self.root).args(["--ignore-config","--no-cache-dir","--no-plugin-dirs","--plugin-dirs"]).arg(self.root.join("plugins"))

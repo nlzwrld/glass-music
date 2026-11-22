@@ -1,31 +1,91 @@
-use crate::db::{s,Library,Result};
-use serde_json::{json,Value};
-use std::path::{Path,PathBuf};
+use crate::db::{Library, Result};
+#[cfg(desktop)]
+use crate::db::s;
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
 use tauri::AppHandle;
+#[cfg(desktop)]
 use tauri_plugin_updater::UpdaterExt;
 
-pub fn backup_library(db:&Library,directory:&Path)->Result<PathBuf>{
- std::fs::create_dir_all(directory).map_err(|e|e.to_string())?;
- let path=directory.join(format!("before-update-{}.sqlite",uuid::Uuid::new_v4()));
- db.backup_to(&path)?;
- Ok(path)
+pub fn backup_library(db: &Library, directory: &Path) -> Result<PathBuf> {
+    std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+    let path = directory.join(format!("before-update-{}.sqlite", uuid::Uuid::new_v4()));
+    db.backup_to(&path)?;
+    Ok(path)
 }
-fn prepare_install_from_check<T>(check:Result<Option<T>>,install:bool,before_install:impl FnOnce()->Result<()>) -> Result<Option<T>>{
- let update=check?;
- if install&&update.is_some(){before_install()?;}
- Ok(update)
+#[cfg(any(desktop, test))]
+fn prepare_install_from_check<T>(
+    check: Result<Option<T>>,
+    install: bool,
+    before_install: impl FnOnce() -> Result<()>,
+) -> Result<Option<T>> {
+    let update = check?;
+    if install && update.is_some() {
+        before_install()?;
+    }
+    Ok(update)
 }
-pub async fn status(app:&AppHandle,consent:bool,install:bool,before_install:impl FnOnce()->Result<()>)->Result<Value>{
- let config:Value=serde_json::from_str(include_str!("../release.json")).map_err(|_|"Canal de atualização inválido.")?;let endpoint=s(&config,"endpoint");
- if endpoint.is_empty(){return Ok(json!({"configured":false,"available":false,"version":env!("CARGO_PKG_VERSION"),"message":"O canal do GitHub ainda não foi publicado."}));}
- if !consent{return Err("Ative o acesso online para verificar atualizações.".into());}
- static GATE:tokio::sync::Semaphore=tokio::sync::Semaphore::const_new(1);let _permit=GATE.try_acquire().map_err(|_|"Uma atualização já está sendo verificada.")?;
- let url=url::Url::parse(endpoint).map_err(|_|"Canal inválido.")?;if url.scheme()!="https"||url.host_str()!=Some("github.com"){return Err("Canal de atualização inválido.".into());}
- let updater=app.updater_builder().endpoints(vec![url]).map_err(|e|e.to_string())?.timeout(std::time::Duration::from_secs(20)).build().map_err(|e|e.to_string())?;
- let checked=updater.check().await.map_err(|_|"Não foi possível consultar o GitHub agora.".into());
- let Some(update)=prepare_install_from_check(checked,install,before_install)?else{return Ok(json!({"configured":true,"available":false,"version":env!("CARGO_PKG_VERSION"),"message":"O aplicativo está atualizado."}));};
- let version=update.version.clone();if install{update.download_and_install(|_,_|{},||{}).await.map_err(|_|"Não foi possível verificar e instalar a atualização assinada.")?;app.restart();}
- Ok(json!({"configured":true,"available":true,"version":version,"message":format!("Versão {version} disponível.")}))
+#[cfg(desktop)]
+pub async fn status(
+    app: &AppHandle,
+    consent: bool,
+    install: bool,
+    before_install: impl FnOnce() -> Result<()>,
+) -> Result<Value> {
+    let config: Value =
+        serde_json::from_str(include_str!("../release.json")).map_err(|_| "Canal de atualização inválido.")?;
+    let endpoint = s(&config, "endpoint");
+    if endpoint.is_empty() {
+        return Ok(json!({"configured":false,"available":false,"version":env!("CARGO_PKG_VERSION"),"message":"O canal do GitHub ainda não foi publicado."}));
+    }
+    if !consent {
+        return Err("Ative o acesso online para verificar atualizações.".into());
+    }
+    static GATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+    let _permit = GATE
+        .try_acquire()
+        .map_err(|_| "Uma atualização já está sendo verificada.")?;
+    let url = url::Url::parse(endpoint).map_err(|_| "Canal inválido.")?;
+    if url.scheme() != "https" || url.host_str() != Some("github.com") {
+        return Err("Canal de atualização inválido.".into());
+    }
+    let updater = app
+        .updater_builder()
+        .endpoints(vec![url])
+        .map_err(|e| e.to_string())?
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let checked = updater
+        .check()
+        .await
+        .map_err(|_| "Não foi possível consultar o GitHub agora.".into());
+    let Some(update) = prepare_install_from_check(checked, install, before_install)? else {
+        return Ok(json!({"configured":true,"available":false,"version":env!("CARGO_PKG_VERSION"),"message":"O aplicativo está atualizado."}));
+    };
+    let version = update.version.clone();
+    if install {
+        update
+            .download_and_install(|_, _| {}, || {})
+            .await
+            .map_err(|_| "Não foi possível verificar e instalar a atualização assinada.")?;
+        app.restart();
+    }
+    Ok(json!({"configured":true,"available":true,"version":version,"message":format!("Versão {version} disponível.")}))
+}
+#[cfg(mobile)]
+pub async fn status(
+    _app: &AppHandle,
+    _consent: bool,
+    _install: bool,
+    _before_install: impl FnOnce() -> Result<()>,
+) -> Result<Value> {
+    Ok(json!({
+        "configured": false,
+        "available": false,
+        "version": env!("CARGO_PKG_VERSION"),
+        "message": "Atualizações no Android Beta são distribuídas pelo canal APK/Play Store."
+    }))
 }
 
 fn count_and_clean_orphaned_temp_files(root: &Path, clean: bool) -> (usize, usize) {

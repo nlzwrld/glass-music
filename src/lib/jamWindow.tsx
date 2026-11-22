@@ -14,15 +14,26 @@ import type { Preferences, Track } from '../../shared/types';
 import { useJam, type PendingJoinRequestState } from '../components/jam/state';
 import { useAccounts } from '../stores/accounts';
 import { useApp } from '../stores/app';
+import { isAndroidPlatform } from './androidBeta';
 import { parseJamInvite } from './jam';
 
 export async function openJamWindow(): Promise<void> {
+  if (isAndroidPlatform()) {
+    useApp.getState().setPage('jam');
+    return;
+  }
   try {
     await invoke('call', { action: 'openJam', payload: null });
   } catch {}
 }
 
 export async function closeJamWindow(): Promise<void> {
+  if (isAndroidPlatform()) {
+    if (useApp.getState().page === 'jam') {
+      useApp.getState().setPage('home');
+    }
+    return;
+  }
   try {
     await invoke('call', { action: 'closeJam', payload: null });
   } catch {}
