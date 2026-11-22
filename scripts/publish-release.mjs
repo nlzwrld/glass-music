@@ -36,13 +36,19 @@ function matchingRemote(release, name) {
   return release.assets?.filter(asset => asset.name === name) || [];
 }
 
-function verifyRemoteAsset(asset, local) {
+function verifyRemoteAsset(asset, local, { allowPendingDigest = false } = {}) {
   if (!asset) return 'missing';
+  if (asset.size !== undefined && asset.size !== local.size) {
+    throw new Error(`Conflito no asset remoto ${local.name}: conteúdo/tamanho difere do inventário local. Ação necessária: recuperar os artefatos originais ou reparar manualmente a release; nenhum clobber será feito.`);
+  }
   const digest = remoteDigest(asset);
   if (!/^[a-f0-9]{64}$/.test(digest)) {
+    if (allowPendingDigest && asset.size === local.size) {
+      return 'pending_digest';
+    }
     throw new Error(`Não foi possível verificar o asset remoto ${local.name}: digest SHA-256 ausente. Ação necessária: inspecionar o asset no GitHub; nenhum clobber será feito.`);
   }
-  if (digest !== local.sha256 || (asset.size !== undefined && asset.size !== local.size)) {
+  if (digest !== local.sha256) {
     throw new Error(`Conflito no asset remoto ${local.name}: conteúdo/tamanho difere do inventário local. Ação necessária: recuperar os artefatos originais ou reparar manualmente a release; nenhum clobber será feito.`);
   }
   return 'verified';
@@ -71,6 +77,7 @@ export async function reconcileRelease({
   notesPath = inventory?.notes?.path,
   makeLatest = true,
   log = () => {},
+  retryDelayMs = 1500,
 } = {}) {
   if (!github) throw new Error('Adaptador GitHub ausente.');
   if (!/^[a-f0-9]{40}$/i.test(commit || '')) throw new Error(`Commit Git válido é obrigatório: ${commit}`);
@@ -78,6 +85,7 @@ export async function reconcileRelease({
   if (!notesPath) throw new Error('Arquivo de notas ausente no inventário.');
   const assets = await readLocalAssets(inventory);
   const tag = inventory.tag;
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   let release = await github.getRelease(tag);
   if (release) {
     await assertTagCommit(github, tag, commit);
@@ -85,18 +93,24 @@ export async function reconcileRelease({
   } else {
     await assertTagCommit(github, tag, commit);
     await github.createDraft({ tag, commit, title, notesPath });
-    release = await github.getRelease(tag);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      release = await github.getRelease(tag);
+      if (release) break;
+      await wait(retryDelayMs);
+    }
     if (!release) throw new Error(`Draft ${tag} não pôde ser lido após a criação.`);
   }
 
   // Detect every known conflict before the first mutation.
-  for (const local of assets) verifyRemoteAsset(matchingRemote(release, local.name)[0], local);
+  for (const local of assets) {
+    verifyRemoteAsset(matchingRemote(release, local.name)[0], local, { allowPendingDigest: true });
+  }
 
   // Manifest is deliberately last: it is the updater's commit point.
   let uploaded = 0;
   for (const local of assets) {
     const remote = matchingRemote(release, local.name)[0];
-    if (verifyRemoteAsset(remote, local) === 'missing') {
+    if (verifyRemoteAsset(remote, local, { allowPendingDigest: true }) === 'missing') {
       await github.uploadAsset({ tag, path: local.path, name: local.name });
       uploaded += 1;
       log(`upload: ${local.name}`);
@@ -105,10 +119,30 @@ export async function reconcileRelease({
     }
   }
 
-  release = await github.getRelease(tag);
+  for (let attempt = 0; attempt < 6; attempt++) {
+    release = await github.getRelease(tag);
+    if (release) {
+      assertUniqueAssets(release, assets);
+      const states = assets.map(local =>
+        verifyRemoteAsset(matchingRemote(release, local.name)[0], local, {
+          allowPendingDigest: true,
+        }),
+      );
+      if (states.every(s => s === 'verified')) break;
+      if (attempt === 5 && states.every(s => s === 'verified' || s === 'pending_digest')) break;
+    }
+    if (attempt < 5) await wait(retryDelayMs);
+  }
   if (!release) throw new Error(`Release ${tag} desapareceu durante a reconciliação.`);
   assertUniqueAssets(release, assets);
-  for (const local of assets) verifyRemoteAsset(matchingRemote(release, local.name)[0], local);
+  for (const local of assets) {
+    const state = verifyRemoteAsset(matchingRemote(release, local.name)[0], local, {
+      allowPendingDigest: true,
+    });
+    if (state === 'missing') {
+      throw new Error(`Asset ${local.name} não apareceu na release ${tag} após o upload.`);
+    }
+  }
 
   if (!release.draft) {
     return { status: uploaded ? 'repaired' : 'no-op', tag, assets: assets.map(asset => asset.name) };
