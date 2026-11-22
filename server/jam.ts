@@ -29,6 +29,12 @@ import {
   type JamRoom,
   type JamRoomStatus,
 } from '../shared/jam.ts';
+import {
+  type CloudflareDoSqlStorage,
+  createDoSqliteAdapter,
+  resolveOAuthProviders,
+} from './auth.ts';
+import { ZeroTrustAuthEngine, handleFetchAuthRequest } from './broker.ts';
 
 interface Member extends JamMember {
   token: string;
@@ -2170,6 +2176,8 @@ export interface CfDurableObjectState {
     deleteAll(): Promise<void>;
     setAlarm(scheduledTime: number): Promise<void>;
     deleteAlarm?(): Promise<void>;
+    sql?: CloudflareDoSqlStorage;
+    transactionSync?: <T>(fn: () => T) => T;
   };
   acceptWebSocket(ws: WebSocket, tags?: string[]): void;
   getWebSockets(tag?: string): WebSocket[];
@@ -2199,6 +2207,19 @@ export interface CfJamEnv {
   JAM_REQUIRE_AUTH?: string;
   JAM_AUTH_PUBLIC_KEY?: string;
   JAM_DOWNLOAD_URL?: string;
+  BROKER_ED25519_PRIVATE_KEY?: string;
+  BROKER_PUBLIC_URL?: string;
+  DISCORD_CLIENT_ID?: string;
+  DISCORD_CLIENT_SECRET?: string;
+  DISCORD_AUTH_URL?: string;
+  DISCORD_TOKEN_URL?: string;
+  DISCORD_USER_URL?: string;
+  GITHUB_CLIENT_ID?: string;
+  GITHUB_CLIENT_SECRET?: string;
+  GITHUB_AUTH_URL?: string;
+  GITHUB_TOKEN_URL?: string;
+  GITHUB_USER_URL?: string;
+  GITHUB_EMAILS_URL?: string;
 }
 
 const workerRates = new Map<string, { until: number; count: number }>();
@@ -2422,6 +2443,7 @@ export class JamRoomDO {
   private mutationNonces = new Map<string, number>();
   private volatileNonces = new Map<string, number>();
   private rates = new Map<string, { until: number; count: number }>();
+  private authEngine: ZeroTrustAuthEngine | null = null;
 
   constructor(
     ctx: CfDurableObjectState,
@@ -2436,6 +2458,22 @@ export class JamRoomDO {
       // Responds to lightweight pings while keeping the Durable Object hibernated!
       this.ctx.setWebSocketAutoResponse(new AutoPair('{"action":"ping"}', '{"pong":true}'));
     }
+  }
+
+  private getAuthEngine(): ZeroTrustAuthEngine {
+    if (!this.authEngine) {
+      const sql = this.ctx.storage.sql;
+      const txSync = this.ctx.storage.transactionSync
+        ? <T>(fn: () => T) => this.ctx.storage.transactionSync!(fn)
+        : undefined;
+      const dbPath = sql ? createDoSqliteAdapter(sql, txSync) : ':memory:';
+      this.authEngine = new ZeroTrustAuthEngine({
+        clock: this.clock,
+        dbPath,
+        privateKeyPem: this.env.BROKER_ED25519_PRIVATE_KEY,
+      });
+    }
+    return this.authEngine;
   }
 
   private async loadRoom(): Promise<Room | null> {
@@ -2699,6 +2737,16 @@ export class JamRoomDO {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === '/.well-known/jwks.json' || url.pathname.startsWith('/v1/auth/')) {
+      const engine = this.getAuthEngine();
+      const baseProviders = resolveOAuthProviders(this.env as unknown as NodeJS.ProcessEnv);
+      return handleFetchAuthRequest({
+        request,
+        auth: engine,
+        baseOAuthProviders: baseProviders,
+        publicBase: this.env.BROKER_PUBLIC_URL || url.origin,
+      });
+    }
     const now = this.clock();
     await this.loadRoom();
     await this.pruneRoom(now);
@@ -3250,6 +3298,20 @@ export async function handleCloudflareJamFetch(request: Request, env: CfJamEnv):
   const ip = cfClientAddress(request);
   const now = Date.now();
   try {
+    if (url.pathname === '/.well-known/jwks.json' || url.pathname.startsWith('/v1/auth/')) {
+      consumeCfRate(workerRates, `ip:${ip}:auth`, 120, now);
+      const headers = new Headers(request.headers);
+      headers.set('X-Liquid-Client-IP', ip);
+      headers.delete('CF-Connecting-IP');
+      const forwarded = new Request(request.url, {
+        method: request.method,
+        headers,
+        body:
+          request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined,
+      });
+      return env.JAM_ROOMS.get(env.JAM_ROOMS.idFromName('__hub_auth_v1__')).fetch(forwarded);
+    }
+
     if (url.pathname.startsWith('/v1/jam/invites/') && request.method === 'GET') {
       consumeCfRate(workerRates, `ip:${ip}:lookup`, 120, now);
       const code = normalizeJamCode(decodeURIComponent(url.pathname.slice('/v1/jam/invites/'.length)));

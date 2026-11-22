@@ -42,6 +42,8 @@ pub fn official_url(raw: &str) -> bool {
                         | "policies.google.com"
                         | "developers.google.com"
                         | "developers.soundcloud.com"
+                        | "discord.com"
+                        | "github.com"
                 )
             )
     })

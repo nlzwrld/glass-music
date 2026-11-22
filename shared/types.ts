@@ -419,6 +419,8 @@ export interface GlassAPI {
     mode?: 'login' | 'link';
     termsVersion?: string;
     privacyVersion?: string;
+    oauthClientId?: string;
+    oauthClientSecret?: string;
   }): Promise<HubSessionStatus>;
   hubCancelOAuth(): Promise<{ ok: boolean }>;
   hubRefresh(brokerUrl?: string): Promise<HubSessionStatus>;

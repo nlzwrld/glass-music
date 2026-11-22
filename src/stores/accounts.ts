@@ -24,7 +24,8 @@ export type AuthModalView =
   | 'forgot'
   | 'reset'
   | 'verify'
-  | 'terms';
+  | 'terms'
+  | 'oauth-setup';
 
 interface OpenAuthModalOptions {
   view?: AuthModalView;
@@ -38,6 +39,8 @@ interface State {
   hubHydrated: boolean;
   hubProviders: HubProvidersAvailability | null;
   oauthPending: HubOAuthProvider | null;
+  oauthSetupProvider: HubOAuthProvider;
+  oauthSetupMode: 'login' | 'link';
   authModalOpen: boolean;
   authModalView: AuthModalView;
   postAuthJamInvite: string | null;
@@ -74,6 +77,7 @@ interface State {
     provider: HubOAuthProvider,
     mode?: 'login' | 'link',
     brokerUrl?: string,
+    credentials?: { oauthClientId: string; oauthClientSecret: string },
   ): Promise<boolean>;
   cancelHubOAuth(): Promise<void>;
   acceptHubTerms(brokerUrl?: string): Promise<boolean>;
@@ -103,17 +107,25 @@ const commit = (result: Awaited<ReturnType<typeof window.glass.syncAccount>>) =>
   });
 };
 
-function resolveEffectiveBroker(
+export const DEFAULT_HUB_BROKER_URL = 'https://liquid-hub-jam.nlzezwrld.workers.dev';
+
+function normalizeBrokerCandidate(raw?: string): string {
+  const trimmed = (raw || '').trim().replace(/\/+$/, '');
+  if (!trimmed || trimmed.toLowerCase() === 'https://api.liquidhub.app') return '';
+  return trimmed;
+}
+
+export function resolveEffectiveBroker(
   explicit?: string,
   state?: Pick<State, 'preferredBrokerUrl' | 'hub'>,
 ): string {
-  const fromArg = explicit?.trim();
+  const fromArg = normalizeBrokerCandidate(explicit);
   if (fromArg) return fromArg;
-  const fromPref = state?.preferredBrokerUrl?.trim();
+  const fromPref = normalizeBrokerCandidate(state?.preferredBrokerUrl);
   if (fromPref) return fromPref;
-  const fromHub = state?.hub?.brokerUrl?.trim();
+  const fromHub = normalizeBrokerCandidate(state?.hub?.brokerUrl);
   if (fromHub) return fromHub;
-  return 'https://api.liquidhub.app';
+  return DEFAULT_HUB_BROKER_URL;
 }
 
 async function finishAuthenticatedFlow(
@@ -149,6 +161,8 @@ export const useAccounts = create<State>((set, get) => ({
   hubHydrated: false,
   hubProviders: null,
   oauthPending: null,
+  oauthSetupProvider: 'discord',
+  oauthSetupMode: 'login',
   authModalOpen: false,
   authModalView: 'choose',
   postAuthJamInvite: null,
@@ -366,7 +380,7 @@ export const useAccounts = create<State>((set, get) => ({
     }
   },
 
-  oauthHub: async (provider, mode = 'login', brokerUrl) => {
+  oauthHub: async (provider, mode = 'login', brokerUrl, credentials) => {
     if (get().busy) return false;
     purgeSensitiveWebStorage();
     const broker = resolveEffectiveBroker(brokerUrl, get());
@@ -393,6 +407,12 @@ export const useAccounts = create<State>((set, get) => ({
         provider,
         mode,
         ...legal,
+        ...(credentials?.oauthClientId && credentials?.oauthClientSecret
+          ? {
+              oauthClientId: credentials.oauthClientId.trim(),
+              oauthClientSecret: credentials.oauthClientSecret.trim(),
+            }
+          : {}),
       });
       set({ preferredBrokerUrl: broker, oauthPending: null });
       return await finishAuthenticatedFlow(
@@ -405,6 +425,18 @@ export const useAccounts = create<State>((set, get) => ({
       );
     } catch (e) {
       const msg = cleanError(e);
+      if (msg.includes('OAUTH_SETUP_REQUIRED') || msg.includes('não configurado')) {
+        set({
+          oauthPending: null,
+          authModalOpen: true,
+          authModalView: 'oauth-setup',
+          oauthSetupProvider: provider,
+          oauthSetupMode: mode,
+          authError: '',
+          notice: `Ative o aplicativo OAuth do ${label} para continuar.`,
+        });
+        return false;
+      }
       set({ notice: msg, authError: msg, oauthPending: null });
       return false;
     } finally {

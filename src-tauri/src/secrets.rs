@@ -53,11 +53,51 @@ pub struct HubVaultSession {
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
+pub struct HubOAuthClientSecret {
+    pub client_id: String,
+    pub client_secret: String,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct Secrets {
     pub youtube_key: String,
     pub broker_url: String,
     pub broker_token: String,
     pub hub_session: Option<HubVaultSession>,
+    pub hub_oauth_clients: std::collections::HashMap<String, HubOAuthClientSecret>,
+}
+
+pub fn default_broker_url() -> String {
+    if let Ok(env_val) = std::env::var("LIQUID_HUB_BROKER_URL") {
+        let trimmed = env_val.trim();
+        if !trimmed.is_empty() {
+            if let Ok(valid) = validate_broker_origin(trimmed) {
+                if !valid.is_empty() {
+                    return valid;
+                }
+            }
+        }
+    }
+    serde_json::from_str::<Value>(include_str!("../jam.json"))
+        .ok()
+        .and_then(|v| {
+            v["brokerUrl"]
+                .as_str()
+                .or_else(|| v["jamUrl"].as_str())
+                .map(|s| s.trim().trim_end_matches('/').to_string())
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "https://liquid-hub-jam.nlzezwrld.workers.dev".to_string())
+}
+
+pub fn normalize_broker_candidate(raw: &str) -> String {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("https://api.liquidhub.app") {
+        String::new()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn zeroize_bytes(buf: &mut [u8]) {
@@ -206,13 +246,11 @@ impl Secrets {
 
     /// Public safe projection: never leaks access_token, refresh_token or broker_token to WebView.
     pub fn public_hub_status(&self, now_ms: i64) -> Value {
-        let effective_broker = if !self.broker_url.is_empty() {
-            self.broker_url.clone()
+        let stored_norm = normalize_broker_candidate(&self.broker_url);
+        let effective_broker = if !stored_norm.is_empty() {
+            stored_norm
         } else {
-            std::env::var("LIQUID_HUB_BROKER_URL")
-                .ok()
-                .and_then(|v| validate_broker_origin(v.trim()).ok())
-                .unwrap_or_default()
+            default_broker_url()
         };
         if let Some(session) = &self.hub_session {
             if !session.refresh_token.is_empty() {

@@ -428,6 +428,8 @@ export const oauthStartSchema = z
     mode: z.enum(['login', 'link']).optional(),
     termsVersion: legalVersionSchema.optional(),
     privacyVersion: legalVersionSchema.optional(),
+    oauthClientId: z.string().trim().min(1).max(200).optional(),
+    oauthClientSecret: z.string().trim().min(1).max(300).optional(),
   })
   .strict();
 

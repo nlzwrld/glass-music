@@ -621,16 +621,17 @@ impl Accounts {
 
 fn resolve_hub_broker(secrets_mtx: &Mutex<Secrets>, override_url: Option<&str>) -> Result<String> {
     let stored = secrets_mtx.lock().unwrap().broker_url.clone();
-    let env_default = std::env::var("LIQUID_HUB_BROKER_URL").unwrap_or_default();
-    let candidate = override_url
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .or_else(|| {
-            let s = stored.trim();
-            if s.is_empty() { None } else { Some(s) }
-        })
-        .unwrap_or_else(|| env_default.trim());
-    let validated = secrets::validate_broker_origin(candidate)?;
+    let over_norm = override_url
+        .map(secrets::normalize_broker_candidate)
+        .filter(|v| !v.is_empty());
+    let stored_norm = {
+        let s = secrets::normalize_broker_candidate(&stored);
+        if s.is_empty() { None } else { Some(s) }
+    };
+    let candidate = over_norm
+        .or(stored_norm)
+        .unwrap_or_else(secrets::default_broker_url);
+    let validated = secrets::validate_broker_origin(&candidate)?;
     if validated.is_empty() {
         return Err("Informe o endereço HTTPS do servidor Liquid Hub.".into());
     }
@@ -1039,8 +1040,16 @@ pub async fn hub_oauth_flow(
 ) -> Result<Value> {
     let obj = payload.as_object().ok_or("Solicitação OAuth inválida.")?;
     for k in obj.keys() {
-        if !["brokerUrl", "provider", "mode", "termsVersion", "privacyVersion"]
-            .contains(&k.as_str())
+        if ![
+            "brokerUrl",
+            "provider",
+            "mode",
+            "termsVersion",
+            "privacyVersion",
+            "oauthClientId",
+            "oauthClientSecret",
+        ]
+        .contains(&k.as_str())
         {
             return Err("Campo OAuth não permitido.".into());
         }
@@ -1055,10 +1064,40 @@ pub async fn hub_oauth_flow(
         return Err("Modo OAuth inválido.".into());
     }
 
+    let provided_cid = s(payload, "oauthClientId").trim().to_string();
+    let provided_csec = s(payload, "oauthClientSecret").trim().to_string();
+    if (!provided_cid.is_empty() || !provided_csec.is_empty())
+        && (provided_cid.is_empty()
+            || provided_csec.is_empty()
+            || provided_cid.len() > 200
+            || provided_csec.len() > 300)
+    {
+        return Err("Informe um Client ID e Client Secret válidos.".into());
+    }
+
     let _guard = gate
         .try_lock()
         .map_err(|_| "Já existe uma autenticação externa em andamento.")?;
     cancel.store(false, Ordering::Release);
+
+    let (oauth_cid, oauth_csec) = {
+        let mut guard = secrets_mtx.lock().unwrap();
+        if !provided_cid.is_empty() && !provided_csec.is_empty() {
+            guard.hub_oauth_clients.insert(
+                provider.clone(),
+                secrets::HubOAuthClientSecret {
+                    client_id: provided_cid.clone(),
+                    client_secret: provided_csec.clone(),
+                },
+            );
+            guard.save(secrets_path)?;
+            (provided_cid, provided_csec)
+        } else if let Some(saved) = guard.hub_oauth_clients.get(&provider) {
+            (saved.client_id.clone(), saved.client_secret.clone())
+        } else {
+            (String::new(), String::new())
+        }
+    };
 
     let (broker, bearer) = if mode == "link" {
         let (b, tok) = ensure_fresh_hub_token(
@@ -1100,6 +1139,10 @@ pub async fn hub_oauth_flow(
         start_body["termsVersion"] = json!(tv);
         start_body["privacyVersion"] = json!(pv);
     }
+    if !oauth_cid.is_empty() && !oauth_csec.is_empty() {
+        start_body["oauthClientId"] = json!(oauth_cid);
+        start_body["oauthClientSecret"] = json!(oauth_csec);
+    }
 
     let http = crate::providers::client();
     let mut start_req = http
@@ -1115,6 +1158,9 @@ pub async fn hub_oauth_flow(
     let start_status = start_res.status();
     let start_json: Value = start_res.json().await.unwrap_or(Value::Null);
     if !start_status.is_success() {
+        if s(&start_json, "code") == "provider_not_configured" {
+            return Err(format!("OAUTH_SETUP_REQUIRED:{provider}"));
+        }
         return Err(parse_broker_error(
             &start_json,
             "Provedor OAuth indisponível no servidor.",
@@ -1132,6 +1178,7 @@ pub async fn hub_oauth_flow(
         return Err("URL de autorização do provedor não permitida.".into());
     }
 
+    #[allow(unused_mut)]
     let mut launched_autofollow = false;
     #[cfg(debug_assertions)]
     {

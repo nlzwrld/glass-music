@@ -7,13 +7,13 @@
  * - Per-IP and Per-User-ID rate limiting & strict schema validation
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import * as nodeCrypto from 'node:crypto';
 import {
-  argon2,
-  argon2Sync,
   createHash,
   createPrivateKey,
   createPublicKey,
   generateKeyPairSync,
+  pbkdf2Sync,
   randomBytes,
   randomUUID,
   sign,
@@ -46,6 +46,7 @@ import {
   type HubUserRecord,
   type OAuthProviderConfig,
   type PendingOAuthFlow,
+  type SqliteDatabaseLike,
   buildProviderAuthorizeUrl,
   describeProviderAvailability,
   exchangeExternalOAuthProfile,
@@ -118,8 +119,22 @@ type NativeArgon2Params = {
   tagLength: number;
 };
 
+type Argon2Fn = (
+  algorithm: 'argon2id',
+  parameters: NativeArgon2Params,
+  callback: (err: Error | null, result: Buffer) => void,
+) => void;
+type Argon2SyncFn = (algorithm: 'argon2id', parameters: NativeArgon2Params) => Buffer;
+
+const argon2 = (nodeCrypto as unknown as { argon2?: Argon2Fn }).argon2;
+const argon2Sync = (nodeCrypto as unknown as { argon2Sync?: Argon2SyncFn }).argon2Sync;
+
 function deriveArgon2id(params: NativeArgon2Params): Promise<Buffer> {
   return new Promise((resolve, reject) => {
+    if (typeof argon2 !== 'function') {
+      reject(new Error('argon2 unavailable'));
+      return;
+    }
     argon2('argon2id', params, (error, tag) => {
       if (error) reject(error);
       else resolve(tag);
@@ -158,15 +173,50 @@ function encodedArgon2id(passwordHash: string) {
   };
 }
 
+function encodedPbkdf2(passwordHash: string) {
+  const parts = passwordHash.split('$');
+  if (parts.length !== 5 || parts[1] !== 'pbkdf2-sha256') return undefined;
+  const iterations = Number(parts[2].replace(/^i=/, ''));
+  if (!Number.isFinite(iterations) || iterations < 1000) return undefined;
+  const nonce = Buffer.from(parts[3], 'base64');
+  const expected = Buffer.from(parts[4], 'base64');
+  if (nonce.length < 8 || expected.length < 16) return undefined;
+  return { iterations, nonce, expected };
+}
+
+function hashPasswordPbkdf2(password: string, iterations = 25000): string {
+  const salt = randomBytes(16);
+  const tag = pbkdf2Sync(Buffer.from(password, 'utf8'), salt, iterations, 32, 'sha256');
+  return `$pbkdf2-sha256$i=${iterations}$${salt.toString('base64')}$${tag.toString('base64')}`;
+}
+
+function verifyPasswordPbkdf2(password: string, encoded: string): boolean {
+  const parsed = encodedPbkdf2(encoded);
+  if (!parsed) return false;
+  const computed = pbkdf2Sync(
+    Buffer.from(password, 'utf8'),
+    parsed.nonce,
+    parsed.iterations,
+    parsed.expected.length,
+    'sha256',
+  );
+  return computed.length === parsed.expected.length && timingSafeEqual(computed, parsed.expected);
+}
+
 export function hashPasswordArgon2id(password: string, params: Argon2Params = {}): string {
   const complete = completeArgon2Params(params);
   const salt = randomBytes(16);
-  const tag = argon2Sync('argon2id', {
-    message: Buffer.from(password, 'utf8'),
-    nonce: salt,
-    ...complete,
-  });
-  return `$argon2id$v=19$m=${complete.memory},t=${complete.passes},p=${complete.parallelism}$${salt.toString('base64')}$${tag.toString('base64')}`;
+  try {
+    if (typeof argon2Sync !== 'function') throw new Error('argon2Sync unavailable');
+    const tag = argon2Sync('argon2id', {
+      message: Buffer.from(password, 'utf8'),
+      nonce: salt,
+      ...complete,
+    });
+    return `$argon2id$v=19$m=${complete.memory},t=${complete.passes},p=${complete.parallelism}$${salt.toString('base64')}$${tag.toString('base64')}`;
+  } catch {
+    return hashPasswordPbkdf2(password);
+  }
 }
 
 export async function hashPasswordArgon2idAsync(
@@ -175,16 +225,25 @@ export async function hashPasswordArgon2idAsync(
 ): Promise<string> {
   const complete = completeArgon2Params(params);
   const salt = randomBytes(16);
-  const tag = await deriveArgon2id({
-    message: Buffer.from(password, 'utf8'),
-    nonce: salt,
-    ...complete,
-  });
-  return `$argon2id$v=19$m=${complete.memory},t=${complete.passes},p=${complete.parallelism}$${salt.toString('base64')}$${tag.toString('base64')}`;
+  try {
+    if (typeof argon2 !== 'function') throw new Error('argon2 unavailable');
+    const tag = await deriveArgon2id({
+      message: Buffer.from(password, 'utf8'),
+      nonce: salt,
+      ...complete,
+    });
+    return `$argon2id$v=19$m=${complete.memory},t=${complete.passes},p=${complete.parallelism}$${salt.toString('base64')}$${tag.toString('base64')}`;
+  } catch {
+    return hashPasswordPbkdf2(password);
+  }
 }
 
 export function verifyPasswordArgon2id(password: string, encoded: string): boolean {
   try {
+    if (encoded.startsWith('$pbkdf2-sha256$')) {
+      return verifyPasswordPbkdf2(password, encoded);
+    }
+    if (typeof argon2Sync !== 'function') return false;
     const parsed = encodedArgon2id(encoded);
     if (!parsed) return false;
     const computed = argon2Sync('argon2id', {
@@ -206,6 +265,9 @@ export async function verifyPasswordArgon2idAsync(
   encoded: string,
 ): Promise<boolean> {
   try {
+    if (encoded.startsWith('$pbkdf2-sha256$')) {
+      return verifyPasswordPbkdf2(password, encoded);
+    }
     const parsed = encodedArgon2id(encoded);
     if (!parsed) return false;
     const computed = await deriveArgon2id({
@@ -320,7 +382,7 @@ export interface ZeroTrustAuthEngineOptions {
   argon2Adapter?: Argon2AsyncAdapter;
   argon2Concurrency?: number;
   argon2QueueSize?: number;
-  dbPath?: string;
+  dbPath?: string | SqliteDatabaseLike;
   onAuthEmail?: (email: AuthEmailMessage) => void | Promise<void>;
   discord?: OAuthProviderConfig;
   github?: OAuthProviderConfig;
@@ -356,13 +418,52 @@ export class ZeroTrustAuthEngine {
       this.privateKey = createPrivateKey(options.privateKeyPem);
       this.publicKey = createPublicKey(this.privateKey);
     } else {
-      const pair = generateKeyPairSync('ed25519');
-      this.privateKey = pair.privateKey;
-      this.publicKey = pair.publicKey;
+      const savedPem = this.store.getConfig('ed25519_private_pem');
+      if (savedPem) {
+        this.privateKey = createPrivateKey(savedPem);
+        this.publicKey = createPublicKey(this.privateKey);
+      } else {
+        const pair = generateKeyPairSync('ed25519');
+        this.privateKey = pair.privateKey;
+        this.publicKey = pair.publicKey;
+        const exportedPem = String(
+          pair.privateKey.export({ format: 'pem', type: 'pkcs8' }),
+        );
+        this.store.setConfig('ed25519_private_pem', exportedPem);
+      }
     }
     const jwk = this.publicKey.export({ format: 'jwk' }) as { x: string };
     this.kid = createHash('sha256').update(jwk.x).digest('base64url').slice(0, 16);
     this.dummyHash = hashPasswordArgon2id('dummy-zero-trust-anti-timing-secret', this.argon2Params);
+  }
+
+  resolveEffectiveProviderConfig(
+    provider: HubOAuthProvider,
+    base: Required<OAuthProviderConfig>,
+  ): Required<OAuthProviderConfig> {
+    if (base.clientId && base.clientSecret) return base;
+    const raw = this.store.getConfig(`oauth:${provider}`);
+    if (!raw) return base;
+    try {
+      const parsed = JSON.parse(raw) as { clientId?: string; clientSecret?: string };
+      return {
+        ...base,
+        clientId: base.clientId || (typeof parsed.clientId === 'string' ? parsed.clientId : ''),
+        clientSecret:
+          base.clientSecret || (typeof parsed.clientSecret === 'string' ? parsed.clientSecret : ''),
+      };
+    } catch {
+      return base;
+    }
+  }
+
+  resolveEffectiveProviders(
+    base: ReturnType<typeof resolveOAuthProviders>,
+  ): ReturnType<typeof resolveOAuthProviders> {
+    return {
+      discord: this.resolveEffectiveProviderConfig('discord', base.discord),
+      github: this.resolveEffectiveProviderConfig('github', base.github),
+    };
   }
 
   private clock: () => number;
@@ -609,9 +710,22 @@ export class ZeroTrustAuthEngine {
       throw new BrokerHttpError('Parâmetros OAuth inválidos.', 400, 'invalid_request');
     }
     const data = parsed.data;
-    if (!input.providerConfig.clientId || !input.providerConfig.clientSecret) {
+    if (data.oauthClientId && data.oauthClientSecret) {
+      this.store.setConfig(
+        `oauth:${data.provider}`,
+        JSON.stringify({
+          clientId: data.oauthClientId.trim(),
+          clientSecret: data.oauthClientSecret.trim(),
+        }),
+      );
+    }
+    const effectiveConfig = this.resolveEffectiveProviderConfig(
+      data.provider,
+      input.providerConfig,
+    );
+    if (!effectiveConfig.clientId || !effectiveConfig.clientSecret) {
       throw new BrokerHttpError(
-        `Provedor ${data.provider} não configurado no servidor.`,
+        `OAUTH_SETUP_REQUIRED:${data.provider}`,
         503,
         'provider_not_configured',
       );
@@ -647,7 +761,7 @@ export class ZeroTrustAuthEngine {
     this.store.saveOAuthFlow(flow);
     const authorizeUrl = buildProviderAuthorizeUrl({
       provider: data.provider,
-      config: input.providerConfig,
+      config: effectiveConfig,
       callbackUrl: input.callbackUrl,
       state: flow.state,
       codeVerifier: flow.providerVerifier,
@@ -1032,17 +1146,20 @@ export class ZeroTrustAuthEngine {
       const oldest = this.authCodes.keys().next().value;
       if (oldest) this.authCodes.delete(oldest);
     }
+    const now = this.clock();
     const code = randomBytes(32).toString('base64url');
-    this.authCodes.set(code, {
+    const record: PendingAuthCode = {
       code,
       userId: input.userId,
       clientId: input.clientId,
       codeChallenge: input.codeChallenge,
       redirectUri: input.redirectUri,
       scope: input.scope,
-      expiresAt: this.clock() + AUTH_CODE_TTL_MS,
+      expiresAt: now + AUTH_CODE_TTL_MS,
       consumed: false,
-    });
+    };
+    this.authCodes.set(code, record);
+    this.store.saveAuthCode(record, now);
     return { code, expires_in: 60 };
   }
 
@@ -1056,14 +1173,16 @@ export class ZeroTrustAuthEngine {
 
     if (parsed.data.grant_type === 'authorization_code') {
       const { code, client_id, code_verifier, redirect_uri } = parsed.data;
-      const record = this.authCodes.get(code);
+      const record = this.authCodes.get(code) ?? this.store.findAuthCode(code);
       if (!record || record.expiresAt <= now) {
         this.authCodes.delete(code);
+        this.store.deleteAuthCode(code);
         throw new BrokerHttpError('Código de autorização inválido ou expirado.', 400, 'invalid_grant');
       }
       if (record.consumed) {
         if (record.issuedFamilyId) this.revokeFamily(record.issuedFamilyId);
         this.authCodes.delete(code);
+        this.store.deleteAuthCode(code);
         throw new BrokerHttpError(
           'Reuso de código detectado; família de tokens invalidada.',
           401,
@@ -1084,6 +1203,8 @@ export class ZeroTrustAuthEngine {
       const familyId = `fam_${randomUUID()}`;
       record.consumed = true;
       record.issuedFamilyId = familyId;
+      this.authCodes.set(code, record);
+      this.store.markAuthCodeConsumed(code, familyId);
       return this.mintSessionPair(record.userId, client_id, familyId, record.scope, now);
     }
 
@@ -1455,7 +1576,13 @@ export function createBroker(
 
       if (req.method === 'GET' && u.pathname === '/v1/auth/providers') {
         enforceRateLimit(`ip:${ip}:providers`, 60);
-        send(200, describeProviderAvailability(resolvePublicBase(req), oauthProviders));
+        send(
+          200,
+          describeProviderAvailability(
+            resolvePublicBase(req),
+            auth.resolveEffectiveProviders(oauthProviders),
+          ),
+        );
         return;
       }
 
@@ -1591,9 +1718,10 @@ export function createBroker(
           }
 
           try {
+            const effectiveProviders = auth.resolveEffectiveProviders(oauthProviders);
             const profile = await exchangeExternalOAuthProfile({
               provider,
-              config: oauthProviders[provider],
+              config: effectiveProviders[provider],
               code: upstreamCode,
               callbackUrl,
               codeVerifier: flow.providerVerifier,
@@ -1825,7 +1953,290 @@ export function createBroker(
   return server as typeof server & { auth: ZeroTrustAuthEngine };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+export async function handleFetchAuthRequest(input: {
+  request: Request;
+  auth: ZeroTrustAuthEngine;
+  baseOAuthProviders: ReturnType<typeof resolveOAuthProviders>;
+  publicBase?: string;
+}): Promise<Response> {
+  const { request, auth, baseOAuthProviders } = input;
+  const u = new URL(request.url);
+  const publicBase = (input.publicBase || u.origin).replace(/\/+$/, '');
+  const jsonHeaders: Record<string, string> = {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    Pragma: 'no-cache',
+    'X-Service': 'liquid-hub-broker',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+  };
+  const sendJson = (status: number, payload: unknown) =>
+    new Response(JSON.stringify(payload), {
+      status,
+      headers: status === 429 ? { ...jsonHeaders, 'Retry-After': '60' } : jsonHeaders,
+    });
+  const sendHtml = (status: number, title: string, message: string) => {
+    const esc = (s: string) =>
+      s
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${esc(title)}</title><style>body{font-family:system-ui,-apple-system,sans-serif;background:#101216;color:#f3f5f8;display:grid;place-items:center;min-height:100vh;margin:0;padding:24px}main{max-width:440px;padding:28px;border-radius:20px;background:#191d24;border:1px solid rgba(255,255,255,.12)}h1{font-size:18px;margin:0 0 10px}p{font-size:14px;line-height:1.5;color:#b8c0cc;margin:0}</style></head><body><main><h1>${esc(title)}</h1><p>${esc(message)}</p></main></body></html>`;
+    return new Response(html, {
+      status,
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+      },
+    });
+  };
+  const redirect = (location: string) =>
+    new Response(null, {
+      status: 302,
+      headers: { Location: location, 'Cache-Control': 'no-store' },
+    });
+  const readJson = async (): Promise<unknown> => {
+    const ct = request.headers.get('content-type') || '';
+    if (!ct.toLowerCase().startsWith('application/json')) {
+      throw new BrokerHttpError(
+        'Content-Type deve ser application/json.',
+        415,
+        'unsupported_media_type',
+      );
+    }
+    const text = await request.text();
+    if (Buffer.byteLength(text, 'utf8') > 16384) {
+      throw new BrokerHttpError('Payload excede o limite.', 413, 'payload_too_large');
+    }
+    try {
+      const parsed = JSON.parse(text);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw 0;
+      return parsed;
+    } catch {
+      throw new BrokerHttpError('JSON inválido.', 400, 'invalid_json');
+    }
+  };
+  const requireUser = (): { userId: string; familyId: string } => {
+    const rawHeader = request.headers.get('authorization') || '';
+    if (!rawHeader.startsWith('Bearer ')) {
+      throw new BrokerHttpError('Não autorizado', 401, 'unauthorized');
+    }
+    const bearer = rawHeader.slice(7).trim();
+    if (!bearer) throw new BrokerHttpError('Não autorizado', 401, 'unauthorized');
+    const claims = auth.verifyAccessToken(bearer);
+    return { userId: claims.sub, familyId: claims.fam };
+  };
+
+  try {
+    if (request.method === 'GET' && u.pathname === '/.well-known/jwks.json') {
+      return sendJson(200, { keys: [auth.publicJwk()] });
+    }
+    if (request.method === 'GET' && u.pathname === '/v1/auth/providers') {
+      return sendJson(
+        200,
+        describeProviderAvailability(
+          publicBase,
+          auth.resolveEffectiveProviders(baseOAuthProviders),
+        ),
+      );
+    }
+    if (request.method === 'POST' && u.pathname === '/v1/auth/register') {
+      const body = await readJson();
+      const result = await auth.authenticateCredentials(body, true);
+      return sendJson(201, result);
+    }
+    if (request.method === 'POST' && u.pathname === '/v1/auth/login') {
+      const body = await readJson();
+      const result = await auth.authenticateCredentials(body, false);
+      return sendJson(200, result);
+    }
+    if (request.method === 'GET' && u.pathname === '/v1/auth/authorize') {
+      const identity = requireUser();
+      const queryObj: Record<string, string> = {};
+      for (const [k, v] of u.searchParams) {
+        if (k in queryObj) throw new BrokerHttpError('Parâmetro duplicado.', 400);
+        queryObj[k] = v;
+      }
+      return sendJson(200, auth.authorizePkceRequest(queryObj, identity.userId));
+    }
+
+    const oauthMatch = /^\/v1\/auth\/oauth\/([a-z0-9_-]+)\/(start|callback)$/.exec(u.pathname);
+    if (oauthMatch) {
+      const providerParsed = hubOAuthProviderSchema.safeParse(oauthMatch[1]);
+      if (!providerParsed.success) {
+        return sendJson(404, { error: 'Provedor OAuth desconhecido.', code: 'invalid_provider' });
+      }
+      const provider: HubOAuthProvider = providerParsed.data;
+      const action = oauthMatch[2];
+      const callbackUrl = `${publicBase}/v1/auth/oauth/${provider}/callback`;
+
+      if (action === 'start' && request.method === 'GET') {
+        const queryObj: Record<string, string> = { provider };
+        for (const [k, v] of u.searchParams) {
+          if (k === 'format') continue;
+          queryObj[k] = v;
+        }
+        if (queryObj.mode === 'link') {
+          throw new BrokerHttpError(
+            'Use POST autenticado para iniciar vínculo de conta.',
+            400,
+            'invalid_request',
+          );
+        }
+        const started = auth.startOAuthFlow({
+          raw: queryObj,
+          providerConfig: baseOAuthProviders[provider],
+          callbackUrl,
+          linkUserId: null,
+        });
+        return u.searchParams.get('format') === 'json'
+          ? sendJson(200, started)
+          : redirect(started.authorizeUrl);
+      }
+
+      if (action === 'start' && request.method === 'POST') {
+        const rawBody = await readJson();
+        const bodyObj =
+          rawBody && typeof rawBody === 'object'
+            ? { ...(rawBody as Record<string, unknown>), provider }
+            : { provider };
+        let linkUserId: string | null = null;
+        if ((bodyObj as Record<string, unknown>).mode === 'link') {
+          linkUserId = requireUser().userId;
+        }
+        const started = auth.startOAuthFlow({
+          raw: bodyObj,
+          providerConfig: baseOAuthProviders[provider],
+          callbackUrl,
+          linkUserId,
+        });
+        return sendJson(200, started);
+      }
+
+      if (action === 'callback' && request.method === 'GET') {
+        const state = u.searchParams.get('state') || '';
+        const flow = state ? auth.consumeOAuthFlow(state, provider) : null;
+        if (!flow) {
+          return sendHtml(
+            400,
+            'Sessão OAuth inválida ou expirada',
+            'Esta solicitação de autenticação expirou ou já foi utilizada. Volte para o Liquid Hub e tente novamente.',
+          );
+        }
+        const finishWithError = (errCode: string, description: string) => {
+          const target = new URL(flow.redirectUri);
+          target.searchParams.set('error', errCode);
+          target.searchParams.set('state', flow.state);
+          target.searchParams.set('error_description', description);
+          return redirect(target.toString());
+        };
+
+        const upstreamError = u.searchParams.get('error');
+        const upstreamCode = u.searchParams.get('code');
+        if (upstreamError || !upstreamCode) {
+          const desc =
+            u.searchParams.get('error_description') ||
+            (upstreamError === 'access_denied'
+              ? 'Autorização cancelada no provedor.'
+              : 'Autorização não concluída no provedor.');
+          return finishWithError(upstreamError || 'access_denied', desc);
+        }
+
+        try {
+          const effectiveProviders = auth.resolveEffectiveProviders(baseOAuthProviders);
+          const profile = await exchangeExternalOAuthProfile({
+            provider,
+            config: effectiveProviders[provider],
+            code: upstreamCode,
+            callbackUrl,
+            codeVerifier: flow.providerVerifier,
+          });
+          const issued = auth.completeOAuthProfile(flow, profile);
+          const target = new URL(flow.redirectUri);
+          target.searchParams.set('code', issued.code);
+          target.searchParams.set('state', flow.state);
+          return redirect(target.toString());
+        } catch (oauthErr) {
+          if (oauthErr instanceof BrokerHttpError) {
+            return finishWithError(oauthErr.code, oauthErr.message);
+          }
+          const code =
+            oauthErr && typeof oauthErr === 'object' && 'oauthCode' in oauthErr
+              ? String((oauthErr as { oauthCode?: string }).oauthCode || 'oauth_failed')
+              : 'oauth_failed';
+          return finishWithError(
+            code,
+            oauthErr instanceof Error ? oauthErr.message : 'Falha na autenticação OAuth.',
+          );
+        }
+      }
+    }
+
+    if (request.method === 'POST' && u.pathname === '/v1/auth/token') {
+      const body = await readJson();
+      return sendJson(200, auth.exchangeToken(body));
+    }
+    if (request.method === 'POST' && u.pathname === '/v1/auth/logout') {
+      const identity = requireUser();
+      if (identity.familyId) auth.revokeFamily(identity.familyId);
+      return sendJson(200, { revoked: true });
+    }
+    if (request.method === 'GET' && u.pathname === '/v1/auth/me') {
+      const identity = requireUser();
+      return sendJson(200, auth.getUserProfile(identity.userId));
+    }
+    if (request.method === 'POST' && u.pathname === '/v1/auth/terms/accept') {
+      const identity = requireUser();
+      const body = await readJson();
+      return sendJson(200, auth.acceptTerms(identity.userId, body));
+    }
+    if (request.method === 'POST' && u.pathname === '/v1/auth/email/verify') {
+      const body = await readJson();
+      return sendJson(200, auth.verifyEmail(body));
+    }
+    if (request.method === 'POST' && u.pathname === '/v1/auth/email/resend') {
+      const maybeAuth = request.headers.get('authorization') || '';
+      const maybeUser = maybeAuth.startsWith('Bearer ') ? requireUser().userId : null;
+      const body = await readJson();
+      return sendJson(200, auth.resendVerification(maybeUser, body));
+    }
+    if (request.method === 'POST' && u.pathname === '/v1/auth/password/forgot') {
+      const body = await readJson();
+      return sendJson(200, auth.forgotPassword(body));
+    }
+    if (request.method === 'POST' && u.pathname === '/v1/auth/password/reset') {
+      const body = await readJson();
+      return sendJson(200, await auth.resetPassword(body));
+    }
+    if (request.method === 'POST' && u.pathname === '/v1/auth/identities/email') {
+      const identity = requireUser();
+      const body = await readJson();
+      return sendJson(200, await auth.linkEmail(identity.userId, body));
+    }
+    const unlinkMatch = /^\/v1\/auth\/identities\/([a-z0-9_-]+)$/.exec(u.pathname);
+    if (request.method === 'DELETE' && unlinkMatch) {
+      const identity = requireUser();
+      return sendJson(200, auth.unlinkIdentity(identity.userId, unlinkMatch[1]));
+    }
+    return sendJson(404, { error: 'Não encontrado.' });
+  } catch (err) {
+    if (err instanceof BrokerHttpError) {
+      return sendJson(err.status, { error: err.message, code: err.code });
+    }
+    return sendJson(500, { error: 'Erro interno no servidor de autenticação.' });
+  }
+}
+
+if (
+  typeof process !== 'undefined' &&
+  Array.isArray(process.argv) &&
+  process.argv[1] &&
+  import.meta.url.startsWith('file:') &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
   const port = Number(process.env.BROKER_PORT || 8787);
   createBroker().listen(port, '127.0.0.1', () =>
     console.log(

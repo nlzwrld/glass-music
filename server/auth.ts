@@ -99,16 +99,77 @@ export interface ExternalProfile {
   avatarUrl: string | null;
 }
 
-interface StatementLike {
+export interface PendingAuthCodeRecord {
+  code: string;
+  userId: string;
+  clientId: string;
+  codeChallenge: string;
+  redirectUri?: string;
+  scope: string;
+  expiresAt: number;
+  consumed: boolean;
+  issuedFamilyId?: string;
+}
+
+export interface StatementLike {
   run(...params: unknown[]): unknown;
   get(...params: unknown[]): Record<string, unknown> | undefined;
   all(...params: unknown[]): Array<Record<string, unknown>>;
 }
 
-interface SqliteDatabaseLike {
+export interface SqliteDatabaseLike {
   exec(sql: string): void;
   prepare(sql: string): StatementLike;
   close(): void;
+  transaction?: <T>(fn: () => T) => T;
+}
+
+export interface CloudflareDoSqlStorage {
+  exec(
+    query: string,
+    ...bindings: unknown[]
+  ): {
+    toArray(): Array<Record<string, unknown>>;
+  };
+}
+
+export function createDoSqliteAdapter(
+  sql: CloudflareDoSqlStorage,
+  transactionSync?: <T>(fn: () => T) => T,
+): SqliteDatabaseLike {
+  const adapter: SqliteDatabaseLike = {
+    exec(rawSql: string) {
+      const statements = rawSql
+        .split(';')
+        .map(s => s.trim())
+        .filter(Boolean);
+      for (const stmt of statements) {
+        if (/^PRAGMA\s+journal_mode/i.test(stmt)) continue;
+        sql.exec(stmt);
+      }
+    },
+    prepare(query: string): StatementLike {
+      return {
+        run(...params: unknown[]) {
+          sql.exec(query, ...params);
+          return {};
+        },
+        get(...params: unknown[]) {
+          const rows = sql.exec(query, ...params).toArray();
+          return rows[0];
+        },
+        all(...params: unknown[]) {
+          return sql.exec(query, ...params).toArray();
+        },
+      };
+    },
+    close() {
+      // Managed by Cloudflare Durable Object runtime
+    },
+    transaction: transactionSync ? <T>(fn: () => T) => transactionSync(fn) : <T>(fn: () => T) => fn(),
+  };
+  initAuthSchema(adapter);
+  return adapter;
 }
 
 export function sha256Hex(value: string): string {
@@ -150,6 +211,98 @@ export function isCurrentLegalAcceptance(
   );
 }
 
+const AUTH_SCHEMA_STATEMENTS = [
+  'PRAGMA foreign_keys = ON',
+  `CREATE TABLE IF NOT EXISTS hub_users (
+    user_id TEXT PRIMARY KEY,
+    username TEXT NOT NULL,
+    normalized_username TEXT UNIQUE NOT NULL,
+    display_name TEXT NOT NULL,
+    email TEXT,
+    normalized_email TEXT UNIQUE,
+    email_verified INTEGER NOT NULL DEFAULT 0,
+    password_hash TEXT,
+    avatar_url TEXT,
+    terms_version TEXT,
+    privacy_version TEXT,
+    terms_accepted_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS hub_identities (
+    provider TEXT NOT NULL CHECK (provider IN ('email', 'discord', 'github')),
+    provider_subject TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES hub_users(user_id) ON DELETE CASCADE,
+    username TEXT,
+    display_name TEXT,
+    email TEXT,
+    avatar_url TEXT,
+    verified INTEGER NOT NULL DEFAULT 0,
+    linked_at INTEGER NOT NULL,
+    PRIMARY KEY (provider, provider_subject)
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_hub_identities_user ON hub_identities(user_id)',
+  `CREATE TABLE IF NOT EXISTS hub_email_tokens (
+    token_hash TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('verify_email', 'reset_password')),
+    user_id TEXT NOT NULL REFERENCES hub_users(user_id) ON DELETE CASCADE,
+    email TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    used_at INTEGER,
+    created_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS hub_oauth_flows (
+    state TEXT PRIMARY KEY,
+    provider TEXT NOT NULL CHECK (provider IN ('discord', 'github')),
+    mode TEXT NOT NULL CHECK (mode IN ('login', 'link')),
+    link_user_id TEXT,
+    client_id TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+    code_challenge_method TEXT NOT NULL,
+    provider_verifier TEXT NOT NULL,
+    terms_version TEXT,
+    privacy_version TEXT,
+    terms_accepted_at INTEGER,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS hub_refresh_tokens (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES hub_users(user_id) ON DELETE CASCADE,
+    family_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    consumed INTEGER NOT NULL DEFAULT 0
+  )`,
+  `CREATE TABLE IF NOT EXISTS hub_revoked_families (
+    family_id TEXT PRIMARY KEY,
+    revoked_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS hub_auth_codes (
+    code TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+    redirect_uri TEXT,
+    scope TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    consumed INTEGER NOT NULL DEFAULT 0,
+    issued_family_id TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS hub_server_config (
+    config_key TEXT PRIMARY KEY,
+    config_value TEXT NOT NULL
+  )`,
+];
+
+export function initAuthSchema(db: SqliteDatabaseLike) {
+  for (const stmt of AUTH_SCHEMA_STATEMENTS) {
+    db.exec(stmt);
+  }
+}
+
 function openAuthDatabase(dbPath: string): SqliteDatabaseLike {
   if (dbPath && dbPath !== ':memory:') {
     mkdirSync(dirname(dbPath), { recursive: true });
@@ -160,76 +313,7 @@ function openAuthDatabase(dbPath: string): SqliteDatabaseLike {
   if (dbPath && dbPath !== ':memory:') {
     db.exec('PRAGMA journal_mode = WAL;');
   }
-  db.exec(`
-    PRAGMA foreign_keys = ON;
-    CREATE TABLE IF NOT EXISTS hub_users (
-      user_id TEXT PRIMARY KEY,
-      username TEXT NOT NULL,
-      normalized_username TEXT UNIQUE NOT NULL,
-      display_name TEXT NOT NULL,
-      email TEXT,
-      normalized_email TEXT UNIQUE,
-      email_verified INTEGER NOT NULL DEFAULT 0,
-      password_hash TEXT,
-      avatar_url TEXT,
-      terms_version TEXT,
-      privacy_version TEXT,
-      terms_accepted_at INTEGER,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS hub_identities (
-      provider TEXT NOT NULL CHECK (provider IN ('email', 'discord', 'github')),
-      provider_subject TEXT NOT NULL,
-      user_id TEXT NOT NULL REFERENCES hub_users(user_id) ON DELETE CASCADE,
-      username TEXT,
-      display_name TEXT,
-      email TEXT,
-      avatar_url TEXT,
-      verified INTEGER NOT NULL DEFAULT 0,
-      linked_at INTEGER NOT NULL,
-      PRIMARY KEY (provider, provider_subject)
-    );
-    CREATE INDEX IF NOT EXISTS idx_hub_identities_user ON hub_identities(user_id);
-    CREATE TABLE IF NOT EXISTS hub_email_tokens (
-      token_hash TEXT PRIMARY KEY,
-      kind TEXT NOT NULL CHECK (kind IN ('verify_email', 'reset_password')),
-      user_id TEXT NOT NULL REFERENCES hub_users(user_id) ON DELETE CASCADE,
-      email TEXT NOT NULL,
-      expires_at INTEGER NOT NULL,
-      used_at INTEGER,
-      created_at INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS hub_oauth_flows (
-      state TEXT PRIMARY KEY,
-      provider TEXT NOT NULL CHECK (provider IN ('discord', 'github')),
-      mode TEXT NOT NULL CHECK (mode IN ('login', 'link')),
-      link_user_id TEXT,
-      client_id TEXT NOT NULL,
-      redirect_uri TEXT NOT NULL,
-      code_challenge TEXT NOT NULL,
-      code_challenge_method TEXT NOT NULL,
-      provider_verifier TEXT NOT NULL,
-      terms_version TEXT,
-      privacy_version TEXT,
-      terms_accepted_at INTEGER,
-      created_at INTEGER NOT NULL,
-      expires_at INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS hub_refresh_tokens (
-      token_hash TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL REFERENCES hub_users(user_id) ON DELETE CASCADE,
-      family_id TEXT NOT NULL,
-      client_id TEXT NOT NULL,
-      scope TEXT NOT NULL,
-      expires_at INTEGER NOT NULL,
-      consumed INTEGER NOT NULL DEFAULT 0
-    );
-    CREATE TABLE IF NOT EXISTS hub_revoked_families (
-      family_id TEXT PRIMARY KEY,
-      revoked_at INTEGER NOT NULL
-    );
-  `);
+  initAuthSchema(db);
   return db;
 }
 
@@ -271,8 +355,96 @@ export class HubAuthStore {
   private readonly db: SqliteDatabaseLike;
   private closed = false;
 
-  constructor(dbPath = ':memory:') {
-    this.db = openAuthDatabase(dbPath);
+  constructor(dbOrPath: string | SqliteDatabaseLike = ':memory:') {
+    this.db = typeof dbOrPath === 'string' ? openAuthDatabase(dbOrPath) : dbOrPath;
+  }
+
+  private tx<T>(fn: () => T): T {
+    if (this.db.transaction) {
+      return this.db.transaction(fn);
+    }
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const result = fn();
+      this.db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {
+        // ignore rollback error
+      }
+      throw error;
+    }
+  }
+
+  getConfig(key: string): string | null {
+    this.assertOpen();
+    const row = this.db
+      .prepare('SELECT config_value FROM hub_server_config WHERE config_key = ?')
+      .get(key);
+    return row && typeof row.config_value === 'string' ? row.config_value : null;
+  }
+
+  setConfig(key: string, value: string) {
+    this.assertOpen();
+    this.db
+      .prepare(
+        'INSERT OR REPLACE INTO hub_server_config (config_key, config_value) VALUES (?, ?)',
+      )
+      .run(key, value);
+  }
+
+  saveAuthCode(record: PendingAuthCodeRecord, now: number) {
+    this.assertOpen();
+    this.db.prepare('DELETE FROM hub_auth_codes WHERE expires_at <= ?').run(now);
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO hub_auth_codes (
+           code, user_id, client_id, code_challenge, redirect_uri,
+           scope, expires_at, consumed, issued_family_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        record.code,
+        record.userId,
+        record.clientId,
+        record.codeChallenge,
+        record.redirectUri ?? null,
+        record.scope,
+        record.expiresAt,
+        record.consumed ? 1 : 0,
+        record.issuedFamilyId ?? null,
+      );
+  }
+
+  findAuthCode(code: string): PendingAuthCodeRecord | null {
+    this.assertOpen();
+    const row = this.db.prepare('SELECT * FROM hub_auth_codes WHERE code = ?').get(code);
+    if (!row) return null;
+    return {
+      code: String(row.code),
+      userId: String(row.user_id),
+      clientId: String(row.client_id),
+      codeChallenge: String(row.code_challenge),
+      redirectUri: row.redirect_uri ? String(row.redirect_uri) : undefined,
+      scope: String(row.scope),
+      expiresAt: Number(row.expires_at),
+      consumed: Number(row.consumed) === 1,
+      issuedFamilyId: row.issued_family_id ? String(row.issued_family_id) : undefined,
+    };
+  }
+
+  markAuthCodeConsumed(code: string, familyId: string) {
+    this.assertOpen();
+    this.db
+      .prepare('UPDATE hub_auth_codes SET consumed = 1, issued_family_id = ? WHERE code = ?')
+      .run(familyId, code);
+  }
+
+  deleteAuthCode(code: string) {
+    this.assertOpen();
+    this.db.prepare('DELETE FROM hub_auth_codes WHERE code = ?').run(code);
   }
 
   close() {
@@ -415,8 +587,7 @@ export class HubAuthStore {
     const displayName = input.displayName?.trim() || trimmedUsername;
     const acceptLegal = isCurrentLegalAcceptance(input.termsVersion, input.privacyVersion);
 
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
+    this.tx(() => {
       this.db
         .prepare(
           `INSERT INTO hub_users (
@@ -458,15 +629,7 @@ export class HubAuthStore {
             input.now,
           );
       }
-      this.db.exec('COMMIT');
-    } catch (error) {
-      try {
-        this.db.exec('ROLLBACK');
-      } catch {
-        // ignore rollback error
-      }
-      throw error;
-    }
+    });
     return this.findUserById(userId)!;
   }
 
@@ -484,8 +647,7 @@ export class HubAuthStore {
     const normEmail = rawEmail && input.profile.emailVerified ? normalizeEmail(rawEmail) : null;
     const acceptLegal = isCurrentLegalAcceptance(input.termsVersion, input.privacyVersion);
 
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
+    this.tx(() => {
       this.db
         .prepare(
           `INSERT INTO hub_users (
@@ -526,15 +688,7 @@ export class HubAuthStore {
           input.profile.avatarUrl,
           input.now,
         );
-      this.db.exec('COMMIT');
-    } catch (error) {
-      try {
-        this.db.exec('ROLLBACK');
-      } catch {
-        // ignore
-      }
-      throw error;
-    }
+    });
     return this.findUserById(userId)!;
   }
 
@@ -597,8 +751,7 @@ export class HubAuthStore {
   }): HubUserRecord {
     this.assertOpen();
     const user = this.findUserById(input.userId)!;
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
+    this.tx(() => {
       this.db
         .prepare(
           `INSERT INTO hub_identities (
@@ -642,15 +795,7 @@ export class HubAuthStore {
           input.now,
           input.userId,
         );
-      this.db.exec('COMMIT');
-    } catch (error) {
-      try {
-        this.db.exec('ROLLBACK');
-      } catch {
-        // ignore
-      }
-      throw error;
-    }
+    });
     return this.findUserById(input.userId)!;
   }
 
@@ -669,8 +814,7 @@ export class HubAuthStore {
       user.normalizedEmail === normEmail && user.emailVerified;
     const nextDisplayName = input.displayName?.trim() || user.displayName;
 
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
+    this.tx(() => {
       this.db
         .prepare(
           `UPDATE hub_users
@@ -704,15 +848,7 @@ export class HubAuthStore {
           sameVerifiedEmail ? 1 : 0,
           input.now,
         );
-      this.db.exec('COMMIT');
-    } catch (error) {
-      try {
-        this.db.exec('ROLLBACK');
-      } catch {
-        // ignore
-      }
-      throw error;
-    }
+    });
     return this.findUserById(input.userId)!;
   }
 
@@ -722,8 +858,7 @@ export class HubAuthStore {
     now: number,
   ): HubUserRecord {
     this.assertOpen();
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
+    this.tx(() => {
       if (provider === 'email') {
         const remainingOauth = this.db
           .prepare(
@@ -764,15 +899,7 @@ export class HubAuthStore {
           .prepare('UPDATE hub_users SET updated_at = ? WHERE user_id = ?')
           .run(now, userId);
       }
-      this.db.exec('COMMIT');
-    } catch (error) {
-      try {
-        this.db.exec('ROLLBACK');
-      } catch {
-        // ignore
-      }
-      throw error;
-    }
+    });
     return this.findUserById(userId)!;
   }
 
@@ -800,8 +927,7 @@ export class HubAuthStore {
     const tokenHash = sha256Hex(rawToken);
     const expiresAt = input.now + input.ttlMs;
 
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
+    this.tx(() => {
       // Invalidate any older unused token of the same kind for this user.
       this.db
         .prepare(
@@ -815,15 +941,7 @@ export class HubAuthStore {
            ) VALUES (?, ?, ?, ?, ?, NULL, ?)`,
         )
         .run(tokenHash, input.kind, input.userId, input.email, expiresAt, input.now);
-      this.db.exec('COMMIT');
-    } catch (error) {
-      try {
-        this.db.exec('ROLLBACK');
-      } catch {
-        // ignore
-      }
-      throw error;
-    }
+    });
     return { rawToken, expiresAt };
   }
 
@@ -857,23 +975,14 @@ export class HubAuthStore {
 
   markEmailVerified(userId: string, now: number): HubUserRecord {
     this.assertOpen();
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
+    this.tx(() => {
       this.db
         .prepare('UPDATE hub_users SET email_verified = 1, updated_at = ? WHERE user_id = ?')
         .run(now, userId);
       this.db
         .prepare("UPDATE hub_identities SET verified = 1 WHERE user_id = ? AND provider = 'email'")
         .run(userId);
-      this.db.exec('COMMIT');
-    } catch (error) {
-      try {
-        this.db.exec('ROLLBACK');
-      } catch {
-        // ignore
-      }
-      throw error;
-    }
+    });
     return this.findUserById(userId)!;
   }
 
@@ -1002,8 +1111,7 @@ export class HubAuthStore {
 
   revokeFamily(familyId: string, now: number) {
     this.assertOpen();
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
+    this.tx(() => {
       this.db
         .prepare(
           'INSERT OR IGNORE INTO hub_revoked_families (family_id, revoked_at) VALUES (?, ?)',
@@ -1012,15 +1120,7 @@ export class HubAuthStore {
       this.db
         .prepare('DELETE FROM hub_refresh_tokens WHERE family_id = ?')
         .run(familyId);
-      this.db.exec('COMMIT');
-    } catch (error) {
-      try {
-        this.db.exec('ROLLBACK');
-      } catch {
-        // ignore
-      }
-      throw error;
-    }
+    });
   }
 
   revokeAllUserFamilies(userId: string, now: number) {
@@ -1038,6 +1138,7 @@ export class HubAuthStore {
     this.db.prepare('DELETE FROM hub_refresh_tokens WHERE expires_at <= ?').run(now);
     this.db.prepare('DELETE FROM hub_oauth_flows WHERE expires_at <= ?').run(now);
     this.db.prepare('DELETE FROM hub_email_tokens WHERE expires_at <= ?').run(now);
+    this.db.prepare('DELETE FROM hub_auth_codes WHERE expires_at <= ?').run(now);
   }
 }
 
