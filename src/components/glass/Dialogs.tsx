@@ -4,6 +4,7 @@ import { X, ListMusic, Plus, LoaderCircle, Check, Sparkles } from 'lucide-react'
 import { useApp, cleanError, formatTime } from '../../stores/app';
 import { invalidatePlayback } from '../../lib/playback';
 import type { StreamCandidate, Track } from '../../../shared/types';
+import { CreateJamDialog } from '../jam/CreateJamDialog';
 import { IconButton, SourceBadge } from './controls';
 
 function StreamSourcePicker({
@@ -452,6 +453,8 @@ export default function Dialogs() {
             )}
           </>
         )}
+
+        {dialog.type === 'jam' && <CreateJamDialog onClose={close} />}
 
         {dialog.type === 'streamSource' && (
           <StreamSourcePicker

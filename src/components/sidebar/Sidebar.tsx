@@ -138,6 +138,11 @@ export default function Sidebar() {
               action: () => useApp.getState().setDialog({ type: 'playlist' }),
             },
             {
+              label: jamSession ? 'Convite da JAM' : 'Nova JAM',
+              icon: <Radio size={15} />,
+              action: () => useApp.getState().setDialog({ type: 'jam' }),
+            },
+            {
               label: 'Importar por link',
               icon: <Link2 size={15} />,
               action: () => useApp.getState().setDialog({ type: 'link' }),

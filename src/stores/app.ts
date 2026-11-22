@@ -34,6 +34,7 @@ export type Page =
 
 type Dialog =
   | { type: 'playlist'; id?: string; name?: string; description?: string; artwork?: string }
+  | { type: 'jam' }
   | { type: 'add'; track: Track; fromPlaylist?: string }
   | { type: 'link'; playlist?: boolean }
   | { type: 'streamSource'; track: Track }
