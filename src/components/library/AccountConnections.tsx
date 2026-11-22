@@ -37,6 +37,7 @@ export default function AccountConnections() {
     linkEmail,
     unlinkIdentity,
     resendVerification,
+    updateProfile,
     logoutHub,
     openAuthModal,
     setPreferredBrokerUrl,
@@ -50,11 +51,16 @@ export default function AccountConnections() {
     [registerMode, setRegisterMode] = useState(false),
     [linkEmailOpen, setLinkEmailOpen] = useState(false),
     [newEmail, setNewEmail] = useState(''),
-    [newEmailPassword, setNewEmailPassword] = useState('');
+    [newEmailPassword, setNewEmailPassword] = useState(''),
+    [nicknameInput, setNicknameInput] = useState(hub.displayName || hub.subject || '');
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    setNicknameInput(hub.displayName || hub.subject || '');
+  }, [hub.displayName, hub.subject]);
 
   useEffect(() => {
     const next = hub.brokerUrl || preferredBrokerUrl;
@@ -195,6 +201,39 @@ export default function AccountConnections() {
                     Encerrar sessão
                   </button>
                 </div>
+
+                <form
+                  className="hub-nickname-form"
+                  style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}
+                  onSubmit={e => {
+                    e.preventDefault();
+                    void updateProfile(nicknameInput, activeBroker);
+                  }}
+                >
+                  <label className="field-label" style={{ flex: 1, minWidth: 180 }}>
+                    Nickname (usado no Google, Discord, GitHub e JAM)
+                    <input
+                      type="text"
+                      className="input"
+                      maxLength={80}
+                      placeholder="Seu nickname no Liquid Hub"
+                      value={nicknameInput}
+                      onChange={e => setNicknameInput(e.target.value)}
+                      required
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    className="button secondary"
+                    disabled={
+                      !!busy ||
+                      !nicknameInput.trim() ||
+                      nicknameInput.trim() === (hub.displayName || hub.subject || '').trim()
+                    }
+                  >
+                    {busy === 'hub:profile' ? 'Salvando…' : 'Salvar nickname'}
+                  </button>
+                </form>
 
                 {hub.email && !hub.emailVerified && (
                   <div className="settings-actions-row">

@@ -60,6 +60,14 @@ interface State {
   rotateInvite(): Promise<void>;
   updateRoom(patch: { roomName?: string; locked?: boolean; requireAuth?: boolean }): Promise<void>;
   kick(memberId: string): Promise<void>;
+  voteSkip(): Promise<void>;
+  queueAdd(track: import('../../../shared/types').Track): Promise<void>;
+  queueRemove(queueItemId: string): Promise<void>;
+  recommendPlaylist(
+    playlistName: string,
+    tracks: import('../../../shared/types').Track[],
+  ): Promise<void>;
+  sendChat(message: string): Promise<void>;
   leave(notice?: string): Promise<void>;
   leaveLocal(notice?: string): void;
 }
@@ -240,6 +248,75 @@ export const useJam = create<State>((set, get) => ({
   kick: async memberId => {
     try {
       const room = await jamClient.kick(memberId);
+      set({
+        session: jamClient.session ? { ...jamClient.session } : null,
+        room,
+        error: '',
+      });
+    } catch (e) {
+      set({ error: cleanError(e) });
+    }
+  },
+
+  voteSkip: async () => {
+    try {
+      const room = await jamClient.voteSkip();
+      set({
+        session: jamClient.session ? { ...jamClient.session } : null,
+        room,
+        error: '',
+      });
+    } catch (e) {
+      set({ error: cleanError(e) });
+    }
+  },
+
+  queueAdd: async track => {
+    try {
+      const room = await jamClient.queueAdd(track);
+      set({
+        session: jamClient.session ? { ...jamClient.session } : null,
+        room,
+        error: '',
+      });
+      useApp.getState().message(`"${track.title}" adicionada à fila da JAM.`);
+    } catch (e) {
+      set({ error: cleanError(e) });
+    }
+  },
+
+  queueRemove: async queueItemId => {
+    try {
+      const room = await jamClient.queueRemove(queueItemId);
+      set({
+        session: jamClient.session ? { ...jamClient.session } : null,
+        room,
+        error: '',
+      });
+    } catch (e) {
+      set({ error: cleanError(e) });
+    }
+  },
+
+  recommendPlaylist: async (playlistName, tracks) => {
+    try {
+      const room = await jamClient.recommendPlaylist(playlistName, tracks);
+      set({
+        session: jamClient.session ? { ...jamClient.session } : null,
+        room,
+        error: '',
+      });
+      useApp.getState().message(`Playlist "${playlistName}" recomendada na JAM.`);
+    } catch (e) {
+      set({ error: cleanError(e) });
+    }
+  },
+
+  sendChat: async message => {
+    const trimmed = message.trim();
+    if (!trimmed) return;
+    try {
+      const room = await jamClient.sendChat(trimmed);
       set({
         session: jamClient.session ? { ...jamClient.session } : null,
         room,

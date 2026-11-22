@@ -561,6 +561,80 @@ export class JamClient {
     return this.applyPush(room);
   }
 
+  async voteSkip() {
+    const s = this.session;
+    if (!s) throw new Error('Entre em uma JAM.');
+    const room = await this.request<JamRoom>({
+      action: 'voteSkip',
+      code: s.code,
+      token: s.token,
+      endpoint: s.endpoint,
+    });
+    return this.applyPush(room);
+  }
+
+  async queueAdd(track: NonNullable<JamRequest['track']>) {
+    const s = this.session;
+    if (!s) throw new Error('Entre em uma JAM.');
+    const clean = this.cleanPlayback({ track, playing: false, position: 0 })?.track;
+    if (!clean) throw new Error('Apenas faixas online podem ser adicionadas à fila da JAM.');
+    const room = await this.request<JamRoom>({
+      action: 'queueAdd',
+      code: s.code,
+      token: s.token,
+      endpoint: s.endpoint,
+      track: clean,
+    });
+    return this.applyPush(room);
+  }
+
+  async queueRemove(queueItemId: string) {
+    const s = this.session;
+    if (!s) throw new Error('Entre em uma JAM.');
+    const room = await this.request<JamRoom>({
+      action: 'queueRemove',
+      code: s.code,
+      token: s.token,
+      endpoint: s.endpoint,
+      queueItemId,
+    });
+    return this.applyPush(room);
+  }
+
+  async recommendPlaylist(playlistName: string, tracks: NonNullable<JamRequest['playlistTracks']>) {
+    const s = this.session;
+    if (!s) throw new Error('Entre em uma JAM.');
+    const cleaned = tracks
+      .map(t => this.cleanPlayback({ track: t, playing: false, position: 0 })?.track)
+      .filter((t): t is NonNullable<typeof t> => !!t)
+      .slice(0, 10);
+    if (!cleaned.length) {
+      throw new Error('A playlist precisa ter ao menos uma faixa online.');
+    }
+    const room = await this.request<JamRoom>({
+      action: 'recommendPlaylist',
+      code: s.code,
+      token: s.token,
+      endpoint: s.endpoint,
+      playlistName,
+      playlistTracks: cleaned,
+    });
+    return this.applyPush(room);
+  }
+
+  async sendChat(message: string) {
+    const s = this.session;
+    if (!s) throw new Error('Entre em uma JAM.');
+    const room = await this.request<JamRoom>({
+      action: 'chat',
+      code: s.code,
+      token: s.token,
+      endpoint: s.endpoint,
+      message,
+    });
+    return this.applyPush(room);
+  }
+
   /**
    * Hybrid Cloud -> LAN Fallback:
    * - Host: automatically spins up the native LAN coordinator (`createLocal`) preserving room code & playback.

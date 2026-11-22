@@ -36,6 +36,7 @@ import {
   resendVerificationSchema,
   resetPasswordSchema,
   tokenGrantSchema,
+  updateProfileSchema,
   verifyEmailSchema,
 } from '../shared/validation.ts';
 import {
@@ -918,6 +919,49 @@ export class ZeroTrustAuthEngine {
     return this.store.toPublicUser(updated);
   }
 
+  updateProfile(userId: string, raw: unknown): HubUserPublic {
+    const parsed = updateProfileSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new BrokerHttpError(
+        'Informe um nickname válido (1 a 80 caracteres).',
+        400,
+        'invalid_request',
+      );
+    }
+    if (!this.store.findUserById(userId)) {
+      throw new BrokerHttpError('Usuário não encontrado.', 404, 'user_not_found');
+    }
+    const updated = this.store.updateDisplayName(userId, parsed.data.displayName, this.clock());
+    return this.store.toPublicUser(updated);
+  }
+
+  getUserLibrary(userId: string) {
+    if (!this.store.findUserById(userId)) {
+      throw new BrokerHttpError('Usuário não encontrado.', 404, 'user_not_found');
+    }
+    return this.store.getUserLibrary(userId);
+  }
+
+  saveUserLibrary(userId: string, raw: unknown) {
+    if (!this.store.findUserById(userId)) {
+      throw new BrokerHttpError('Usuário não encontrado.', 404, 'user_not_found');
+    }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new BrokerHttpError('Biblioteca inválida.', 400, 'invalid_request');
+    }
+    const obj = raw as Record<string, unknown>;
+    const playlists = Array.isArray(obj.playlists) ? obj.playlists : [];
+    const tracks = Array.isArray(obj.tracks)
+      ? obj.tracks.filter(
+          t => t && typeof t === 'object' && (t as Record<string, unknown>).source !== 'local',
+        )
+      : [];
+    const likes = Array.isArray(obj.likes)
+      ? obj.likes.filter((x): x is string => typeof x === 'string')
+      : [];
+    return this.store.saveUserLibrary(userId, { playlists, tracks, likes }, this.clock());
+  }
+
   verifyEmail(raw: unknown): { ok: boolean; user: HubUserPublic } {
     const parsed = verifyEmailSchema.safeParse(raw);
     if (!parsed.success) {
@@ -1796,6 +1840,29 @@ export function createBroker(
         return;
       }
 
+      if ((req.method === 'POST' || req.method === 'PATCH') && u.pathname === '/v1/auth/profile') {
+        enforceRateLimit(`ip:${ip}:auth`, authLimit);
+        const identity = requireHubUser(req);
+        const body = await readJsonBody(req);
+        send(200, auth.updateProfile(identity.userId, body));
+        return;
+      }
+
+      if (req.method === 'GET' && u.pathname === '/v1/auth/library') {
+        enforceRateLimit(`ip:${ip}:auth`, authLimit * 2);
+        const identity = requireHubUser(req);
+        send(200, auth.getUserLibrary(identity.userId));
+        return;
+      }
+
+      if (req.method === 'PUT' && u.pathname === '/v1/auth/library') {
+        enforceRateLimit(`ip:${ip}:auth`, authLimit * 2);
+        const identity = requireHubUser(req);
+        const body = await readJsonBody(req, 512 * 1024);
+        send(200, auth.saveUserLibrary(identity.userId, body));
+        return;
+      }
+
       if (req.method === 'POST' && u.pathname === '/v1/auth/email/verify') {
         enforceRateLimit(`ip:${ip}:auth`, authLimit);
         const body = await readJsonBody(req);
@@ -2232,7 +2299,7 @@ export async function handleFetchAuthRequest(input: {
       status: 302,
       headers: { Location: location, 'Cache-Control': 'no-store' },
     });
-  const readJson = async (): Promise<unknown> => {
+  const readJson = async (maxBytes = 16384): Promise<unknown> => {
     const ct = request.headers.get('content-type') || '';
     if (!ct.toLowerCase().startsWith('application/json')) {
       throw new BrokerHttpError(
@@ -2242,7 +2309,7 @@ export async function handleFetchAuthRequest(input: {
       );
     }
     const text = await request.text();
-    if (Buffer.byteLength(text, 'utf8') > 16384) {
+    if (Buffer.byteLength(text, 'utf8') > maxBytes) {
       throw new BrokerHttpError('Payload excede o limite.', 413, 'payload_too_large');
     }
     try {
@@ -2636,6 +2703,20 @@ export async function handleFetchAuthRequest(input: {
       const identity = requireUser();
       const body = await readJson();
       return sendJson(200, auth.acceptTerms(identity.userId, body));
+    }
+    if ((request.method === 'POST' || request.method === 'PATCH') && u.pathname === '/v1/auth/profile') {
+      const identity = requireUser();
+      const body = await readJson();
+      return sendJson(200, auth.updateProfile(identity.userId, body));
+    }
+    if (request.method === 'GET' && u.pathname === '/v1/auth/library') {
+      const identity = requireUser();
+      return sendJson(200, auth.getUserLibrary(identity.userId));
+    }
+    if (request.method === 'PUT' && u.pathname === '/v1/auth/library') {
+      const identity = requireUser();
+      const body = await readJson(512 * 1024);
+      return sendJson(200, auth.saveUserLibrary(identity.userId, body));
     }
     if (request.method === 'POST' && u.pathname === '/v1/auth/email/verify') {
       const body = await readJson();

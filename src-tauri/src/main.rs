@@ -365,6 +365,30 @@ async fn call(
             let secrets_path = st.data.join("credentials.dpapi");
             accounts::hub_accept_terms(&st.secrets, &secrets_path, &p).await
         }
+        "hubUpdateProfile" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online antes de atualizar o perfil.".into());
+            }
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_update_profile(&st.secrets, &secrets_path, &p).await
+        }
+        "hubLibraryPull" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Ok(json!({ "playlists": [], "tracks": [], "likes": [], "updatedAt": 0 }));
+            }
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_library_pull(&st.secrets, &secrets_path, &p).await
+        }
+        "hubLibraryPush" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Ok(json!({ "ok": false, "updatedAt": 0 }));
+            }
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_library_push(&st.secrets, &secrets_path, &p).await
+        }
         "hubLinkEmail" => {
             let pref = st.db.lock().unwrap().pref();
             if pref["onlineConsent"] != true || pref["onboardingDone"] != true {

@@ -399,6 +399,138 @@ html[data-motion='reduced'] .jam-preview-card {
   padding-right: 28px;
 }
 
+.jam-interactive {
+  display: grid;
+  gap: 12px;
+  margin: 8px 0;
+}
+
+.jam-interactive-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.jam-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 10px;
+  background: rgb(255 255 255 / 0.03);
+  border: 1px solid var(--m-border, rgb(255 255 255 / 0.1));
+}
+
+.jam-card-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+}
+
+.jam-inline-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.jam-inline-form .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.jam-queue-list,
+.jam-pick-list {
+  display: grid;
+  gap: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.jam-queue-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: rgb(0 0 0 / 0.18);
+  border: 1px solid rgb(255 255 255 / 0.06);
+}
+
+.jam-queue-meta {
+  display: grid;
+  min-width: 0;
+}
+
+.jam-queue-meta strong,
+.jam-queue-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jam-queue-meta strong {
+  font-size: 12.5px;
+  font-weight: 560;
+}
+
+.jam-queue-meta small {
+  font-size: 11px;
+  color: var(--text-secondary, #9aa4b2);
+}
+
+.jam-queue-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.jam-chat-feed {
+  display: grid;
+  gap: 7px;
+  max-height: 210px;
+  overflow-y: auto;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgb(0 0 0 / 0.2);
+  border: 1px solid rgb(255 255 255 / 0.06);
+}
+
+.jam-chat-msg {
+  display: grid;
+  gap: 2px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.04);
+}
+
+.jam-chat-msg.mine {
+  background: rgb(82 183 154 / 0.14);
+  border: 1px solid rgb(82 183 154 / 0.24);
+}
+
+.jam-chat-msg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+}
+
+.jam-chat-msg-head small {
+  color: var(--text-secondary, #9aa4b2);
+  font-size: 10.5px;
+}
+
+.jam-chat-msg p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
 .jam-modal-kicker .jam-status-pill {
   margin-left: auto;
   text-transform: none;

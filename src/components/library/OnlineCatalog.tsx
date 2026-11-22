@@ -1,9 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Cloud, LoaderCircle, Music2, RefreshCw } from 'lucide-react';
 import { useApp, cleanError } from '../../stores/app';
-import type { CatalogResult } from '../../../shared/types';
+import type { CatalogResult, Track } from '../../../shared/types';
 import TrackCard from './TrackCard';
 import { cachedDiscoveries, discoverMusic, cancelDiscoveries } from '../../lib/discovery';
+import {
+  buildTasteProfile,
+  fetchPersonalizedTracks,
+  rankCatalogByTaste,
+} from '../../lib/recommendations';
 
 export default function OnlineCatalog({ expanded = false }: { expanded?: boolean }) {
   const consent = useApp(
@@ -13,11 +18,21 @@ export default function OnlineCatalog({ expanded = false }: { expanded?: boolean
       s.data.preferences.onboardingDone,
   );
   const configured = useApp(s => s.integrations?.catalogConfigured);
+  const tracks = useApp(s => s.data.tracks);
+  const history = useApp(s => s.data.history);
+  const likes = useApp(s => s.data.likes);
+
+  const taste = useMemo(
+    () => buildTasteProfile({ tracks, history, likes }),
+    [tracks, history, likes],
+  );
+
   const [result, setResult] = useState<CatalogResult>(() =>
     consent
       ? cachedDiscoveries() || { sections: [], notices: [] }
       : { sections: [], notices: [] },
   );
+  const [personalTracks, setPersonalTracks] = useState<Track[]>([]);
   const [loading, setLoading] = useState(false),
     [retry, setRetry] = useState(0);
 
@@ -44,6 +59,49 @@ export default function OnlineCatalog({ expanded = false }: { expanded?: boolean
       active = false;
     };
   }, [consent, configured, retry]);
+
+  useEffect(() => {
+    if (!consent || !taste.seeds.length) {
+      setPersonalTracks([]);
+      return;
+    }
+    let active = true;
+    const excludeIds = history.slice(0, 15).map(h => h.id);
+    void fetchPersonalizedTracks(taste, excludeIds, retry > 0).then(items => {
+      if (active) setPersonalTracks(items);
+    });
+    return () => {
+      active = false;
+    };
+  }, [consent, taste.signature, retry]);
+
+  const rankedResult = useMemo(() => {
+    const base = rankCatalogByTaste(result, taste);
+    if (!personalTracks.length) return base;
+    const subtitle = taste.topArtists.length
+      ? `Recomendado para você · ${taste.topArtists.slice(0, 2).join(', ')}`
+      : 'Recomendado para você';
+    const personalSections: CatalogResult['sections'] = [
+      {
+        id: 'personal:recent-vibe',
+        source: 'youtube',
+        title: subtitle,
+        items: personalTracks,
+      },
+    ];
+    if (expanded && personalTracks.length > 6 && taste.topArtists[0]) {
+      personalSections.push({
+        id: 'personal:more-like-top',
+        source: 'youtube',
+        title: `Mais no estilo de ${taste.topArtists[0]}`,
+        items: personalTracks.slice(6),
+      });
+    }
+    return {
+      ...base,
+      sections: [...personalSections, ...base.sections],
+    };
+  }, [result, taste, personalTracks, expanded]);
 
   if (!consent)
     return (
@@ -79,13 +137,13 @@ export default function OnlineCatalog({ expanded = false }: { expanded?: boolean
 
   return (
     <div className="online-catalog" aria-busy={loading}>
-      {loading && !result.sections.length && (
+      {loading && !rankedResult.sections.length && (
         <div className="catalog-loading" role="status">
           <LoaderCircle size={16} className="spinner" />
           Carregando…
         </div>
       )}
-      {result.sections.map(section => (
+      {rankedResult.sections.map(section => (
         <section className="catalog-section" key={section.id} aria-label={section.title}>
           <div className="section-heading">
             <h2>{section.title}</h2>
@@ -101,9 +159,9 @@ export default function OnlineCatalog({ expanded = false }: { expanded?: boolean
           )}
         </section>
       ))}
-      {result.notices.length > 0 && (
+      {rankedResult.notices.length > 0 && (
         <div className="catalog-notices" role="status">
-          {result.notices.map(n => (
+          {rankedResult.notices.map(n => (
             <p key={n}>{n}</p>
           ))}
           <button

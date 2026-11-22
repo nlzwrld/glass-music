@@ -202,7 +202,7 @@ async fn post_jam(
         .await
         .map_err(|_| "A conexão com a JAM foi interrompida.".to_string())?
     {
-        if bytes.len() + chunk.len() > 24000 {
+        if bytes.len() + chunk.len() > 96000 {
             return Err("Resposta da JAM maior que o permitido.".into());
         }
         bytes.extend_from_slice(&chunk);
@@ -586,6 +586,11 @@ pub async fn call(
         "rotateInvite",
         "updateRoom",
         "kick",
+        "voteSkip",
+        "queueAdd",
+        "queueRemove",
+        "recommendPlaylist",
+        "chat",
         "leave",
     ]
     .contains(&action.as_str())
@@ -602,7 +607,7 @@ pub async fn call(
     if serde_json::to_vec(&payload)
         .map_err(|_| "Solicitação inválida.")?
         .len()
-        > 16000
+        > 48000
     {
         return Err("Solicitação da JAM muito grande.".into());
     }
@@ -637,8 +642,22 @@ pub async fn call(
         return Ok(value);
     }
 
-    if ["create", "join", "resume", "poll", "sync", "rotateInvite", "updateRoom", "kick"]
-        .contains(&action.as_str())
+    if [
+        "create",
+        "join",
+        "resume",
+        "poll",
+        "sync",
+        "rotateInvite",
+        "updateRoom",
+        "kick",
+        "voteSkip",
+        "queueAdd",
+        "queueRemove",
+        "recommendPlaylist",
+        "chat",
+    ]
+    .contains(&action.as_str())
     {
         validate_room_payload(&value)?;
     }

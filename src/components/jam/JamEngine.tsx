@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { jamPosition, jamDriftMs, canJam, type JamRoom } from '../../../shared/jam';
 import {
   computeBackoffMs,
@@ -21,9 +21,29 @@ const RECONNECT_TIMEOUT_MS = 120000;
 export function JamEngine() {
   const ready = useApp(s => s.ready),
     session = useJam(s => s.session),
+    room = useJam(s => s.room),
     consent = useApp(
       s => s.data.preferences.onlineConsent && s.data.preferences.onboardingDone,
     );
+  const lastHandledSkipRef = useRef(0);
+
+  // Host auto-skip when JAM vote-skip threshold is reached
+  useEffect(() => {
+    if (!session?.host || !room?.skipTriggeredAt) return;
+    if (room.skipTriggeredAt <= lastHandledSkipRef.current) return;
+    lastHandledSkipRef.current = room.skipTriggeredAt;
+    const nextQueued = room.jamQueue?.[0];
+    if (nextQueued) {
+      useApp.getState().play(
+        nextQueued.track,
+        room.jamQueue!.map(q => q.track),
+      );
+      void useJam.getState().queueRemove(nextQueued.id);
+    } else {
+      useApp.getState().next();
+    }
+    useApp.getState().message('Música pulada por votação da JAM.');
+  }, [session?.host, room?.skipTriggeredAt]);
 
   // Deep link intake (cold start + warm single-instance arrival)
   useEffect(() => {

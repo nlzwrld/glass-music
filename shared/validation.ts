@@ -474,6 +474,12 @@ export const acceptTermsSchema = z
   })
   .strict();
 
+export const updateProfileSchema = z
+  .object({
+    displayName: displayNameSchema,
+  })
+  .strict();
+
 export const pkceTokenExchangeSchema = z
   .object({
     grant_type: z.literal('authorization_code'),
@@ -521,6 +527,11 @@ export const jamRequestSchema = z
       'rotateInvite',
       'updateRoom',
       'kick',
+      'voteSkip',
+      'queueAdd',
+      'queueRemove',
+      'recommendPlaylist',
+      'chat',
       'subscribe',
       'unsubscribe',
       'leave',

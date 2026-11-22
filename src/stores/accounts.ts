@@ -81,6 +81,9 @@ interface State {
   ): Promise<boolean>;
   cancelHubOAuth(): Promise<void>;
   acceptHubTerms(brokerUrl?: string): Promise<boolean>;
+  updateProfile(displayName: string, brokerUrl?: string): Promise<boolean>;
+  syncLibraryFromCloud(brokerUrl?: string): Promise<void>;
+  syncLibraryToCloud(brokerUrl?: string): Promise<void>;
   linkEmail(payload: {
     brokerUrl?: string;
     email: string;
@@ -142,6 +145,9 @@ async function finishAuthenticatedFlow(
 ): Promise<boolean> {
   set({ hub, notice: noticeMsg, authError: '', authModalView: 'choose' });
   await useJam.getState().refresh();
+  if (hub.authenticated) {
+    void get().syncLibraryFromCloud();
+  }
 
   if (hub.authenticated && hub.needsTermsAcceptance) {
     set({
@@ -231,6 +237,9 @@ export const useAccounts = create<State>((set, get) => ({
       }));
       if (hub.authenticated && hub.needsTermsAcceptance) {
         set({ authModalOpen: true, authModalView: 'terms' });
+      }
+      if (hub.authenticated) {
+        void get().syncLibraryFromCloud();
       }
     } catch (e) {
       set({ notice: cleanError(e), hubHydrated: true });
@@ -473,6 +482,99 @@ export const useAccounts = create<State>((set, get) => ({
       return false;
     } finally {
       set({ busy: '' });
+    }
+  },
+
+  updateProfile: async (displayName, brokerUrl) => {
+    if (get().busy) return false;
+    const trimmed = displayName.trim();
+    if (!trimmed) return false;
+    set({ busy: 'hub:profile', authError: '', notice: 'Salvando nickname…' });
+    try {
+      const hub = await window.glass.hubUpdateProfile({
+        brokerUrl: resolveEffectiveBroker(brokerUrl, get()),
+        displayName: trimmed,
+      });
+      set({ hub, notice: `Nickname atualizado para ${hub.displayName || trimmed}.` });
+      await useJam.getState().refresh();
+      return true;
+    } catch (e) {
+      const msg = cleanError(e);
+      set({ notice: msg, authError: msg });
+      return false;
+    } finally {
+      set({ busy: '' });
+    }
+  },
+
+  syncLibraryFromCloud: async brokerUrl => {
+    if (!get().hub.authenticated || !window.glass?.hubLibraryPull) return;
+    try {
+      const cloud = await window.glass.hubLibraryPull({
+        brokerUrl: resolveEffectiveBroker(brokerUrl, get()),
+      });
+      const local = useApp.getState().data;
+      const cloudPlaylists = Array.isArray(cloud?.playlists) ? cloud.playlists : [];
+      const cloudTracks = Array.isArray(cloud?.tracks) ? cloud.tracks : [];
+      if (!cloudPlaylists.length) {
+        if (local.playlists.length > 0) {
+          void get().syncLibraryToCloud(brokerUrl);
+        }
+        return;
+      }
+      const cloudTrackMap = new Map(cloudTracks.map(t => [t.id, t]));
+      const existingByName = new Map(
+        local.playlists.map(p => [p.name.trim().toLowerCase(), p]),
+      );
+      let latest = local;
+      for (const cp of cloudPlaylists) {
+        if (!cp?.name) continue;
+        const key = cp.name.trim().toLowerCase();
+        let targetPl = existingByName.get(key);
+        if (!targetPl) {
+          latest = await window.glass.library({ action: 'create', name: cp.name });
+          targetPl = latest.playlists.find(p => p.name.trim().toLowerCase() === key);
+          if (targetPl) existingByName.set(key, targetPl);
+        }
+        if (targetPl && Array.isArray(cp.trackIds)) {
+          for (const tid of cp.trackIds) {
+            if (targetPl.trackIds.includes(tid)) continue;
+            const tr = cloudTrackMap.get(tid);
+            if (!tr || tr.source === 'local') continue;
+            try {
+              latest = await window.glass.library({ action: 'add', id: targetPl.id, track: tr });
+              targetPl = latest.playlists.find(p => p.id === targetPl!.id) || targetPl;
+            } catch {
+              // Ignore individual track merge failures
+            }
+          }
+        }
+      }
+      useApp.setState(s => ({ data: { ...latest, preferences: s.data.preferences } }));
+    } catch {
+      // Non-fatal offline/cloud sync failure
+    }
+  },
+
+  syncLibraryToCloud: async brokerUrl => {
+    if (!get().hub.authenticated || !window.glass?.hubLibraryPush) return;
+    try {
+      const data = useApp.getState().data;
+      const referencedIds = new Set<string>(data.likes);
+      for (const pl of data.playlists) {
+        for (const tid of pl.trackIds) referencedIds.add(tid);
+      }
+      const tracks = data.tracks.filter(
+        t => t.source !== 'local' && referencedIds.has(t.id),
+      );
+      await window.glass.hubLibraryPush({
+        brokerUrl: resolveEffectiveBroker(brokerUrl, get()),
+        playlists: data.playlists,
+        tracks,
+        likes: data.likes,
+      });
+    } catch {
+      // Non-fatal offline/cloud sync failure
     }
   },
 

@@ -28,9 +28,9 @@ export function resolveJamHostIdentity() {
     identities.find(i => i.provider === 'github') ||
     null;
   const name = (
+    hub.displayName ||
     preferred?.displayName ||
     preferred?.username ||
-    hub.displayName ||
     hub.username ||
     hub.subject ||
     'Ouvinte'

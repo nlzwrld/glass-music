@@ -27,6 +27,7 @@ import {
 } from '../../lib/jam';
 import { useApp, cleanError } from '../../stores/app';
 import { HostAvatar } from './JamInviteModal';
+import { JamInteractivePanel } from './JamInteractivePanel';
 import { useJam } from './state';
 import './jam.css';
 
@@ -266,6 +267,8 @@ export function JamSettings() {
           {activeSession.host && current && !canJam(current) && (
             <p className="fine-print">Selecione uma música online para sincronizar.</p>
           )}
+
+          <JamInteractivePanel />
 
           <div className="jam-host-actions">
             {activeSession.host && (

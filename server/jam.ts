@@ -22,10 +22,13 @@ import { pathToFileURL } from 'node:url';
 import type { Track } from '../shared/types.ts';
 import {
   normalizeJamCode,
+  type JamChatMessage,
   type JamErrorCode,
   type JamInvitePreview,
   type JamMember,
   type JamPlayback,
+  type JamPlaylistRecommendation,
+  type JamQueueItem,
   type JamRoom,
   type JamRoomStatus,
 } from '../shared/jam.ts';
@@ -70,6 +73,11 @@ interface Room {
   recentMembers: Map<string, RecentMember>;
   kickedKeys: Set<string>;
   playback: JamPlayback;
+  skipVotes?: Set<string>;
+  skipTriggeredAt?: number;
+  jamQueue?: JamQueueItem[];
+  recommendations?: JamPlaylistRecommendation[];
+  messages?: JamChatMessage[];
   touched: number;
 }
 
@@ -204,11 +212,141 @@ const ALLOWED_REQUEST_KEYS = new Set([
   'inviteTtlMs',
   'endpoint',
   'playback',
+  'track',
+  'queueItemId',
+  'message',
+  'playlistName',
+  'playlistTracks',
   'nonce',
   'timestamp',
   'clientTime',
   'sinceSequence',
 ]);
+
+function roomInteractiveView(room: Room) {
+  const onlineCount = Math.max(
+    1,
+    [...room.members.values()].filter(m => m.online !== false).length,
+  );
+  const skipVotes = [...(room.skipVotes || [])];
+  const skipThreshold = Math.max(1, Math.ceil(onlineCount / 2));
+  return {
+    skipVotes,
+    skipThreshold,
+    ...(room.skipTriggeredAt ? { skipTriggeredAt: room.skipTriggeredAt } : {}),
+    ...(room.jamQueue?.length ? { jamQueue: room.jamQueue } : {}),
+    ...(room.recommendations?.length ? { recommendations: room.recommendations } : {}),
+    ...(room.messages?.length ? { messages: room.messages } : {}),
+  };
+}
+
+function applyJamInteractiveAction(
+  room: Room,
+  member: Member,
+  action: string,
+  p: Record<string, unknown>,
+  now: number,
+): boolean {
+  if (action === 'voteSkip') {
+    if (!room.skipVotes) room.skipVotes = new Set();
+    if (room.skipVotes.has(member.id)) {
+      room.skipVotes.delete(member.id);
+    } else {
+      room.skipVotes.add(member.id);
+    }
+    const onlineCount = Math.max(
+      1,
+      [...room.members.values()].filter(m => m.online !== false).length,
+    );
+    const threshold = Math.max(1, Math.ceil(onlineCount / 2));
+    if (room.skipVotes.size >= threshold) {
+      room.skipTriggeredAt = now;
+      room.skipVotes.clear();
+    }
+    return true;
+  }
+  if (action === 'queueAdd') {
+    const track = sanitizeTrack(p.track);
+    if (!track) throw new JamError('Selecione uma música online válida para a fila.', 400);
+    if (!room.jamQueue) room.jamQueue = [];
+    if (room.jamQueue.length >= 30) {
+      throw new JamError('A fila da JAM atingiu o limite de 30 músicas.', 400);
+    }
+    room.jamQueue.push({
+      id: `jq_${id().slice(0, 12)}`,
+      track,
+      addedById: member.id,
+      addedByName: member.name,
+      addedAt: now,
+    });
+    return true;
+  }
+  if (action === 'queueRemove') {
+    const itemId = typeof p.queueItemId === 'string' ? p.queueItemId.trim() : '';
+    if (!itemId) throw new JamError('Item da fila inválido.', 400);
+    if (!room.jamQueue) room.jamQueue = [];
+    const idx = room.jamQueue.findIndex(item => item.id === itemId);
+    if (idx >= 0) {
+      const target = room.jamQueue[idx]!;
+      if (!member.host && target.addedById !== member.id) {
+        throw new JamError('Somente o anfitrião ou quem adicionou pode remover da fila.', 403, 'FORBIDDEN');
+      }
+      room.jamQueue.splice(idx, 1);
+    }
+    return true;
+  }
+  if (action === 'recommendPlaylist') {
+    const rawName = typeof p.playlistName === 'string'
+      ? p.playlistName.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 60)
+      : '';
+    if (!rawName) throw new JamError('Informe o nome da playlist recomendada.', 400);
+    const rawTracks = Array.isArray(p.playlistTracks) ? p.playlistTracks.slice(0, 20) : [];
+    const tracks: Track[] = [];
+    for (const candidate of rawTracks) {
+      try {
+        const clean = sanitizeTrack(candidate);
+        if (clean) tracks.push(clean);
+      } catch {
+        // Ignore local or unsupported entries inside a shared playlist
+      }
+    }
+    if (!tracks.length) {
+      throw new JamError('A playlist recomendada precisa ter ao menos uma música online.', 400);
+    }
+    if (!room.recommendations) room.recommendations = [];
+    room.recommendations.unshift({
+      id: `jr_${id().slice(0, 12)}`,
+      name: rawName,
+      trackCount: tracks.length,
+      tracks,
+      recommendedById: member.id,
+      recommendedByName: member.name,
+      recommendedAt: now,
+    });
+    if (room.recommendations.length > 15) room.recommendations.length = 15;
+    return true;
+  }
+  if (action === 'chat') {
+    const rawMsg = typeof p.message === 'string'
+      ? p.message.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 300)
+      : '';
+    if (!rawMsg) throw new JamError('Digite uma mensagem para enviar no chat.', 400);
+    if (!room.messages) room.messages = [];
+    room.messages.push({
+      id: `jm_${id().slice(0, 12)}`,
+      memberId: member.id,
+      name: member.name,
+      ...(member.avatar ? { avatar: member.avatar } : {}),
+      text: rawMsg,
+      sentAt: now,
+    });
+    if (room.messages.length > 80) {
+      room.messages.splice(0, room.messages.length - 80);
+    }
+    return true;
+  }
+  return false;
+}
 
 const ALLOWED_PLAYBACK_KEYS = new Set(['track', 'playing', 'position']);
 
@@ -1360,6 +1498,7 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
         }),
       ),
       playback: unchanged ? { ...room.playback, track: null } : room.playback,
+      ...roomInteractiveView(room),
       unchanged: unchanged || undefined,
       serverTime: now,
       ...(typeof p?.clientTime === 'number' && Number.isFinite(p.clientTime)
@@ -1763,6 +1902,10 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
       assertNoUnknownKeys(play, ALLOWED_PLAYBACK_KEYS, 'Playback JAM');
       const song = sanitizeTrack(play.track);
       verifyReplayProtection(p, now, action);
+      if (song?.id !== room.playback.track?.id) {
+        room.skipVotes?.clear();
+        room.skipTriggeredAt = 0;
+      }
       room.playback = {
         track: song,
         playing: !!song && play.playing,
@@ -1773,6 +1916,17 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
       persistRoom(room);
       const nextView = view(room, now, p);
       broadcastRoom(room.roomId, 'playback', nextView);
+      return { status: 200, body: nextView };
+    }
+
+    if (
+      ['voteSkip', 'queueAdd', 'queueRemove', 'recommendPlaylist', 'chat'].includes(action)
+    ) {
+      verifyReplayProtection(p, now, action);
+      applyJamInteractiveAction(room, member, action, p, now);
+      persistRoom(room);
+      const nextView = view(room, now, p);
+      broadcastRoom(room.roomId, 'state', nextView);
       return { status: 200, body: nextView };
     }
 
@@ -2496,6 +2650,11 @@ export class JamRoomDO {
       createdAt?: number;
       members: [string, Member][];
       playback: JamPlayback;
+      skipVotes?: string[];
+      skipTriggeredAt?: number;
+      jamQueue?: JamQueueItem[];
+      recommendations?: JamPlaylistRecommendation[];
+      messages?: JamChatMessage[];
       touched: number;
       nonces?: [string, number][];
     }>('room');
@@ -2515,6 +2674,11 @@ export class JamRoomDO {
         recentMembers: new Map(),
         kickedKeys: new Set(),
         playback: saved.playback,
+        skipVotes: new Set(saved.skipVotes || []),
+        skipTriggeredAt: saved.skipTriggeredAt || 0,
+        jamQueue: saved.jamQueue || [],
+        recommendations: saved.recommendations || [],
+        messages: saved.messages || [],
         touched: saved.touched,
       };
       this.mutationNonces = new Map(saved.nonces || []);
@@ -2559,6 +2723,11 @@ export class JamRoomDO {
       createdAt: room.createdAt,
       members: [...room.members.entries()],
       playback: room.playback,
+      skipVotes: [...(room.skipVotes || [])],
+      skipTriggeredAt: room.skipTriggeredAt || 0,
+      jamQueue: room.jamQueue || [],
+      recommendations: room.recommendations || [],
+      messages: room.messages || [],
       touched: room.touched,
       nonces: [...this.mutationNonces.entries()],
     });
@@ -2732,6 +2901,7 @@ export class JamRoomDO {
         }),
       ),
       playback: unchanged ? { ...room.playback, track: null } : room.playback,
+      ...roomInteractiveView(room),
       serverTime: now,
       ...(unchanged ? { unchanged: true } : {}),
       ...(typeof p?.clientTime === 'number' && Number.isFinite(p.clientTime)
@@ -3176,6 +3346,10 @@ export class JamRoomDO {
         assertNoUnknownKeys(play, ALLOWED_PLAYBACK_KEYS, 'Playback JAM');
         const song = sanitizeTrack(play.track);
         this.verifyReplay(p, now, action);
+        if (song?.id !== current.playback.track?.id) {
+          current.skipVotes?.clear();
+          current.skipTriggeredAt = 0;
+        }
         current.playback = {
           track: song,
           playing: !!song && play.playing,
@@ -3183,14 +3357,20 @@ export class JamRoomDO {
           updatedAt: now,
           sequence: current.playback.sequence + 1,
         };
+      } else if (
+        ['voteSkip', 'queueAdd', 'queueRemove', 'recommendPlaylist', 'chat'].includes(action)
+      ) {
+        this.verifyReplay(p, now, action);
+        applyJamInteractiveAction(current, member, action, p, now);
       } else if (action === 'poll') {
         this.verifyReplay(p, now, action);
       } else {
         throw new JamError('Operação inválida.');
       }
-      if (action === 'sync') await this.persistRoom();
+      const isMutation = action !== 'poll';
+      if (isMutation) await this.persistRoom();
       const viewBody = this.roomView(current, now, p);
-      if (action === 'sync') this.broadcast(viewBody);
+      if (isMutation) this.broadcast(viewBody);
       return new Response(JSON.stringify(viewBody), { status: 200, headers });
     } catch (error) {
       const status = error instanceof JamError ? error.status : 500;

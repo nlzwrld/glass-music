@@ -303,6 +303,13 @@ export const useApp = create<State>((set, get) => ({
     try {
       const data = await window.glass.library(command);
       set({ data: { ...data, preferences: get().data.preferences } });
+      if (
+        ['create', 'rename', 'delete', 'add', 'remove', 'move', 'reorder', 'like'].includes(
+          command.action,
+        )
+      ) {
+        void import('./accounts').then(m => m.useAccounts.getState().syncLibraryToCloud());
+      }
     } catch (e) {
       get().message(cleanError(e));
       throw e;

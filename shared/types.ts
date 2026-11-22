@@ -459,6 +459,19 @@ export interface GlassAPI {
     termsVersion: string;
     privacyVersion: string;
   }): Promise<HubSessionStatus>;
+  hubUpdateProfile(payload: {
+    brokerUrl?: string;
+    displayName: string;
+  }): Promise<HubSessionStatus>;
+  hubLibraryPull(payload?: {
+    brokerUrl?: string;
+  }): Promise<{ playlists: Playlist[]; tracks: Track[]; likes: string[]; updatedAt: number }>;
+  hubLibraryPush(payload: {
+    brokerUrl?: string;
+    playlists: Playlist[];
+    tracks: Track[];
+    likes: string[];
+  }): Promise<{ ok: boolean; updatedAt: number }>;
   offlineSource(id: string): Promise<{ url: string; duration: number } | null>;
   downloadOffline(track: Track): Promise<Snapshot>;
   removeOffline(id: string): Promise<Snapshot>;

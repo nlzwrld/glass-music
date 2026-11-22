@@ -35,6 +35,33 @@ export interface JamMember {
   joinedAt?: number;
 }
 
+export interface JamQueueItem {
+  id: string;
+  track: Track;
+  addedById: string;
+  addedByName: string;
+  addedAt: number;
+}
+
+export interface JamPlaylistRecommendation {
+  id: string;
+  name: string;
+  trackCount: number;
+  tracks: Track[];
+  recommendedById: string;
+  recommendedByName: string;
+  recommendedAt: number;
+}
+
+export interface JamChatMessage {
+  id: string;
+  memberId: string;
+  name: string;
+  avatar?: string;
+  text: string;
+  sentAt: number;
+}
+
 export interface JamInvitePreview {
   roomId: string;
   code: string;
@@ -75,6 +102,12 @@ export interface JamRoom {
   createdAt: number;
   members: JamMember[];
   playback: JamPlayback;
+  skipVotes?: string[];
+  skipThreshold?: number;
+  skipTriggeredAt?: number;
+  jamQueue?: JamQueueItem[];
+  recommendations?: JamPlaylistRecommendation[];
+  messages?: JamChatMessage[];
   serverTime: number;
   unchanged?: boolean;
   echoClientTime?: number;
@@ -126,6 +159,11 @@ export type JamAction =
   | 'rotateInvite'
   | 'updateRoom'
   | 'kick'
+  | 'voteSkip'
+  | 'queueAdd'
+  | 'queueRemove'
+  | 'recommendPlaylist'
+  | 'chat'
   | 'subscribe'
   | 'unsubscribe'
   | 'leave';
@@ -150,6 +188,11 @@ export interface JamRequest {
   clientTime?: number;
   sinceSequence?: number;
   playback?: Pick<JamPlayback, 'track' | 'playing' | 'position'>;
+  track?: Track;
+  queueItemId?: string;
+  message?: string;
+  playlistName?: string;
+  playlistTracks?: Track[];
 }
 
 export interface JamPingResponse {

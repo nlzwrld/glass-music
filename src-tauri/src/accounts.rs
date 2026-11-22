@@ -1406,6 +1406,100 @@ pub async fn hub_accept_terms(
     Ok(guard.public_hub_status(now()))
 }
 
+pub async fn hub_update_profile(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    payload: &Value,
+) -> Result<Value> {
+    let obj = payload.as_object().ok_or("Solicitação inválida.")?;
+    for k in obj.keys() {
+        if !["brokerUrl", "displayName"].contains(&k.as_str()) {
+            return Err("Campo inválido.".into());
+        }
+    }
+    let display_name = s(payload, "displayName").trim().to_string();
+    if display_name.is_empty() || display_name.len() > 80 {
+        return Err("Informe um nickname válido (1 a 80 caracteres).".into());
+    }
+    let (broker, token) =
+        ensure_fresh_hub_token(secrets_mtx, secrets_path, Some(s(payload, "brokerUrl"))).await?;
+    let res = crate::providers::client()
+        .post(format!("{broker}/v1/auth/profile"))
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&json!({ "displayName": display_name }))
+        .send()
+        .await
+        .map_err(|_| "Falha ao atualizar nickname no servidor.")?;
+    let status = res.status();
+    let body: Value = res.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        return Err(parse_broker_error(
+            &body,
+            "Não foi possível atualizar o nickname.",
+        ));
+    }
+    let mut guard = secrets_mtx.lock().unwrap();
+    if let Some(sess) = guard.hub_session.as_mut() {
+        apply_hub_user_profile(sess, &body);
+    }
+    guard.save(secrets_path)?;
+    Ok(guard.public_hub_status(now()))
+}
+
+pub async fn hub_library_pull(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    payload: &Value,
+) -> Result<Value> {
+    let (broker, token) =
+        ensure_fresh_hub_token(secrets_mtx, secrets_path, Some(s(payload, "brokerUrl"))).await?;
+    let res = crate::providers::client()
+        .get(format!("{broker}/v1/auth/library"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|_| "Falha ao sincronizar playlists da conta.")?;
+    let status = res.status();
+    let body: Value = res.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        return Err(parse_broker_error(
+            &body,
+            "Não foi possível carregar as playlists da conta.",
+        ));
+    }
+    Ok(body)
+}
+
+pub async fn hub_library_push(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    payload: &Value,
+) -> Result<Value> {
+    let (broker, token) =
+        ensure_fresh_hub_token(secrets_mtx, secrets_path, Some(s(payload, "brokerUrl"))).await?;
+    let body = json!({
+        "playlists": payload.get("playlists").cloned().unwrap_or_else(|| json!([])),
+        "tracks": payload.get("tracks").cloned().unwrap_or_else(|| json!([])),
+        "likes": payload.get("likes").cloned().unwrap_or_else(|| json!([])),
+    });
+    let res = crate::providers::client()
+        .put(format!("{broker}/v1/auth/library"))
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "Falha ao salvar playlists na conta.")?;
+    let status = res.status();
+    let resp_body: Value = res.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        return Err(parse_broker_error(
+            &resp_body,
+            "Não foi possível salvar as playlists na conta.",
+        ));
+    }
+    Ok(resp_body)
+}
+
 pub async fn hub_link_email(
     secrets_mtx: &Mutex<Secrets>,
     secrets_path: &Path,

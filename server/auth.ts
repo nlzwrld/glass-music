@@ -296,6 +296,11 @@ const AUTH_SCHEMA_STATEMENTS = [
     config_key TEXT PRIMARY KEY,
     config_value TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS hub_user_library (
+    user_id TEXT PRIMARY KEY REFERENCES hub_users(user_id) ON DELETE CASCADE,
+    payload_json TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
 ];
 
 export function initAuthSchema(db: SqliteDatabaseLike) {
@@ -978,6 +983,68 @@ export class HubAuthStore {
       )
       .run(CURRENT_TERMS_VERSION, CURRENT_PRIVACY_VERSION, now, now, userId);
     return this.findUserById(userId)!;
+  }
+
+  updateDisplayName(userId: string, displayName: string, now: number): HubUserRecord {
+    this.assertOpen();
+    const cleaned = displayName.trim().slice(0, 80);
+    this.db
+      .prepare('UPDATE hub_users SET display_name = ?, updated_at = ? WHERE user_id = ?')
+      .run(cleaned, now, userId);
+    return this.findUserById(userId)!;
+  }
+
+  getUserLibrary(userId: string): {
+    playlists: unknown[];
+    tracks: unknown[];
+    likes: string[];
+    updatedAt: number;
+  } {
+    this.assertOpen();
+    const row = this.db
+      .prepare('SELECT payload_json, updated_at FROM hub_user_library WHERE user_id = ?')
+      .get(userId);
+    if (!row || typeof row.payload_json !== 'string') {
+      return { playlists: [], tracks: [], likes: [], updatedAt: 0 };
+    }
+    try {
+      const parsed = JSON.parse(row.payload_json) as {
+        playlists?: unknown[];
+        tracks?: unknown[];
+        likes?: string[];
+      };
+      return {
+        playlists: Array.isArray(parsed.playlists) ? parsed.playlists : [],
+        tracks: Array.isArray(parsed.tracks) ? parsed.tracks : [],
+        likes: Array.isArray(parsed.likes)
+          ? parsed.likes.filter((x): x is string => typeof x === 'string')
+          : [],
+        updatedAt: Number(row.updated_at) || 0,
+      };
+    } catch {
+      return { playlists: [], tracks: [], likes: [], updatedAt: 0 };
+    }
+  }
+
+  saveUserLibrary(
+    userId: string,
+    payload: { playlists: unknown[]; tracks: unknown[]; likes: string[] },
+    now: number,
+  ): { ok: boolean; updatedAt: number } {
+    this.assertOpen();
+    const serialized = JSON.stringify({
+      playlists: payload.playlists.slice(0, 200),
+      tracks: payload.tracks.slice(0, 2000),
+      likes: payload.likes.slice(0, 5000),
+    });
+    this.db
+      .prepare(
+        `INSERT INTO hub_user_library (user_id, payload_json, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at`,
+      )
+      .run(userId, serialized, now);
+    return { ok: true, updatedAt: now };
   }
 
   createEmailToken(input: {
