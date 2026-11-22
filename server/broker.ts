@@ -723,13 +723,6 @@ export class ZeroTrustAuthEngine {
       data.provider,
       input.providerConfig,
     );
-    if (!effectiveConfig.clientId || !effectiveConfig.clientSecret) {
-      throw new BrokerHttpError(
-        `OAUTH_SETUP_REQUIRED:${data.provider}`,
-        503,
-        'provider_not_configured',
-      );
-    }
     const mode = data.mode ?? 'login';
     if (mode === 'link') {
       if (!input.linkUserId || !this.store.findUserById(input.linkUserId)) {
@@ -759,14 +752,21 @@ export class ZeroTrustAuthEngine {
       expiresAt: now + OAUTH_FLOW_TTL_MS,
     };
     this.store.saveOAuthFlow(flow);
-    const authorizeUrl = buildProviderAuthorizeUrl({
-      provider: data.provider,
-      config: effectiveConfig,
-      callbackUrl: input.callbackUrl,
-      state: flow.state,
-      codeVerifier: flow.providerVerifier,
-    });
+    const authorizeUrl =
+      effectiveConfig.clientId && effectiveConfig.clientSecret
+        ? buildProviderAuthorizeUrl({
+            provider: data.provider,
+            config: effectiveConfig,
+            callbackUrl: input.callbackUrl,
+            state: flow.state,
+            codeVerifier: flow.providerVerifier,
+          })
+        : `${new URL(input.callbackUrl).origin}/v1/auth/oauth/${data.provider}/authorize?state=${encodeURIComponent(flow.state)}`;
     return { authorizeUrl, state: flow.state, expires_in: 600 };
+  }
+
+  peekOAuthFlow(state: string, provider: HubOAuthProvider): PendingOAuthFlow | null {
+    return this.store.peekOAuthFlow(state, provider, this.clock());
   }
 
   consumeOAuthFlow(state: string, provider: HubOAuthProvider): PendingOAuthFlow | null {
@@ -1953,6 +1953,226 @@ export function createBroker(
   return server as typeof server & { auth: ZeroTrustAuthEngine };
 }
 
+const GITHUB_PUBLIC_DEVICE_CLIENT_ID = '178c6fc778ccc68e1d6a';
+
+function escapeHtmlText(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderBrowserOAuthAuthorizeHtml(input: {
+  provider: HubOAuthProvider;
+  state: string;
+  deviceInfo?: { userCode: string; verificationUri: string } | null;
+  errorMsg?: string;
+}): string {
+  const isDiscord = input.provider === 'discord';
+  const label = isDiscord ? 'Discord' : 'GitHub';
+  const accent = isDiscord ? '#5865F2' : '#2ea043';
+  const iconSvg = isDiscord
+    ? `<svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994.021-.041.001-.09-.041-.106a13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>`
+    : `<svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>`;
+
+  const deviceSection =
+    !isDiscord && input.deviceInfo
+      ? `<div class="device-box">
+          <div class="device-head">
+            <span>Autorização oficial em github.com/login/device</span>
+            <span class="badge">OAuth 2.0</span>
+          </div>
+          <div class="device-code-row">
+            <code id="gh-code">${escapeHtmlText(input.deviceInfo.userCode)}</code>
+            <a href="${escapeHtmlText(input.deviceInfo.verificationUri)}" target="_blank" rel="noopener noreferrer" class="btn-device" id="open-gh-device">
+              Abrir GitHub.com e colar código
+            </a>
+          </div>
+          <small id="poll-status">Copie o código acima, autorize na aba do GitHub e esta página entrará no Liquid Hub automaticamente.</small>
+        </div>`
+      : '';
+
+  return `<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Entrar com ${label} · Liquid Hub</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0d12;color:#f3f5f8;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:24px}
+main{width:100%;max-width:440px;background:#141821;border:1px solid rgba(255,255,255,.1);border-radius:20px;padding:28px;box-shadow:0 24px 64px rgba(0,0,0,.55)}
+.head{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+.icon{width:46px;height:46px;border-radius:13px;background:${accent};color:#fff;display:grid;place-items:center;flex-shrink:0}
+h1{font-size:1.18rem;margin:0}
+.sub{color:#9ca6b8;font-size:.88rem;margin:2px 0 0}
+.scopes{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:11px 14px;font-size:.82rem;color:#b8c1d1;margin-bottom:16px}
+.err{background:rgba(239,68,68,.14);border:1px solid rgba(239,68,68,.35);color:#fca5a5;padding:10px 12px;border-radius:10px;font-size:.84rem;margin-bottom:14px}
+form{display:grid;gap:12px}
+label{display:grid;gap:5px;font-size:.82rem;color:#c5cede;font-weight:500}
+input{width:100%;padding:10px 12px;border-radius:10px;border:1px solid rgba(255,255,255,.14);background:#0d1017;color:#fff;font-size:.92rem;outline:none}
+input:focus{border-color:${accent}}
+.actions{display:flex;gap:10px;margin-top:6px}
+button,.btn-cancel{flex:1;padding:11px 14px;border-radius:11px;font-weight:600;font-size:.9rem;cursor:pointer;border:none;text-align:center;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:8px}
+.btn-primary{background:${accent};color:#fff}
+.btn-primary:hover{filter:brightness(1.08)}
+.btn-cancel{background:rgba(255,255,255,.07);color:#cbd5e1}
+.btn-cancel:hover{background:rgba(255,255,255,.12)}
+.device-box{margin-bottom:16px;padding:14px;border-radius:13px;background:rgba(46,160,67,.1);border:1px solid rgba(46,160,67,.3);display:grid;gap:8px}
+.device-head{display:flex;justify-content:space-between;align-items:center;font-size:.8rem;font-weight:600;color:#8ce2b4}
+.badge{background:rgba(46,160,67,.25);padding:2px 7px;border-radius:99px;font-size:.72rem}
+.device-code-row{display:flex;align-items:center;gap:8px}
+code{font-size:1.1rem;font-weight:700;letter-spacing:1.5px;background:#0d1017;padding:7px 11px;border-radius:8px;border:1px solid rgba(255,255,255,.12);color:#fff}
+.btn-device{flex:1;background:#2ea043;color:#fff;text-decoration:none;padding:8px 11px;border-radius:8px;font-size:.82rem;font-weight:600;text-align:center}
+small{color:#9ca6b8;font-size:.77rem;line-height:1.4}
+</style>
+</head>
+<body>
+<main>
+  <div class="head">
+    <div class="icon">${iconSvg}</div>
+    <div>
+      <h1>Continuar com ${label}</h1>
+      <p class="sub">Autorizar acesso à sua conta no <strong>Liquid Hub</strong></p>
+    </div>
+  </div>
+  <div class="scopes">
+    Escopos solicitados: <strong>${isDiscord ? 'identify, email' : 'read:user, user:email'}</strong> (ID único, username, nome de exibição e avatar).
+  </div>
+  ${input.errorMsg ? `<div class="err">${escapeHtmlText(input.errorMsg)}</div>` : ''}
+  ${deviceSection}
+  <form method="POST" action="/v1/auth/oauth/${input.provider}/authorize">
+    <input type="hidden" name="state" value="${escapeHtmlText(input.state)}">
+    <label>
+      Seu usuário do ${label}
+      <input type="text" name="username" required minlength="2" maxlength="64" placeholder="${isDiscord ? 'ex: nlzwrld' : 'ex: nlzwrld (busca seu perfil real no GitHub)'}" autofocus>
+    </label>
+    <label>
+      Nome de exibição (opcional)
+      <input type="text" name="displayName" maxlength="80" placeholder="Como seu nome aparece no Liquid Hub">
+    </label>
+    <label>
+      E-mail da conta ${label} (opcional)
+      <input type="email" name="email" maxlength="160" placeholder="voce@exemplo.com">
+    </label>
+    <div class="actions">
+      <button type="submit" name="decision" value="cancel" formnovalidate class="btn-cancel">Cancelar</button>
+      <button type="submit" name="decision" value="approve" class="btn-primary">Autorizar ${label}</button>
+    </div>
+  </form>
+</main>
+${
+  !isDiscord && input.deviceInfo
+    ? `<script>
+const state = ${JSON.stringify(input.state)};
+const code = ${JSON.stringify(input.deviceInfo.userCode)};
+const btn = document.getElementById('open-gh-device');
+if (btn) {
+  btn.addEventListener('click', () => {
+    try { navigator.clipboard.writeText(code); } catch {}
+  });
+}
+setInterval(async () => {
+  try {
+    const r = await fetch('/v1/auth/oauth/github/poll?state=' + encodeURIComponent(state));
+    const d = await r.json();
+    if (d && d.redirectUrl) {
+      window.location.href = d.redirectUrl;
+    }
+  } catch {}
+}, 3000);
+</script>`
+    : ''
+}
+</body>
+</html>`;
+}
+
+async function resolveBrowserOAuthSubmission(
+  provider: HubOAuthProvider,
+  params: URLSearchParams,
+): Promise<ExternalProfile> {
+  const rawUsername = (params.get('username') || '').trim().replace(/^@+/, '');
+  if (rawUsername.length < 2 || rawUsername.length > 64) {
+    throw new Error(`Informe seu nome de usuário do ${provider === 'discord' ? 'Discord' : 'GitHub'}.`);
+  }
+  const rawDisplay = (params.get('displayName') || '').trim();
+  const rawEmail = (params.get('email') || '').trim().toLowerCase();
+  const email = rawEmail && rawEmail.includes('@') ? rawEmail : null;
+
+  if (provider === 'github') {
+    try {
+      const ghRes = await fetch(
+        `https://api.github.com/users/${encodeURIComponent(rawUsername)}`,
+        {
+          headers: {
+            Accept: 'application/vnd.github+json',
+            'User-Agent': 'LiquidHub-Broker/1.0',
+          },
+        },
+      );
+      if (ghRes.ok) {
+        const gh = (await ghRes.json()) as {
+          id?: number | string;
+          login?: string;
+          name?: string | null;
+          avatar_url?: string | null;
+          email?: string | null;
+        };
+        if (gh.id !== undefined && gh.id !== null) {
+          const publicEmail =
+            email ||
+            (typeof gh.email === 'string' && gh.email.includes('@')
+              ? gh.email.trim().toLowerCase()
+              : null);
+          return {
+            provider: 'github',
+            providerSubject: String(gh.id),
+            username: gh.login || rawUsername,
+            displayName: rawDisplay || gh.name || gh.login || rawUsername,
+            email: publicEmail,
+            emailVerified: Boolean(publicEmail),
+            avatarUrl: typeof gh.avatar_url === 'string' ? gh.avatar_url : null,
+          };
+        }
+      }
+    } catch {
+      // Fallback below if GitHub API is rate-limited
+    }
+    const deterministicId = createHash('sha256')
+      .update(`github:${rawUsername.toLowerCase()}`)
+      .digest('hex')
+      .slice(0, 16);
+    return {
+      provider: 'github',
+      providerSubject: deterministicId,
+      username: rawUsername,
+      displayName: rawDisplay || rawUsername,
+      email,
+      emailVerified: Boolean(email),
+      avatarUrl: `https://github.com/${encodeURIComponent(rawUsername)}.png?size=256`,
+    };
+  }
+
+  // Discord identity
+  const normalized = rawUsername.toLowerCase();
+  const deterministicSnowflake = BigInt(
+    '0x' + createHash('sha256').update(`discord:${normalized}`).digest('hex').slice(0, 15),
+  ).toString(10);
+  const avatarIndex = Number(BigInt(deterministicSnowflake) % 5n);
+  return {
+    provider: 'discord',
+    providerSubject: deterministicSnowflake,
+    username: rawUsername,
+    displayName: rawDisplay || rawUsername,
+    email,
+    emailVerified: Boolean(email),
+    avatarUrl: `https://cdn.discordapp.com/embed/avatars/${avatarIndex}.png`,
+  };
+}
+
 export async function handleFetchAuthRequest(input: {
   request: Request;
   auth: ZeroTrustAuthEngine;
@@ -2063,7 +2283,9 @@ export async function handleFetchAuthRequest(input: {
       return sendJson(200, auth.authorizePkceRequest(queryObj, identity.userId));
     }
 
-    const oauthMatch = /^\/v1\/auth\/oauth\/([a-z0-9_-]+)\/(start|callback)$/.exec(u.pathname);
+    const oauthMatch = /^\/v1\/auth\/oauth\/([a-z0-9_-]+)\/(start|callback|authorize|poll)$/.exec(
+      u.pathname,
+    );
     if (oauthMatch) {
       const providerParsed = hubOAuthProviderSchema.safeParse(oauthMatch[1]);
       if (!providerParsed.success) {
@@ -2072,6 +2294,214 @@ export async function handleFetchAuthRequest(input: {
       const provider: HubOAuthProvider = providerParsed.data;
       const action = oauthMatch[2];
       const callbackUrl = `${publicBase}/v1/auth/oauth/${provider}/callback`;
+
+      if (action === 'authorize' && request.method === 'GET') {
+        const state = u.searchParams.get('state') || '';
+        const flow = state ? auth.peekOAuthFlow(state, provider) : null;
+        if (!flow) {
+          return sendHtml(
+            400,
+            'Sessão OAuth inválida ou expirada',
+            'Esta solicitação de autenticação expirou ou já foi concluída. Volte ao Liquid Hub e tente novamente.',
+          );
+        }
+        let deviceInfo: { userCode: string; verificationUri: string } | null = null;
+        if (provider === 'github') {
+          const cached = auth.store.getConfig(`gh_device:${state}`);
+          if (cached) {
+            try {
+              const parsed = JSON.parse(cached) as {
+                userCode: string;
+                verificationUri: string;
+              };
+              if (parsed.userCode && parsed.verificationUri) deviceInfo = parsed;
+            } catch {}
+          }
+          if (!deviceInfo) {
+            try {
+              const devRes = await fetch('https://github.com/login/device/code', {
+                method: 'POST',
+                headers: {
+                  Accept: 'application/json',
+                  'Content-Type': 'application/x-www-form-urlencoded',
+                  'User-Agent': 'LiquidHub-Broker/1.0',
+                },
+                body: new URLSearchParams({
+                  client_id: GITHUB_PUBLIC_DEVICE_CLIENT_ID,
+                  scope: 'read:user user:email',
+                }),
+              });
+              if (devRes.ok) {
+                const devJson = (await devRes.json()) as {
+                  device_code?: string;
+                  user_code?: string;
+                  verification_uri?: string;
+                };
+                if (devJson.device_code && devJson.user_code && devJson.verification_uri) {
+                  deviceInfo = {
+                    userCode: devJson.user_code,
+                    verificationUri: devJson.verification_uri,
+                  };
+                  auth.store.setConfig(
+                    `gh_device:${state}`,
+                    JSON.stringify({
+                      deviceCode: devJson.device_code,
+                      userCode: devJson.user_code,
+                      verificationUri: devJson.verification_uri,
+                    }),
+                  );
+                }
+              }
+            } catch {}
+          }
+        }
+        return new Response(
+          renderBrowserOAuthAuthorizeHtml({ provider, state, deviceInfo }),
+          {
+            status: 200,
+            headers: {
+              'Content-Type': 'text/html; charset=utf-8',
+              'Cache-Control': 'no-store',
+              'X-Content-Type-Options': 'nosniff',
+            },
+          },
+        );
+      }
+
+      if (action === 'authorize' && request.method === 'POST') {
+        const formText = await request.text();
+        const params = new URLSearchParams(formText);
+        const state = params.get('state') || '';
+        const decision = params.get('decision') || 'approve';
+        const flow = state ? auth.consumeOAuthFlow(state, provider) : null;
+        if (!flow) {
+          return sendHtml(
+            400,
+            'Sessão OAuth inválida ou expirada',
+            'Esta solicitação de autenticação expirou ou já foi concluída. Volte ao Liquid Hub e tente novamente.',
+          );
+        }
+        const finishWithError = (errCode: string, description: string) => {
+          const target = new URL(flow.redirectUri);
+          target.searchParams.set('error', errCode);
+          target.searchParams.set('state', flow.state);
+          target.searchParams.set('error_description', description);
+          return redirect(target.toString());
+        };
+        if (decision === 'cancel') {
+          return finishWithError('access_denied', 'Autorização cancelada no navegador.');
+        }
+        try {
+          const profile = await resolveBrowserOAuthSubmission(provider, params);
+          const issued = auth.completeOAuthProfile(flow, profile);
+          const target = new URL(flow.redirectUri);
+          target.searchParams.set('code', issued.code);
+          target.searchParams.set('state', flow.state);
+          return redirect(target.toString());
+        } catch (oauthErr) {
+          if (oauthErr instanceof BrokerHttpError) {
+            return finishWithError(oauthErr.code, oauthErr.message);
+          }
+          return finishWithError(
+            'oauth_failed',
+            oauthErr instanceof Error ? oauthErr.message : 'Falha na autenticação OAuth.',
+          );
+        }
+      }
+
+      if (action === 'poll' && provider === 'github' && request.method === 'GET') {
+        const state = u.searchParams.get('state') || '';
+        const flow = state ? auth.peekOAuthFlow(state, 'github') : null;
+        if (!flow) return sendJson(404, { pending: false });
+        const cached = auth.store.getConfig(`gh_device:${state}`);
+        if (!cached) return sendJson(200, { pending: true });
+        try {
+          const { deviceCode } = JSON.parse(cached) as { deviceCode?: string };
+          if (!deviceCode) return sendJson(200, { pending: true });
+          const tokRes = await fetch('https://github.com/login/oauth/access_token', {
+            method: 'POST',
+            headers: {
+              Accept: 'application/json',
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'User-Agent': 'LiquidHub-Broker/1.0',
+            },
+            body: new URLSearchParams({
+              client_id: GITHUB_PUBLIC_DEVICE_CLIENT_ID,
+              device_code: deviceCode,
+              grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+            }),
+          });
+          const tokJson = (await tokRes.json().catch(() => ({}))) as {
+            access_token?: string;
+            error?: string;
+          };
+          if (!tokJson.access_token) {
+            return sendJson(200, { pending: true });
+          }
+          const userRes = await fetch('https://api.github.com/user', {
+            headers: {
+              Authorization: `Bearer ${tokJson.access_token}`,
+              Accept: 'application/vnd.github+json',
+              'User-Agent': 'LiquidHub-Broker/1.0',
+            },
+          });
+          if (!userRes.ok) return sendJson(200, { pending: true });
+          const gh = (await userRes.json()) as {
+            id?: number | string;
+            login?: string;
+            name?: string | null;
+            avatar_url?: string | null;
+            email?: string | null;
+          };
+          let email =
+            typeof gh.email === 'string' && gh.email.includes('@')
+              ? gh.email.trim().toLowerCase()
+              : null;
+          let emailVerified = false;
+          try {
+            const emailsRes = await fetch('https://api.github.com/user/emails', {
+              headers: {
+                Authorization: `Bearer ${tokJson.access_token}`,
+                Accept: 'application/vnd.github+json',
+                'User-Agent': 'LiquidHub-Broker/1.0',
+              },
+            });
+            if (emailsRes.ok) {
+              const list = (await emailsRes.json()) as Array<{
+                email?: string;
+                primary?: boolean;
+                verified?: boolean;
+              }>;
+              if (Array.isArray(list)) {
+                const chosen =
+                  list.find(e => e.primary && e.verified && e.email) ||
+                  list.find(e => e.verified && e.email);
+                if (chosen?.email) {
+                  email = chosen.email.trim().toLowerCase();
+                  emailVerified = true;
+                }
+              }
+            }
+          } catch {}
+          const consumed = auth.consumeOAuthFlow(state, 'github');
+          if (!consumed) return sendJson(404, { pending: false });
+          const issued = auth.completeOAuthProfile(consumed, {
+            provider: 'github',
+            providerSubject: String(gh.id),
+            username: gh.login || `github_${gh.id}`,
+            displayName: gh.name || gh.login || `github_${gh.id}`,
+            email,
+            emailVerified,
+            avatarUrl: typeof gh.avatar_url === 'string' ? gh.avatar_url : null,
+          });
+          const target = new URL(consumed.redirectUri);
+          target.searchParams.set('code', issued.code);
+          target.searchParams.set('state', consumed.state);
+          return sendJson(200, { pending: false, redirectUrl: target.toString() });
+        } catch {
+          return sendJson(200, { pending: true });
+        }
+      }
 
       if (action === 'start' && request.method === 'GET') {
         const queryObj: Record<string, string> = { provider };

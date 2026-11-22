@@ -1025,6 +1025,35 @@ export class HubAuthStore {
       );
   }
 
+  peekOAuthFlow(state: string, provider: HubOAuthProvider, now: number): PendingOAuthFlow | null {
+    this.assertOpen();
+    const row = this.db
+      .prepare('SELECT * FROM hub_oauth_flows WHERE state = ? AND provider = ?')
+      .get(state, provider);
+    if (!row) return null;
+    if (Number(row.expires_at) <= now) {
+      this.db.prepare('DELETE FROM hub_oauth_flows WHERE state = ?').run(state);
+      return null;
+    }
+    return {
+      state: String(row.state),
+      provider: String(row.provider) as HubOAuthProvider,
+      mode: String(row.mode) as 'login' | 'link',
+      linkUserId: row.link_user_id ? String(row.link_user_id) : null,
+      clientId: String(row.client_id),
+      redirectUri: String(row.redirect_uri),
+      codeChallenge: String(row.code_challenge),
+      codeChallengeMethod: 'S256',
+      providerVerifier: String(row.provider_verifier),
+      termsVersion: row.terms_version ? String(row.terms_version) : null,
+      privacyVersion: row.privacy_version ? String(row.privacy_version) : null,
+      termsAcceptedAt:
+        typeof row.terms_accepted_at === 'number' ? row.terms_accepted_at : null,
+      createdAt: Number(row.created_at),
+      expiresAt: Number(row.expires_at),
+    };
+  }
+
   consumeOAuthFlow(state: string, provider: HubOAuthProvider, now: number): PendingOAuthFlow | null {
     this.assertOpen();
     const row = this.db

@@ -425,18 +425,6 @@ export const useAccounts = create<State>((set, get) => ({
       );
     } catch (e) {
       const msg = cleanError(e);
-      if (msg.includes('OAUTH_SETUP_REQUIRED') || msg.includes('não configurado')) {
-        set({
-          oauthPending: null,
-          authModalOpen: true,
-          authModalView: 'oauth-setup',
-          oauthSetupProvider: provider,
-          oauthSetupMode: mode,
-          authError: '',
-          notice: `Ative o aplicativo OAuth do ${label} para continuar.`,
-        });
-        return false;
-      }
       set({ notice: msg, authError: msg, oauthPending: null });
       return false;
     } finally {

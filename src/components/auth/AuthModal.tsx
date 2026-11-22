@@ -19,7 +19,6 @@ import {
 import { AutoUpdates, useUpdateNotice } from '../../lib/updates';
 import {
   DEFAULT_HUB_BROKER_URL,
-  resolveEffectiveBroker,
   useAccounts,
 } from '../../stores/accounts';
 import { cleanError, useApp } from '../../stores/app';
@@ -32,8 +31,6 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
     storeView = useAccounts(s => s.authModalView),
     hub = useAccounts(s => s.hub),
     oauthPending = useAccounts(s => s.oauthPending),
-    oauthSetupProvider = useAccounts(s => s.oauthSetupProvider),
-    oauthSetupMode = useAccounts(s => s.oauthSetupMode),
     postAuthJamInvite = useAccounts(s => s.postAuthJamInvite),
     preferredBrokerUrl = useAccounts(s => s.preferredBrokerUrl),
     authError = useAccounts(s => s.authError),
@@ -67,14 +64,8 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
   const [password, setPassword] = useState('');
   const [token, setToken] = useState('');
   const [newPassword, setNewPassword] = useState('');
-  const [oauthClientId, setOauthClientId] = useState('');
-  const [oauthClientSecret, setOauthClientSecret] = useState('');
-  const [copiedCallback, setCopiedCallback] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateMsg, setUpdateMsg] = useState('');
-
-  const effectiveBroker = resolveEffectiveBroker(undefined, { preferredBrokerUrl, hub });
-  const oauthCallbackUrl = `${effectiveBroker}/v1/auth/oauth/${oauthSetupProvider}/callback`;
 
   useEffect(() => {
     if (effectiveOpen) {
@@ -167,19 +158,17 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
             <h2 id="auth-modal-title">
               {view === 'terms'
                 ? 'Termos e Privacidade'
-                : view === 'oauth-setup'
-                  ? `Ativar login com ${oauthSetupProvider === 'discord' ? 'Discord' : 'GitHub'}`
-                  : view === 'email-signup'
-                    ? 'Criar conta'
-                    : view === 'email-login'
-                      ? 'Entrar com e-mail'
-                      : view === 'forgot'
-                        ? 'Recuperar senha'
-                        : view === 'reset'
-                          ? 'Redefinir senha'
-                          : view === 'verify'
-                            ? 'Verificar e-mail'
-                            : 'Entrar no Liquid Hub'}
+                : view === 'email-signup'
+                  ? 'Criar conta'
+                  : view === 'email-login'
+                    ? 'Entrar com e-mail'
+                    : view === 'forgot'
+                      ? 'Recuperar senha'
+                      : view === 'reset'
+                        ? 'Redefinir senha'
+                        : view === 'verify'
+                          ? 'Verificar e-mail'
+                          : 'Entrar no Liquid Hub'}
             </h2>
           </div>
           {!hideClose && (
@@ -349,109 +338,6 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
               </>
             )}
           </>
-        )}
-
-        {view === 'oauth-setup' && (
-          <form
-            className="auth-form"
-            onSubmit={e => {
-              e.preventDefault();
-              void requireTerms().then(legal => {
-                if (!legal) return;
-                void oauthHub(oauthSetupProvider, oauthSetupMode, undefined, {
-                  oauthClientId: oauthClientId.trim(),
-                  oauthClientSecret: oauthClientSecret.trim(),
-                }).then(ok => {
-                  if (ok) {
-                    setOauthClientId('');
-                    setOauthClientSecret('');
-                  }
-                });
-              });
-            }}
-          >
-            <p className="auth-modal-subtitle">
-              Para autorizar contas reais no{' '}
-              <strong>{oauthSetupProvider === 'discord' ? 'Discord' : 'GitHub'}</strong>, informe o
-              Client ID e o Client Secret do seu aplicativo OAuth (salvos com criptografia DPAPI).
-            </p>
-            <div className="auth-legal-box">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                <strong>1. Portal oficial do provedor</strong>
-                <button
-                  type="button"
-                  className="text-button"
-                  onClick={() =>
-                    void window.glass.external(
-                      oauthSetupProvider === 'discord'
-                        ? 'https://discord.com/developers/applications'
-                        : 'https://github.com/settings/developers',
-                    )
-                  }
-                >
-                  Abrir portal {oauthSetupProvider === 'discord' ? 'Discord' : 'GitHub'}
-                </button>
-              </div>
-              <label className="field-label" style={{ marginTop: 4 }}>
-                2. Redirect / Callback URL (adicione no seu OAuth App)
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <input
-                    type="text"
-                    className="input"
-                    readOnly
-                    value={oauthCallbackUrl}
-                    onFocus={e => e.currentTarget.select()}
-                  />
-                  <button
-                    type="button"
-                    className="button secondary"
-                    onClick={() => {
-                      void navigator.clipboard?.writeText(oauthCallbackUrl);
-                      setCopiedCallback(true);
-                      setTimeout(() => setCopiedCallback(false), 2000);
-                    }}
-                  >
-                    {copiedCallback ? 'Copiado' : 'Copiar'}
-                  </button>
-                </div>
-              </label>
-            </div>
-            <label className="field-label">
-              Client ID ({oauthSetupProvider === 'discord' ? 'Discord' : 'GitHub'})
-              <input
-                type="text"
-                className="input"
-                placeholder="Cole o Client ID do aplicativo"
-                value={oauthClientId}
-                onChange={e => setOauthClientId(e.target.value)}
-                required
-                autoFocus
-              />
-            </label>
-            <label className="field-label">
-              Client Secret ({oauthSetupProvider === 'discord' ? 'Discord' : 'GitHub'})
-              <input
-                type="password"
-                className="input"
-                placeholder="Cole o Client Secret do aplicativo"
-                value={oauthClientSecret}
-                onChange={e => setOauthClientSecret(e.target.value)}
-                required
-              />
-            </label>
-            <button
-              type="submit"
-              className="button primary"
-              disabled={!!busy || !oauthClientId.trim() || !oauthClientSecret.trim()}
-            >
-              {oauthSetupProvider === 'discord' ? <DiscordIcon size={16} /> : <GitHubIcon size={16} />}
-              <span>
-                {busy
-                  ? 'Conectando…'
-                  : `Salvar e continuar com ${oauthSetupProvider === 'discord' ? 'Discord' : 'GitHub'}`}
-              </span>
-            </button>
-          </form>
         )}
 
         {view === 'email-login' && (
