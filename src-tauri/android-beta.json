@@ -1,0 +1,47 @@
+{
+  "applicationId": "com.nlzwrld.liquidhub",
+  "productName": "Liquid Hub",
+  "versionName": "2.2.0-beta.1",
+  "versionCode": 20200,
+  "stack": "tauri-mobile-v2",
+  "minSdkVersion": 26,
+  "targetSdkVersion": 35,
+  "compileSdkVersion": 35,
+  "permissions": [
+    "android.permission.INTERNET",
+    "android.permission.ACCESS_NETWORK_STATE",
+    "android.permission.WAKE_LOCK",
+    "android.permission.FOREGROUND_SERVICE",
+    "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+    "android.permission.BLUETOOTH_CONNECT"
+  ],
+  "services": [
+    {
+      "name": ".media.LiquidHubMediaPlaybackService",
+      "exported": false,
+      "foregroundServiceType": "mediaPlayback",
+      "intentActions": [
+        "android.intent.action.MEDIA_BUTTON",
+        "android.media.browse.MediaBrowserService"
+      ]
+    }
+  ],
+  "deepLinks": [
+    {
+      "scheme": "liquidhub",
+      "hosts": ["auth", "jam", "profile", "playlist", "track"]
+    }
+  ],
+  "buildTargets": {
+    "apk": {
+      "command": "tauri android build --apk",
+      "artifactGlob": "src-tauri/gen/android/app/build/outputs/apk/**/*.apk",
+      "channel": "beta-sideload"
+    },
+    "aab": {
+      "command": "tauri android build --aab",
+      "artifactGlob": "src-tauri/gen/android/app/build/outputs/bundle/**/*.aab",
+      "channel": "play-store-beta"
+    }
+  }
+}

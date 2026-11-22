@@ -4,13 +4,26 @@ import {
   CURRENT_TERMS_VERSION,
   hasAcceptedCurrentLegal,
 } from '../../shared/auth';
+import { defaultFreePlusStatus, type LiquidPlusStatus } from '../../shared/plus';
 import type {
   AccountStatus,
   HubAuthProvider,
   HubOAuthProvider,
   HubProvidersAvailability,
   HubSessionStatus,
+  ProfileVisibility,
+  SocialLinks,
 } from '../../shared/types';
+
+export interface UpdateProfilePatch {
+  brokerUrl?: string;
+  displayName?: string;
+  publicHandle?: string;
+  bio?: string;
+  profileVisibility?: ProfileVisibility;
+  socialLinks?: SocialLinks;
+  showPublicTracks?: boolean;
+}
 import { purgeSensitiveWebStorage } from '../../shared/validation';
 import { useJam } from '../components/jam/state';
 import { cleanError, useApp } from './app';
@@ -36,6 +49,8 @@ interface OpenAuthModalOptions {
 interface State {
   accounts: AccountStatus[];
   hub: HubSessionStatus;
+  plusStatus: LiquidPlusStatus;
+  visitorMode: boolean;
   hubHydrated: boolean;
   hubProviders: HubProvidersAvailability | null;
   oauthPending: HubOAuthProvider | null;
@@ -54,6 +69,8 @@ interface State {
   setPostAuthJamInvite(raw: string | null): void;
   setPreferredBrokerUrl(url: string): void;
   clearAuthError(): void;
+  enterVisitorMode(): void;
+  exitVisitorMode(): void;
   refresh(): Promise<void>;
   loadHubProviders(brokerUrl?: string): Promise<HubProvidersAvailability | null>;
   configure(): Promise<void>;
@@ -81,7 +98,11 @@ interface State {
   ): Promise<boolean>;
   cancelHubOAuth(): Promise<void>;
   acceptHubTerms(brokerUrl?: string): Promise<boolean>;
-  updateProfile(displayName: string, brokerUrl?: string): Promise<boolean>;
+  updateProfile(
+    patchOrName: string | UpdateProfilePatch,
+    brokerUrl?: string,
+  ): Promise<boolean>;
+  refreshPlusStatus(brokerUrl?: string): Promise<LiquidPlusStatus>;
   syncLibraryFromCloud(brokerUrl?: string): Promise<void>;
   syncLibraryToCloud(brokerUrl?: string): Promise<void>;
   linkEmail(payload: {
@@ -143,10 +164,17 @@ async function finishAuthenticatedFlow(
   get: () => State,
   noticeMsg: string,
 ): Promise<boolean> {
-  set({ hub, notice: noticeMsg, authError: '', authModalView: 'choose' });
+  set({
+    hub,
+    visitorMode: false,
+    notice: noticeMsg,
+    authError: '',
+    authModalView: 'choose',
+  });
   await useJam.getState().refresh();
   if (hub.authenticated) {
     void get().syncLibraryFromCloud();
+    void get().refreshPlusStatus();
   }
 
   if (hub.authenticated && hub.needsTermsAcceptance) {
@@ -170,6 +198,8 @@ async function finishAuthenticatedFlow(
 export const useAccounts = create<State>((set, get) => ({
   accounts: [],
   hub: { authenticated: false, subject: '', expiresAt: 0, brokerUrl: '' },
+  plusStatus: defaultFreePlusStatus(),
+  visitorMode: false,
   hubHydrated: false,
   hubProviders: null,
   oauthPending: null,
@@ -212,6 +242,22 @@ export const useAccounts = create<State>((set, get) => ({
   setPostAuthJamInvite: raw => set({ postAuthJamInvite: raw }),
   setPreferredBrokerUrl: url => set({ preferredBrokerUrl: url }),
   clearAuthError: () => set({ authError: '' }),
+  enterVisitorMode: () =>
+    set({
+      visitorMode: true,
+      authModalOpen: false,
+      authError: '',
+      plusStatus: defaultFreePlusStatus(false),
+      notice:
+        'Modo visitante ativo: reprodução e busca liberadas. Entre com uma conta para participar de JAMs, editar playlists colaborativas e sincronizar na nuvem.',
+    }),
+  exitVisitorMode: () =>
+    set({
+      visitorMode: false,
+      authModalOpen: true,
+      authModalView: 'choose',
+      authError: '',
+    }),
 
   refresh: async () => {
     purgeSensitiveWebStorage();
@@ -240,6 +286,9 @@ export const useAccounts = create<State>((set, get) => ({
       }
       if (hub.authenticated) {
         void get().syncLibraryFromCloud();
+        void get().refreshPlusStatus();
+      } else {
+        set({ plusStatus: defaultFreePlusStatus(false) });
       }
     } catch (e) {
       set({ notice: cleanError(e), hubHydrated: true });
@@ -485,17 +534,50 @@ export const useAccounts = create<State>((set, get) => ({
     }
   },
 
-  updateProfile: async (displayName, brokerUrl) => {
+  updateProfile: async (patchOrName, brokerUrl) => {
     if (get().busy) return false;
-    const trimmed = displayName.trim();
-    if (!trimmed) return false;
-    set({ busy: 'hub:profile', authError: '', notice: 'Salvando nickname…' });
+    const rawPatch: UpdateProfilePatch =
+      typeof patchOrName === 'string'
+        ? { displayName: patchOrName.trim(), brokerUrl }
+        : patchOrName;
+    const payload: UpdateProfilePatch = {
+      brokerUrl: resolveEffectiveBroker(rawPatch.brokerUrl ?? brokerUrl, get()),
+    };
+    if (rawPatch.displayName !== undefined) {
+      const trimmed = rawPatch.displayName.trim();
+      if (!trimmed) return false;
+      payload.displayName = trimmed;
+    }
+    if (rawPatch.publicHandle !== undefined) {
+      const normalized = rawPatch.publicHandle.trim().replace(/^@+/, '').toLowerCase();
+      if (!normalized) return false;
+      payload.publicHandle = normalized;
+    }
+    if (rawPatch.bio !== undefined) {
+      payload.bio = rawPatch.bio.trim();
+    }
+    if (rawPatch.profileVisibility !== undefined) {
+      payload.profileVisibility = rawPatch.profileVisibility;
+    }
+    if (rawPatch.socialLinks !== undefined) {
+      const cleanedLinks: SocialLinks = {};
+      for (const key of ['website', 'instagram', 'twitter', 'youtube', 'spotify', 'github'] as const) {
+        const val = rawPatch.socialLinks[key];
+        if (typeof val === 'string') cleanedLinks[key] = val.trim();
+      }
+      payload.socialLinks = cleanedLinks;
+    }
+    if (rawPatch.showPublicTracks !== undefined) {
+      payload.showPublicTracks = Boolean(rawPatch.showPublicTracks);
+    }
+
+    set({ busy: 'hub:profile', authError: '', notice: 'Salvando perfil no Liquid Hub…' });
     try {
-      const hub = await window.glass.hubUpdateProfile({
-        brokerUrl: resolveEffectiveBroker(brokerUrl, get()),
-        displayName: trimmed,
+      const hub = await window.glass.hubUpdateProfile(payload);
+      set({
+        hub,
+        notice: `Perfil atualizado${hub.publicHandle ? ` (@${hub.publicHandle})` : ''}.`,
       });
-      set({ hub, notice: `Nickname atualizado para ${hub.displayName || trimmed}.` });
       await useJam.getState().refresh();
       return true;
     } catch (e) {
@@ -504,6 +586,27 @@ export const useAccounts = create<State>((set, get) => ({
       return false;
     } finally {
       set({ busy: '' });
+    }
+  },
+
+  refreshPlusStatus: async brokerUrl => {
+    const p = useApp.getState().data.preferences;
+    const isAuth = get().hub.authenticated;
+    if (!p.onlineConsent || !p.onboardingDone || !window.glass?.hubPlusStatus) {
+      const fallback = defaultFreePlusStatus(isAuth);
+      set({ plusStatus: fallback });
+      return fallback;
+    }
+    try {
+      const plusStatus = await window.glass.hubPlusStatus({
+        brokerUrl: resolveEffectiveBroker(brokerUrl, get()),
+      });
+      set({ plusStatus });
+      return plusStatus;
+    } catch {
+      const fallback = defaultFreePlusStatus(isAuth);
+      set({ plusStatus: fallback });
+      return fallback;
     }
   },
 
@@ -705,6 +808,7 @@ export const useAccounts = create<State>((set, get) => ({
       const hub = await window.glass.hubLogout();
       set({
         hub,
+        plusStatus: defaultFreePlusStatus(false),
         authModalOpen: false,
         authModalView: 'choose',
         postAuthJamInvite: null,

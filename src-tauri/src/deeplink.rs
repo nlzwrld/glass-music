@@ -15,9 +15,46 @@ pub fn normalize_code(raw: &str) -> Option<String> {
     }
 }
 
+fn valid_handle(raw: &str) -> Option<String> {
+    let clean = raw.trim().to_ascii_lowercase();
+    let bytes = clean.as_bytes();
+    if !(3..=32).contains(&bytes.len())
+        || !bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        || !bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+    {
+        return None;
+    }
+    if bytes
+        .iter()
+        .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(b))
+        && !clean.contains("..")
+    {
+        Some(clean)
+    } else {
+        None
+    }
+}
+
+fn valid_share_id(raw: &str) -> Option<String> {
+    let clean = raw.trim();
+    if (4..=64).contains(&clean.len())
+        && clean
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+    {
+        Some(clean.to_string())
+    } else {
+        None
+    }
+}
+
 pub fn parse_and_validate(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.len() > 2048 || trimmed.chars().any(|c| c.is_control()) {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("..") || lower.contains("%2e") || trimmed.contains('\\') {
         return None;
     }
     let parsed = url::Url::parse(trimmed).ok()?;
@@ -34,6 +71,15 @@ pub fn parse_and_validate(raw: &str) -> Option<String> {
                 .path_segments()
                 .map(|s| s.filter(|p| !p.is_empty()).collect())
                 .unwrap_or_default();
+
+            if host.eq_ignore_ascii_case("profile") && segs.len() == 1 {
+                let handle = valid_handle(segs[0])?;
+                return Some(format!("liquidhub://profile/{handle}"));
+            }
+            if host.eq_ignore_ascii_case("playlist") && segs.len() == 1 {
+                let share_id = valid_share_id(segs[0])?;
+                return Some(format!("liquidhub://playlist/{share_id}"));
+            }
 
             let raw_code = if host.eq_ignore_ascii_case("jam") {
                 if segs.len() == 2 && segs[0].eq_ignore_ascii_case("join") {
@@ -88,6 +134,15 @@ pub fn parse_and_validate(raw: &str) -> Option<String> {
                 .path_segments()
                 .map(|s| s.filter(|p| !p.is_empty()).collect())
                 .unwrap_or_default();
+
+            if segs.len() == 2 && segs[0] == "u" {
+                let handle = valid_handle(segs[1])?;
+                return Some(format!("liquidhub://profile/{handle}"));
+            }
+            if segs.len() == 2 && segs[0] == "p" {
+                let share_id = valid_share_id(segs[1])?;
+                return Some(format!("liquidhub://playlist/{share_id}"));
+            }
 
             let mut raw_code = if segs.len() == 3
                 && segs[0].eq_ignore_ascii_case("jam")
@@ -317,5 +372,28 @@ mod tests {
             extract_from_args(args).as_deref(),
             Some("liquidhub://jam/join/K9M4P2XR?endpoint=https%3A%2F%2Fjam.example")
         );
+    }
+
+    #[test]
+    fn parses_profile_and_shared_playlist_deep_links_safely() {
+        assert_eq!(
+            parse_and_validate("liquidhub://profile/Ana-Silva").as_deref(),
+            Some("liquidhub://profile/ana-silva")
+        );
+        assert_eq!(
+            parse_and_validate("https://liquidhub.app/u/ana.silva").as_deref(),
+            Some("liquidhub://profile/ana.silva")
+        );
+        assert_eq!(
+            parse_and_validate("liquidhub://playlist/pl_abc123def456").as_deref(),
+            Some("liquidhub://playlist/pl_abc123def456")
+        );
+        assert_eq!(
+            parse_and_validate("https://liquidhub.app/p/pl_abc123def456").as_deref(),
+            Some("liquidhub://playlist/pl_abc123def456")
+        );
+        assert!(parse_and_validate("liquidhub://profile/../admin").is_none());
+        assert!(parse_and_validate("liquidhub://playlist/pl$bad").is_none());
+        assert!(parse_and_validate("http://evil.example/p/pl_abc123").is_none());
     }
 }

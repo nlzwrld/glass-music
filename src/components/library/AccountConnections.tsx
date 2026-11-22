@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import {
   CheckCircle2,
+  Copy,
+  ExternalLink,
   Link2,
   LoaderCircle,
   LogOut,
@@ -9,8 +11,10 @@ import {
   ShieldAlert,
   ShieldCheck,
   Unplug,
+  UserRound,
 } from 'lucide-react';
-import { oauthProviderLabel, useAccounts } from '../../stores/accounts';
+import type { ProfileVisibility, SocialLinks } from '../../../shared/types';
+import { oauthProviderLabel, resolveEffectiveBroker, useAccounts } from '../../stores/accounts';
 import { useApp } from '../../stores/app';
 import { DiscordIcon, GitHubIcon, GoogleIcon } from '../auth/ProviderIcons';
 import '../auth/auth.css';
@@ -52,7 +56,15 @@ export default function AccountConnections() {
     [linkEmailOpen, setLinkEmailOpen] = useState(false),
     [newEmail, setNewEmail] = useState(''),
     [newEmailPassword, setNewEmailPassword] = useState(''),
-    [nicknameInput, setNicknameInput] = useState(hub.displayName || hub.subject || '');
+    [nicknameInput, setNicknameInput] = useState(hub.displayName || hub.subject || ''),
+    [handleInput, setHandleInput] = useState(hub.publicHandle || ''),
+    [bioInput, setBioInput] = useState(hub.bio || ''),
+    [visibilityInput, setVisibilityInput] = useState<ProfileVisibility>(
+      hub.profileVisibility || 'public',
+    ),
+    [showPublicTracksInput, setShowPublicTracksInput] = useState(Boolean(hub.showPublicTracks)),
+    [socialLinksInput, setSocialLinksInput] = useState<SocialLinks>(hub.socialLinks || {}),
+    [socialLinksExpanded, setSocialLinksExpanded] = useState(false);
 
   useEffect(() => {
     void refresh();
@@ -60,7 +72,20 @@ export default function AccountConnections() {
 
   useEffect(() => {
     setNicknameInput(hub.displayName || hub.subject || '');
-  }, [hub.displayName, hub.subject]);
+    setHandleInput(hub.publicHandle || '');
+    setBioInput(hub.bio || '');
+    setVisibilityInput(hub.profileVisibility || 'public');
+    setShowPublicTracksInput(Boolean(hub.showPublicTracks));
+    setSocialLinksInput(hub.socialLinks || {});
+  }, [
+    hub.displayName,
+    hub.subject,
+    hub.publicHandle,
+    hub.bio,
+    hub.profileVisibility,
+    hub.showPublicTracks,
+    hub.socialLinks,
+  ]);
 
   useEffect(() => {
     const next = hub.brokerUrl || preferredBrokerUrl;
@@ -162,7 +187,8 @@ export default function AccountConnections() {
                     <div className="hub-profile-meta">
                       <strong>{hub.displayName || hub.subject}</strong>
                       <small>
-                        @{hub.username || hub.subject} · Cofre DPAPI ativo · {hub.brokerUrl}
+                        @{hub.publicHandle || hub.username || hub.subject} · Cofre DPAPI ativo ·{' '}
+                        {hub.brokerUrl}
                       </small>
                       <div className="hub-badge-row">
                         {hub.email && (
@@ -191,49 +217,221 @@ export default function AccountConnections() {
                       </div>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    className="button secondary"
-                    disabled={!!busy}
-                    onClick={() => void logoutHub()}
-                  >
-                    <LogOut size={14} />
-                    Encerrar sessão
-                  </button>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {hub.publicHandle && (
+                      <button
+                        type="button"
+                        className="button secondary"
+                        onClick={() => useApp.getState().setPage(`profile:${hub.publicHandle}`)}
+                      >
+                        <UserRound size={14} />
+                        Ver meu perfil
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="button secondary"
+                      disabled={!!busy}
+                      onClick={() => void logoutHub()}
+                    >
+                      <LogOut size={14} />
+                      Encerrar sessão
+                    </button>
+                  </div>
                 </div>
 
-                <form
-                  className="hub-nickname-form"
-                  style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}
-                  onSubmit={e => {
-                    e.preventDefault();
-                    void updateProfile(nicknameInput, activeBroker);
-                  }}
-                >
-                  <label className="field-label" style={{ flex: 1, minWidth: 180 }}>
-                    Nickname (usado no Google, Discord, GitHub e JAM)
-                    <input
-                      type="text"
-                      className="input"
-                      maxLength={80}
-                      placeholder="Seu nickname no Liquid Hub"
-                      value={nicknameInput}
-                      onChange={e => setNicknameInput(e.target.value)}
-                      required
-                    />
-                  </label>
-                  <button
-                    type="submit"
-                    className="button secondary"
-                    disabled={
-                      !!busy ||
-                      !nicknameInput.trim() ||
-                      nicknameInput.trim() === (hub.displayName || hub.subject || '').trim()
+                {(() => {
+                  const normalizedHandle = handleInput.trim().replace(/^@+/, '').toLowerCase();
+                  const effectiveBroker = resolveEffectiveBroker(activeBroker);
+                  const activeHandle = normalizedHandle || hub.publicHandle || '';
+                  const shareHttpUrl = activeHandle
+                    ? `${effectiveBroker}/u/${encodeURIComponent(activeHandle)}`
+                    : '';
+                  const copyProfileLink = async () => {
+                    if (!shareHttpUrl) return;
+                    try {
+                      await navigator.clipboard.writeText(shareHttpUrl);
+                      useApp.getState().message('Link público do perfil copiado.');
+                    } catch {
+                      useApp.getState().message(shareHttpUrl);
                     }
-                  >
-                    {busy === 'hub:profile' ? 'Salvando…' : 'Salvar nickname'}
-                  </button>
-                </form>
+                  };
+                  return (
+                    <form
+                      className="hub-nickname-form"
+                      style={{ display: 'grid', gap: 10 }}
+                      onSubmit={e => {
+                        e.preventDefault();
+                        void updateProfile({
+                          brokerUrl: activeBroker,
+                          displayName: nicknameInput,
+                          ...(normalizedHandle ? { publicHandle: normalizedHandle } : {}),
+                          bio: bioInput,
+                          profileVisibility: visibilityInput,
+                          socialLinks: socialLinksInput,
+                          showPublicTracks: showPublicTracksInput,
+                        });
+                      }}
+                    >
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <label className="field-label" style={{ flex: 1, minWidth: 180 }}>
+                          Nome de exibição / Nickname
+                          <input
+                            type="text"
+                            className="input"
+                            maxLength={80}
+                            placeholder="Seu nome no Liquid Hub"
+                            value={nicknameInput}
+                            onChange={e => setNicknameInput(e.target.value)}
+                            required
+                          />
+                        </label>
+                        <label className="field-label" style={{ flex: 1, minWidth: 180 }}>
+                          @handle público (único)
+                          <input
+                            type="text"
+                            className="input"
+                            maxLength={32}
+                            placeholder="ex: ana.silva"
+                            value={handleInput}
+                            onChange={e => setHandleInput(e.target.value)}
+                          />
+                        </label>
+                        <label className="field-label" style={{ minWidth: 180 }}>
+                          Privacidade do perfil
+                          <select
+                            className="input"
+                            value={visibilityInput}
+                            onChange={e =>
+                              setVisibilityInput(e.target.value as ProfileVisibility)
+                            }
+                          >
+                            <option value="public">Público (todos e busca)</option>
+                            <option value="restricted">Restrito (somente logados)</option>
+                            <option value="private">Privado (somente eu)</option>
+                          </select>
+                        </label>
+                      </div>
+
+                      <label className="field-label">
+                        Bio ({bioInput.length}/240)
+                        <textarea
+                          className="input"
+                          rows={2}
+                          maxLength={240}
+                          placeholder="Conte sobre seu gosto musical, mixes e playlists…"
+                          value={bioInput}
+                          onChange={e => setBioInput(e.target.value)}
+                        />
+                      </label>
+
+                      <label
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          fontSize: 12,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={showPublicTracksInput}
+                          onChange={e => setShowPublicTracksInput(e.target.checked)}
+                        />
+                        Exibir músicas não-locais das playlists públicas no meu perfil
+                      </label>
+
+                      <div>
+                        <button
+                          type="button"
+                          className="text-button"
+                          onClick={() => setSocialLinksExpanded(v => !v)}
+                        >
+                          {socialLinksExpanded
+                            ? 'Ocultar links sociais'
+                            : 'Editar links sociais (HTTPS)'}
+                        </button>
+                        {socialLinksExpanded && (
+                          <div
+                            style={{
+                              display: 'grid',
+                              gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
+                              gap: 8,
+                              marginTop: 8,
+                            }}
+                          >
+                            {(
+                              [
+                                ['website', 'Site (HTTPS)', 'https://seusite.com'],
+                                ['instagram', 'Instagram', 'https://instagram.com/voce'],
+                                ['twitter', 'X / Twitter', 'https://x.com/voce'],
+                                ['youtube', 'YouTube', 'https://youtube.com/@voce'],
+                                ['spotify', 'Spotify', 'https://open.spotify.com/user/...'],
+                                ['github', 'GitHub', 'https://github.com/voce'],
+                              ] as const
+                            ).map(([key, label, placeholder]) => (
+                              <label className="field-label" key={key}>
+                                {label}
+                                <input
+                                  type="url"
+                                  className="input"
+                                  placeholder={placeholder}
+                                  value={socialLinksInput[key] || ''}
+                                  onChange={e =>
+                                    setSocialLinksInput(prev => ({
+                                      ...prev,
+                                      [key]: e.target.value,
+                                    }))
+                                  }
+                                />
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {shareHttpUrl && (
+                        <small className="fine-print">
+                          Link público: <code>{shareHttpUrl}</code> · App:{' '}
+                          <code>liquidhub://profile/{activeHandle}</code>
+                        </small>
+                      )}
+
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <button
+                          type="submit"
+                          className="button primary"
+                          disabled={!!busy || !nicknameInput.trim()}
+                        >
+                          {busy === 'hub:profile' ? 'Salvando…' : 'Salvar perfil'}
+                        </button>
+                        {hub.publicHandle && (
+                          <button
+                            type="button"
+                            className="button secondary"
+                            onClick={() =>
+                              useApp.getState().setPage(`profile:${hub.publicHandle}`)
+                            }
+                          >
+                            <ExternalLink size={14} />
+                            Ver perfil
+                          </button>
+                        )}
+                        {shareHttpUrl && (
+                          <button
+                            type="button"
+                            className="button secondary"
+                            onClick={() => void copyProfileLink()}
+                          >
+                            <Copy size={14} />
+                            Copiar link do perfil
+                          </button>
+                        )}
+                      </div>
+                    </form>
+                  );
+                })()}
 
                 {hub.email && !hub.emailVerified && (
                   <div className="settings-actions-row">

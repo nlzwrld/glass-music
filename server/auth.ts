@@ -3,12 +3,33 @@ import { mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
 import { CURRENT_PRIVACY_VERSION, CURRENT_TERMS_VERSION } from '../shared/auth.ts';
+import {
+  AUDIO_ADS_POLICY,
+  defaultFreePlusStatus,
+  resolvePlusEntitlements,
+  type LiquidPlusStatus,
+  type PlusPlanId,
+  type SubscriptionSource,
+  type SubscriptionStatus,
+} from '../shared/plus.ts';
 import type {
   HubAuthProvider,
   HubIdentityPublic,
   HubOAuthProvider,
   HubProvidersAvailability,
+  MySharedPlaylistsResponse,
+  PlaylistActivityEntry,
+  PlaylistCollaborator,
+  PlaylistVisibility,
+  ProfileVisibility,
+  PublicUserProfile,
+  SharedPlaylistDetail,
+  SharedPlaylistSummary,
+  SocialLinks,
+  Track,
+  UserSearchItem,
 } from '../shared/types.ts';
+import { sharedTrackSchema } from '../shared/validation.ts';
 
 export interface OAuthProviderConfig {
   clientId?: string;
@@ -33,12 +54,17 @@ export interface HubUserRecord {
   userId: string;
   username: string;
   normalizedUsername: string;
+  publicHandle: string;
   displayName: string;
   email: string | null;
   normalizedEmail: string | null;
   emailVerified: boolean;
   passwordHash: string | null;
   avatarUrl: string | null;
+  bio: string;
+  profileVisibility: ProfileVisibility;
+  socialLinks: SocialLinks;
+  showPublicTracks: boolean;
   termsVersion: string | null;
   privacyVersion: string | null;
   termsAcceptedAt: number | null;
@@ -50,10 +76,15 @@ export interface HubUserPublic {
   userId: string;
   subject: string;
   username: string;
+  publicHandle: string;
   displayName: string;
   email: string | null;
   emailVerified: boolean;
   avatarUrl: string | null;
+  bio: string;
+  profileVisibility: ProfileVisibility;
+  socialLinks: SocialLinks;
+  showPublicTracks: boolean;
   hasPassword: boolean;
   identities: HubIdentityPublic[];
   termsVersion: string | null;
@@ -203,6 +234,85 @@ function sanitizeUsernameSeed(raw: string): string {
   return `user_${randomBytes(3).toString('hex')}`;
 }
 
+function sanitizeHandleSeed(raw: string): string {
+  const cleaned = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^[._-]+|[._-]+$/g, '')
+    .slice(0, 28)
+    .replace(/[._-]+$/g, '');
+  if (/^[a-z0-9][a-z0-9._-]{1,30}[a-z0-9]$/.test(cleaned)) {
+    return cleaned;
+  }
+  return `lh-${randomBytes(3).toString('hex')}`;
+}
+
+const SOCIAL_KEYS: Array<keyof SocialLinks> = [
+  'website',
+  'instagram',
+  'twitter',
+  'youtube',
+  'spotify',
+  'github',
+];
+
+function sanitizeSocialLinks(raw: unknown): SocialLinks {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const obj = raw as Record<string, unknown>;
+  const out: SocialLinks = {};
+  for (const key of SOCIAL_KEYS) {
+    const val = typeof obj[key] === 'string' ? obj[key]!.trim() : '';
+    if (val) out[key] = val;
+  }
+  return out;
+}
+
+function parseSocialLinks(jsonStr: unknown): SocialLinks {
+  if (typeof jsonStr !== 'string' || !jsonStr) return {};
+  try {
+    return sanitizeSocialLinks(JSON.parse(jsonStr));
+  } catch {
+    return {};
+  }
+}
+
+function normalizeVisibility<T extends string>(raw: unknown, allowed: readonly T[], fallback: T): T {
+  const val = String(raw || '').trim() as T;
+  return allowed.includes(val) ? val : fallback;
+}
+
+function sanitizeTrackList(rawTracks: unknown[], now: number): Track[] {
+  const seen = new Set<string>();
+  const out: Track[] = [];
+  for (const cand of rawTracks) {
+    if (!cand || typeof cand !== 'object' || Array.isArray(cand)) continue;
+    if ((cand as Record<string, unknown>).source === 'local') continue;
+    const parsed = sharedTrackSchema.safeParse(cand);
+    if (!parsed.success) continue;
+    const clean: Track = {
+      ...parsed.data,
+      addedAt: typeof parsed.data.addedAt === 'number' ? parsed.data.addedAt : now,
+    };
+    if (seen.has(clean.id)) continue;
+    seen.add(clean.id);
+    out.push(clean);
+    if (out.length >= 1000) break;
+  }
+  return out;
+}
+
+function parseTracksJson(raw: unknown): Track[] {
+  if (typeof raw !== 'string' || !raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return sanitizeTrackList(parsed, 0);
+  } catch {
+    return [];
+  }
+}
+
 export function isCurrentLegalAcceptance(
   termsVersion?: string | null,
   privacyVersion?: string | null,
@@ -301,11 +411,72 @@ const AUTH_SCHEMA_STATEMENTS = [
     payload_json TEXT NOT NULL,
     updated_at INTEGER NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS hub_shared_playlists (
+    playlist_id TEXT PRIMARY KEY,
+    local_playlist_id TEXT,
+    owner_user_id TEXT NOT NULL REFERENCES hub_users(user_id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    artwork TEXT,
+    visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('public', 'unlisted', 'private')),
+    collaborative INTEGER NOT NULL DEFAULT 0,
+    tracks_json TEXT NOT NULL DEFAULT '[]',
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_hub_shared_playlists_owner ON hub_shared_playlists(owner_user_id)',
+  `CREATE TABLE IF NOT EXISTS hub_playlist_collaborators (
+    playlist_id TEXT NOT NULL REFERENCES hub_shared_playlists(playlist_id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES hub_users(user_id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT 'editor' CHECK (role IN ('owner', 'editor')),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted')),
+    invited_by TEXT NOT NULL,
+    invited_at INTEGER NOT NULL,
+    accepted_at INTEGER,
+    PRIMARY KEY (playlist_id, user_id)
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_hub_playlist_collab_user ON hub_playlist_collaborators(user_id)',
+  `CREATE TABLE IF NOT EXISTS hub_playlist_activity (
+    id TEXT PRIMARY KEY,
+    playlist_id TEXT NOT NULL REFERENCES hub_shared_playlists(playlist_id) ON DELETE CASCADE,
+    actor_user_id TEXT NOT NULL,
+    actor_handle TEXT NOT NULL,
+    actor_name TEXT NOT NULL,
+    action TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_hub_playlist_activity_pl ON hub_playlist_activity(playlist_id, created_at DESC)',
+  `CREATE TABLE IF NOT EXISTS hub_subscriptions (
+    user_id TEXT PRIMARY KEY REFERENCES hub_users(user_id) ON DELETE CASCADE,
+    plan_id TEXT NOT NULL DEFAULT 'free',
+    status TEXT NOT NULL DEFAULT 'none',
+    source TEXT NOT NULL DEFAULT 'system',
+    current_period_end INTEGER,
+    updated_at INTEGER NOT NULL
+  )`,
 ];
 
 export function initAuthSchema(db: SqliteDatabaseLike) {
   for (const stmt of AUTH_SCHEMA_STATEMENTS) {
     db.exec(stmt);
+  }
+  const profileMigrations = [
+    'ALTER TABLE hub_users ADD COLUMN public_handle TEXT',
+    "ALTER TABLE hub_users ADD COLUMN bio TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE hub_users ADD COLUMN profile_visibility TEXT NOT NULL DEFAULT 'public'",
+    'ALTER TABLE hub_users ADD COLUMN social_links_json TEXT',
+    'ALTER TABLE hub_users ADD COLUMN show_public_tracks INTEGER NOT NULL DEFAULT 0',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_hub_users_public_handle ON hub_users(public_handle)',
+  ];
+  for (const ddl of profileMigrations) {
+    try {
+      db.exec(ddl);
+    } catch {
+      // Column or index already exists on migrated databases
+    }
   }
   try {
     const flowsTable = db
@@ -386,16 +557,26 @@ function openAuthDatabase(dbPath: string): SqliteDatabaseLike {
 
 function rowToUser(row: Record<string, unknown> | undefined): HubUserRecord | null {
   if (!row) return null;
+  const vis = normalizeVisibility(
+    row.profile_visibility,
+    ['public', 'restricted', 'private'] as const,
+    'public',
+  );
   return {
     userId: String(row.user_id),
     username: String(row.username),
     normalizedUsername: String(row.normalized_username),
+    publicHandle: row.public_handle ? String(row.public_handle).trim().toLowerCase() : '',
     displayName: String(row.display_name),
     email: row.email ? String(row.email) : null,
     normalizedEmail: row.normalized_email ? String(row.normalized_email) : null,
     emailVerified: Number(row.email_verified) === 1,
     passwordHash: row.password_hash ? String(row.password_hash) : null,
     avatarUrl: row.avatar_url ? String(row.avatar_url) : null,
+    bio: row.bio ? String(row.bio) : '',
+    profileVisibility: vis,
+    socialLinks: parseSocialLinks(row.social_links_json),
+    showPublicTracks: Number(row.show_public_tracks) === 1,
     termsVersion: row.terms_version ? String(row.terms_version) : null,
     privacyVersion: row.privacy_version ? String(row.privacy_version) : null,
     termsAcceptedAt:
@@ -599,22 +780,57 @@ export class HubAuthStore {
     return rows.map(rowToIdentity);
   }
 
+  findUserByPublicHandle(handle: string): HubUserRecord | null {
+    this.assertOpen();
+    const norm = handle.trim().toLowerCase();
+    if (!norm) return null;
+    return rowToUser(
+      this.db.prepare('SELECT * FROM hub_users WHERE LOWER(public_handle) = ?').get(norm),
+    );
+  }
+
+  allocateUniqueHandle(seed: string): string {
+    this.assertOpen();
+    const base = sanitizeHandleSeed(seed);
+    if (!this.findUserByPublicHandle(base)) return base;
+    for (let i = 2; i < 1000; i++) {
+      const candidate = `${base.slice(0, 24)}-${i}`;
+      if (!this.findUserByPublicHandle(candidate)) return candidate;
+    }
+    return `lh-${randomBytes(5).toString('hex')}`;
+  }
+
+  private ensurePublicHandle(user: HubUserRecord): HubUserRecord {
+    if (user.publicHandle) return user;
+    const allocated = this.allocateUniqueHandle(user.username || 'user');
+    this.db
+      .prepare('UPDATE hub_users SET public_handle = ? WHERE user_id = ?')
+      .run(allocated, user.userId);
+    return { ...user, publicHandle: allocated };
+  }
+
   toPublicUser(user: HubUserRecord): HubUserPublic {
-    const identities = this.listIdentities(user.userId);
-    const legalOk = isCurrentLegalAcceptance(user.termsVersion, user.privacyVersion);
+    const withHandle = this.ensurePublicHandle(user);
+    const identities = this.listIdentities(withHandle.userId);
+    const legalOk = isCurrentLegalAcceptance(withHandle.termsVersion, withHandle.privacyVersion);
     return {
-      userId: user.userId,
-      subject: user.username || user.userId,
-      username: user.username,
-      displayName: user.displayName,
-      email: user.email,
-      emailVerified: user.emailVerified,
-      avatarUrl: user.avatarUrl,
-      hasPassword: Boolean(user.passwordHash),
+      userId: withHandle.userId,
+      subject: withHandle.username || withHandle.userId,
+      username: withHandle.username,
+      publicHandle: withHandle.publicHandle,
+      displayName: withHandle.displayName,
+      email: withHandle.email,
+      emailVerified: withHandle.emailVerified,
+      avatarUrl: withHandle.avatarUrl,
+      bio: withHandle.bio,
+      profileVisibility: withHandle.profileVisibility,
+      socialLinks: withHandle.socialLinks,
+      showPublicTracks: withHandle.showPublicTracks,
+      hasPassword: Boolean(withHandle.passwordHash),
       identities,
-      termsVersion: user.termsVersion,
-      privacyVersion: user.privacyVersion,
-      termsAcceptedAt: user.termsAcceptedAt,
+      termsVersion: withHandle.termsVersion,
+      privacyVersion: withHandle.privacyVersion,
+      termsAcceptedAt: withHandle.termsAcceptedAt,
       needsTermsAcceptance: !legalOk,
     };
   }
@@ -649,6 +865,7 @@ export class HubAuthStore {
     const userId = `hub_${randomBytes(12).toString('hex')}`;
     const trimmedUsername = input.username.trim();
     const normUsername = normalizeUsername(trimmedUsername);
+    const publicHandle = this.allocateUniqueHandle(trimmedUsername);
     const rawEmail = input.email ? input.email.trim() : null;
     const normEmail = rawEmail ? normalizeEmail(rawEmail) : null;
     const displayName = input.displayName?.trim() || trimmedUsername;
@@ -658,15 +875,16 @@ export class HubAuthStore {
       this.db
         .prepare(
           `INSERT INTO hub_users (
-             user_id, username, normalized_username, display_name, email, normalized_email,
-             email_verified, password_hash, avatar_url, terms_version, privacy_version,
-             terms_accepted_at, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+             user_id, username, normalized_username, public_handle, display_name, email, normalized_email,
+             email_verified, password_hash, avatar_url, bio, profile_visibility, social_links_json,
+             show_public_tracks, terms_version, privacy_version, terms_accepted_at, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '', 'public', '{}', 0, ?, ?, ?, ?, ?)`,
         )
         .run(
           userId,
           trimmedUsername,
           normUsername,
+          publicHandle,
           displayName,
           rawEmail,
           normEmail,
@@ -710,6 +928,7 @@ export class HubAuthStore {
     const userId = `hub_${randomBytes(12).toString('hex')}`;
     const username = this.allocateUniqueUsername(input.profile.username);
     const normUsername = normalizeUsername(username);
+    const publicHandle = this.allocateUniqueHandle(username);
     const rawEmail = input.profile.email ? input.profile.email.trim() : null;
     const normEmail = rawEmail && input.profile.emailVerified ? normalizeEmail(rawEmail) : null;
     const acceptLegal = isCurrentLegalAcceptance(input.termsVersion, input.privacyVersion);
@@ -718,15 +937,16 @@ export class HubAuthStore {
       this.db
         .prepare(
           `INSERT INTO hub_users (
-             user_id, username, normalized_username, display_name, email, normalized_email,
-             email_verified, password_hash, avatar_url, terms_version, privacy_version,
-             terms_accepted_at, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+             user_id, username, normalized_username, public_handle, display_name, email, normalized_email,
+             email_verified, password_hash, avatar_url, bio, profile_visibility, social_links_json,
+             show_public_tracks, terms_version, privacy_version, terms_accepted_at, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, '', 'public', '{}', 0, ?, ?, ?, ?, ?)`,
         )
         .run(
           userId,
           username,
           normUsername,
+          publicHandle,
           input.profile.displayName || username,
           normEmail ? rawEmail : null,
           normEmail,
@@ -994,6 +1214,922 @@ export class HubAuthStore {
     return this.findUserById(userId)!;
   }
 
+  updateUserProfile(
+    userId: string,
+    patch: {
+      displayName?: string;
+      publicHandle?: string;
+      bio?: string;
+      profileVisibility?: ProfileVisibility;
+      socialLinks?: SocialLinks;
+      showPublicTracks?: boolean;
+    },
+    now: number,
+  ): { status: 'ok'; user: HubUserRecord } | { status: 'not_found' } | { status: 'handle_taken' } {
+    this.assertOpen();
+    const existingRaw = this.findUserById(userId);
+    if (!existingRaw) return { status: 'not_found' };
+    const existing = this.ensurePublicHandle(existingRaw);
+
+    let nextHandle = existing.publicHandle;
+    if (patch.publicHandle !== undefined) {
+      const candidate = patch.publicHandle.trim().toLowerCase();
+      const collision = this.findUserByPublicHandle(candidate);
+      if (collision && collision.userId !== userId) {
+        return { status: 'handle_taken' };
+      }
+      nextHandle = candidate;
+    }
+
+    const nextDisplayName =
+      patch.displayName !== undefined ? patch.displayName.trim().slice(0, 80) : existing.displayName;
+    const nextBio = patch.bio !== undefined ? patch.bio.trim().slice(0, 240) : existing.bio;
+    const nextVisibility =
+      patch.profileVisibility !== undefined ? patch.profileVisibility : existing.profileVisibility;
+    const nextSocial =
+      patch.socialLinks !== undefined
+        ? sanitizeSocialLinks(patch.socialLinks)
+        : existing.socialLinks;
+    const nextShowTracks =
+      patch.showPublicTracks !== undefined ? patch.showPublicTracks : existing.showPublicTracks;
+
+    this.db
+      .prepare(
+        `UPDATE hub_users
+         SET display_name = ?, public_handle = ?, bio = ?, profile_visibility = ?,
+             social_links_json = ?, show_public_tracks = ?, updated_at = ?
+         WHERE user_id = ?`,
+      )
+      .run(
+        nextDisplayName,
+        nextHandle,
+        nextBio,
+        nextVisibility,
+        JSON.stringify(nextSocial),
+        nextShowTracks ? 1 : 0,
+        now,
+        userId,
+      );
+    return { status: 'ok', user: this.findUserById(userId)! };
+  }
+
+  searchDiscoverableUsers(
+    query: string,
+    includeRestricted: boolean,
+    limit = 20,
+  ): UserSearchItem[] {
+    this.assertOpen();
+    const trimmed = query.trim().toLowerCase();
+    const maxRows = Math.max(1, Math.min(25, Math.floor(limit) || 20));
+    if (!trimmed) return [];
+    const like = `%${trimmed}%`;
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM hub_users
+         WHERE profile_visibility IN ('public'${includeRestricted ? ", 'restricted'" : ''})
+           AND (LOWER(display_name) LIKE ? OR LOWER(COALESCE(public_handle, '')) LIKE ? OR normalized_username LIKE ?)
+         ORDER BY updated_at DESC
+         LIMIT ?`,
+      )
+      .all(like, like, like, maxRows);
+
+    const out: UserSearchItem[] = [];
+    for (const row of rows) {
+      const parsed = rowToUser(row);
+      if (!parsed) continue;
+      const user = this.ensurePublicHandle(parsed);
+      const countRow = this.db
+        .prepare(
+          "SELECT COUNT(*) AS cnt FROM hub_shared_playlists WHERE owner_user_id = ? AND visibility = 'public'",
+        )
+        .get(user.userId);
+      out.push({
+        handle: user.publicHandle,
+        displayName: user.displayName,
+        avatarUrl: user.avatarUrl,
+        bio: user.bio,
+        visibility: user.profileVisibility,
+        publicPlaylistCount: Number(countRow?.cnt) || 0,
+        accountType: 'user',
+      });
+    }
+    return out;
+  }
+
+  getPublicProfile(
+    handle: string,
+    viewerUserId: string | null,
+  ):
+    | { status: 'ok'; profile: PublicUserProfile }
+    | { status: 'not_found' }
+    | { status: 'auth_required' }
+    | { status: 'private' } {
+    this.assertOpen();
+    const userRaw = this.findUserByPublicHandle(handle);
+    if (!userRaw) return { status: 'not_found' };
+    const user = this.ensurePublicHandle(userRaw);
+    const isOwner = Boolean(viewerUserId && viewerUserId === user.userId);
+    if (user.profileVisibility === 'private' && !isOwner) {
+      return { status: 'private' };
+    }
+    if (user.profileVisibility === 'restricted' && !viewerUserId) {
+      return { status: 'auth_required' };
+    }
+
+    const playlistRows = this.db
+      .prepare(
+        `SELECT * FROM hub_shared_playlists
+         WHERE owner_user_id = ? AND visibility = 'public'
+         ORDER BY updated_at DESC
+         LIMIT 50`,
+      )
+      .all(user.userId);
+
+    const publicPlaylists: SharedPlaylistSummary[] = [];
+    const trackMap = new Map<string, Track>();
+    for (const row of playlistRows) {
+      const tracks = parseTracksJson(row.tracks_json);
+      publicPlaylists.push({
+        id: String(row.playlist_id),
+        name: String(row.name),
+        description: String(row.description || ''),
+        ...(row.artwork ? { artwork: String(row.artwork) } : {}),
+        visibility: 'public',
+        collaborative: Number(row.collaborative) === 1,
+        trackCount: tracks.length,
+        ownerHandle: user.publicHandle,
+        ownerDisplayName: user.displayName,
+        ownerAvatarUrl: user.avatarUrl,
+        version: Number(row.version) || 1,
+        updatedAt: Number(row.updated_at) || 0,
+      });
+      if (user.showPublicTracks && trackMap.size < 25) {
+        for (const t of tracks) {
+          if (t.source !== 'local' && !trackMap.has(t.id)) {
+            trackMap.set(t.id, t);
+            if (trackMap.size >= 25) break;
+          }
+        }
+      }
+    }
+
+    return {
+      status: 'ok',
+      profile: {
+        handle: user.publicHandle,
+        displayName: user.displayName,
+        avatarUrl: user.avatarUrl,
+        bio: user.bio,
+        visibility: user.profileVisibility,
+        socialLinks: user.socialLinks,
+        showPublicTracks: user.showPublicTracks,
+        publicPlaylists,
+        publicTracks: user.showPublicTracks ? [...trackMap.values()] : [],
+        createdAt: user.createdAt,
+        accountType: 'user',
+      },
+    };
+  }
+
+  private buildSharedPlaylistDetail(
+    row: Record<string, unknown>,
+    viewerUserId: string | null,
+  ): SharedPlaylistDetail {
+    const playlistId = String(row.playlist_id);
+    const ownerId = String(row.owner_user_id);
+    const ownerRaw = this.findUserById(ownerId);
+    const owner = ownerRaw ? this.ensurePublicHandle(ownerRaw) : null;
+    const ownerHandle = owner?.publicHandle || 'owner';
+    const ownerDisplayName = owner?.displayName || 'Ouvinte';
+    const ownerAvatarUrl = owner?.avatarUrl || null;
+    const tracks = parseTracksJson(row.tracks_json);
+
+    let role: 'owner' | 'editor' | 'viewer' = 'viewer';
+    if (viewerUserId && viewerUserId === ownerId) {
+      role = 'owner';
+    } else if (viewerUserId) {
+      const collabRow = this.db
+        .prepare(
+          'SELECT role, status FROM hub_playlist_collaborators WHERE playlist_id = ? AND user_id = ?',
+        )
+        .get(playlistId, viewerUserId);
+      if (collabRow && collabRow.status === 'accepted' && collabRow.role === 'editor') {
+        role = 'editor';
+      }
+    }
+
+    const canSeePrivateMeta = role === 'owner' || role === 'editor';
+    const collabRows = this.db
+      .prepare(
+        `SELECT c.role, c.status, c.invited_at, c.accepted_at, u.*
+         FROM hub_playlist_collaborators c
+         JOIN hub_users u ON u.user_id = c.user_id
+         WHERE c.playlist_id = ?
+         ${canSeePrivateMeta ? '' : "AND c.status = 'accepted'"}
+         ORDER BY CASE WHEN c.role = 'owner' THEN 0 ELSE 1 END, c.invited_at ASC`,
+      )
+      .all(playlistId);
+
+    const collaborators: PlaylistCollaborator[] = [];
+    for (const cr of collabRows) {
+      const cuRaw = rowToUser(cr);
+      if (!cuRaw) continue;
+      const cu = this.ensurePublicHandle(cuRaw);
+      collaborators.push({
+        handle: cu.publicHandle,
+        displayName: cu.displayName,
+        avatarUrl: cu.avatarUrl,
+        role: cr.role === 'owner' ? 'owner' : 'editor',
+        status: cr.status === 'accepted' ? 'accepted' : 'pending',
+        invitedAt: Number(cr.invited_at) || 0,
+        acceptedAt: typeof cr.accepted_at === 'number' ? cr.accepted_at : null,
+      });
+    }
+
+    const activity: PlaylistActivityEntry[] = canSeePrivateMeta
+      ? this.db
+          .prepare(
+            `SELECT * FROM hub_playlist_activity
+             WHERE playlist_id = ?
+             ORDER BY created_at DESC
+             LIMIT 30`,
+          )
+          .all(playlistId)
+          .map(ar => ({
+            id: String(ar.id),
+            actorHandle: String(ar.actor_handle),
+            actorName: String(ar.actor_name),
+            action: String(ar.action),
+            summary: String(ar.summary),
+            version: Number(ar.version) || 1,
+            createdAt: Number(ar.created_at) || 0,
+          }))
+      : [];
+
+    const visibility = normalizeVisibility(
+      row.visibility,
+      ['public', 'unlisted', 'private'] as const,
+      'private',
+    );
+    return {
+      id: playlistId,
+      localPlaylistId: row.local_playlist_id ? String(row.local_playlist_id) : null,
+      name: String(row.name),
+      description: String(row.description || ''),
+      ...(row.artwork ? { artwork: String(row.artwork) } : {}),
+      visibility,
+      collaborative: Number(row.collaborative) === 1,
+      trackCount: tracks.length,
+      ownerHandle,
+      ownerDisplayName,
+      ownerAvatarUrl,
+      version: Number(row.version) || 1,
+      updatedAt: Number(row.updated_at) || 0,
+      tracks,
+      role,
+      collaborators,
+      activity,
+    };
+  }
+
+  private recordPlaylistActivity(
+    playlistId: string,
+    actor: HubUserRecord,
+    action: string,
+    summary: string,
+    version: number,
+    now: number,
+  ) {
+    const actorWithHandle = this.ensurePublicHandle(actor);
+    const id = `pa_${randomBytes(6).toString('hex')}`;
+    this.db
+      .prepare(
+        `INSERT INTO hub_playlist_activity (
+           id, playlist_id, actor_user_id, actor_handle, actor_name, action, summary, version, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        playlistId,
+        actorWithHandle.userId,
+        actorWithHandle.publicHandle,
+        actorWithHandle.displayName,
+        action,
+        summary.slice(0, 200),
+        version,
+        now,
+      );
+    this.db
+      .prepare(
+        `DELETE FROM hub_playlist_activity
+         WHERE playlist_id = ?
+           AND id NOT IN (
+             SELECT id FROM hub_playlist_activity WHERE playlist_id = ? ORDER BY created_at DESC LIMIT 50
+           )`,
+      )
+      .run(playlistId, playlistId);
+  }
+
+  upsertSharedPlaylist(
+    ownerUserId: string,
+    input: {
+      shareId?: string;
+      localPlaylistId?: string;
+      name: string;
+      description?: string;
+      artwork?: string;
+      visibility: PlaylistVisibility;
+      collaborative: boolean;
+      tracks: unknown[];
+    },
+    now: number,
+  ): { status: 'ok'; detail: SharedPlaylistDetail } | { status: 'forbidden' } {
+    this.assertOpen();
+    const owner = this.findUserById(ownerUserId);
+    if (!owner) return { status: 'forbidden' };
+    const cleanTracks = sanitizeTrackList(input.tracks, now);
+    const desc = (input.description || '').trim().slice(0, 300);
+    const art = input.artwork ? input.artwork.trim() : null;
+
+    return this.tx(() => {
+      let existing: Record<string, unknown> | undefined;
+      if (input.shareId) {
+        existing = this.db
+          .prepare('SELECT * FROM hub_shared_playlists WHERE playlist_id = ?')
+          .get(input.shareId);
+        if (existing && String(existing.owner_user_id) !== ownerUserId) {
+          return { status: 'forbidden' as const };
+        }
+      } else if (input.localPlaylistId) {
+        existing = this.db
+          .prepare(
+            'SELECT * FROM hub_shared_playlists WHERE owner_user_id = ? AND local_playlist_id = ?',
+          )
+          .get(ownerUserId, input.localPlaylistId);
+      }
+
+      if (existing) {
+        const playlistId = String(existing.playlist_id);
+        const nextVersion = (Number(existing.version) || 1) + 1;
+        this.db
+          .prepare(
+            `UPDATE hub_shared_playlists
+             SET name = ?, description = ?, artwork = ?, visibility = ?, collaborative = ?,
+                 tracks_json = ?, version = ?, updated_at = ?
+             WHERE playlist_id = ?`,
+          )
+          .run(
+            input.name.trim().slice(0, 100),
+            desc,
+            art || (existing.artwork ? String(existing.artwork) : null),
+            input.visibility,
+            input.collaborative ? 1 : 0,
+            JSON.stringify(cleanTracks),
+            nextVersion,
+            now,
+            playlistId,
+          );
+        this.db
+          .prepare(
+            `INSERT OR IGNORE INTO hub_playlist_collaborators (
+               playlist_id, user_id, role, status, invited_by, invited_at, accepted_at
+             ) VALUES (?, ?, 'owner', 'accepted', ?, ?, ?)`,
+          )
+          .run(playlistId, ownerUserId, ownerUserId, now, now);
+        this.recordPlaylistActivity(
+          playlistId,
+          owner,
+          'publish',
+          `Sincronizou "${input.name.trim()}" (${input.visibility})`,
+          nextVersion,
+          now,
+        );
+        const updatedRow = this.db
+          .prepare('SELECT * FROM hub_shared_playlists WHERE playlist_id = ?')
+          .get(playlistId)!;
+        return {
+          status: 'ok' as const,
+          detail: this.buildSharedPlaylistDetail(updatedRow, ownerUserId),
+        };
+      }
+
+      const playlistId = `pl_${randomBytes(6).toString('hex')}`;
+      this.db
+        .prepare(
+          `INSERT INTO hub_shared_playlists (
+             playlist_id, local_playlist_id, owner_user_id, name, description, artwork,
+             visibility, collaborative, tracks_json, version, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+        )
+        .run(
+          playlistId,
+          input.localPlaylistId || null,
+          ownerUserId,
+          input.name.trim().slice(0, 100),
+          desc,
+          art,
+          input.visibility,
+          input.collaborative ? 1 : 0,
+          JSON.stringify(cleanTracks),
+          now,
+          now,
+        );
+      this.db
+        .prepare(
+          `INSERT INTO hub_playlist_collaborators (
+             playlist_id, user_id, role, status, invited_by, invited_at, accepted_at
+           ) VALUES (?, ?, 'owner', 'accepted', ?, ?, ?)`,
+        )
+        .run(playlistId, ownerUserId, ownerUserId, now, now);
+      this.recordPlaylistActivity(
+        playlistId,
+        owner,
+        'create',
+        `Publicou "${input.name.trim()}" (${input.visibility})`,
+        1,
+        now,
+      );
+      const inserted = this.db
+        .prepare('SELECT * FROM hub_shared_playlists WHERE playlist_id = ?')
+        .get(playlistId)!;
+      return {
+        status: 'ok' as const,
+        detail: this.buildSharedPlaylistDetail(inserted, ownerUserId),
+      };
+    });
+  }
+
+  getSharedPlaylist(
+    shareId: string,
+    viewerUserId: string | null,
+    sinceVersion?: number,
+  ):
+    | { status: 'ok'; detail: SharedPlaylistDetail }
+    | { status: 'not_found' }
+    | { status: 'auth_required' }
+    | { status: 'forbidden' } {
+    this.assertOpen();
+    const row = this.db
+      .prepare('SELECT * FROM hub_shared_playlists WHERE playlist_id = ?')
+      .get(shareId);
+    if (!row) return { status: 'not_found' };
+
+    const ownerId = String(row.owner_user_id);
+    const isOwner = Boolean(viewerUserId && viewerUserId === ownerId);
+    let hasCollabAccess = false;
+    let role: 'owner' | 'editor' | 'viewer' = isOwner ? 'owner' : 'viewer';
+    if (viewerUserId && !isOwner) {
+      const collab = this.db
+        .prepare(
+          'SELECT role, status FROM hub_playlist_collaborators WHERE playlist_id = ? AND user_id = ?',
+        )
+        .get(shareId, viewerUserId);
+      if (collab && (collab.status === 'accepted' || collab.status === 'pending')) {
+        hasCollabAccess = true;
+        if (collab.status === 'accepted' && collab.role === 'editor') role = 'editor';
+      }
+    }
+
+    const vis = normalizeVisibility(
+      row.visibility,
+      ['public', 'unlisted', 'private'] as const,
+      'private',
+    );
+    if (vis === 'private' && !isOwner && !hasCollabAccess) {
+      return { status: viewerUserId ? 'forbidden' : 'auth_required' };
+    }
+
+    const currentVersion = Number(row.version) || 1;
+    if (typeof sinceVersion === 'number' && sinceVersion === currentVersion) {
+      const ownerRaw = this.findUserById(ownerId);
+      const owner = ownerRaw ? this.ensurePublicHandle(ownerRaw) : null;
+      return {
+        status: 'ok',
+        detail: {
+          id: String(row.playlist_id),
+          name: String(row.name),
+          description: String(row.description || ''),
+          ...(row.artwork ? { artwork: String(row.artwork) } : {}),
+          visibility: vis,
+          collaborative: Number(row.collaborative) === 1,
+          trackCount: parseTracksJson(row.tracks_json).length,
+          ownerHandle: owner?.publicHandle || 'owner',
+          ownerDisplayName: owner?.displayName || 'Ouvinte',
+          ownerAvatarUrl: owner?.avatarUrl || null,
+          version: currentVersion,
+          updatedAt: Number(row.updated_at) || 0,
+          tracks: [],
+          role,
+          collaborators: [],
+          activity: [],
+          unchanged: true,
+        },
+      };
+    }
+
+    return { status: 'ok', detail: this.buildSharedPlaylistDetail(row, viewerUserId) };
+  }
+
+  listMySharedPlaylists(userId: string): MySharedPlaylistsResponse {
+    this.assertOpen();
+    const toSummary = (row: Record<string, unknown>): SharedPlaylistSummary => {
+      const ownerRaw = this.findUserById(String(row.owner_user_id));
+      const owner = ownerRaw ? this.ensurePublicHandle(ownerRaw) : null;
+      return {
+        id: String(row.playlist_id),
+        name: String(row.name),
+        description: String(row.description || ''),
+        ...(row.artwork ? { artwork: String(row.artwork) } : {}),
+        visibility: normalizeVisibility(
+          row.visibility,
+          ['public', 'unlisted', 'private'] as const,
+          'private',
+        ),
+        collaborative: Number(row.collaborative) === 1,
+        trackCount: parseTracksJson(row.tracks_json).length,
+        ownerHandle: owner?.publicHandle || 'owner',
+        ownerDisplayName: owner?.displayName || 'Ouvinte',
+        ownerAvatarUrl: owner?.avatarUrl || null,
+        version: Number(row.version) || 1,
+        updatedAt: Number(row.updated_at) || 0,
+      };
+    };
+
+    const ownedRows = this.db
+      .prepare('SELECT * FROM hub_shared_playlists WHERE owner_user_id = ? ORDER BY updated_at DESC')
+      .all(userId);
+    const acceptedRows = this.db
+      .prepare(
+        `SELECT p.* FROM hub_shared_playlists p
+         JOIN hub_playlist_collaborators c ON c.playlist_id = p.playlist_id
+         WHERE c.user_id = ? AND c.role = 'editor' AND c.status = 'accepted'
+         ORDER BY p.updated_at DESC`,
+      )
+      .all(userId);
+    const pendingRows = this.db
+      .prepare(
+        `SELECT p.*, c.invited_at AS invite_time FROM hub_shared_playlists p
+         JOIN hub_playlist_collaborators c ON c.playlist_id = p.playlist_id
+         WHERE c.user_id = ? AND c.status = 'pending'
+         ORDER BY c.invited_at DESC`,
+      )
+      .all(userId);
+
+    return {
+      owned: ownedRows.map(toSummary),
+      collaborating: acceptedRows.map(toSummary),
+      pendingInvites: pendingRows.map(r => ({
+        ...toSummary(r),
+        invitedAt: Number(r.invite_time) || 0,
+      })),
+    };
+  }
+
+  mutateSharedPlaylist(
+    shareId: string,
+    actorUserId: string,
+    mutation: {
+      op: 'meta' | 'addTracks' | 'removeTrack' | 'reorder';
+      expectedVersion: number;
+      name?: string;
+      description?: string;
+      artwork?: string;
+      visibility?: PlaylistVisibility;
+      collaborative?: boolean;
+      tracks?: unknown[];
+      trackId?: string;
+      trackIds?: string[];
+    },
+    now: number,
+  ):
+    | { status: 'ok'; detail: SharedPlaylistDetail }
+    | { status: 'not_found' }
+    | { status: 'forbidden' }
+    | { status: 'invalid_order' }
+    | { status: 'conflict'; latest: SharedPlaylistDetail } {
+    this.assertOpen();
+    const actor = this.findUserById(actorUserId);
+    if (!actor) return { status: 'forbidden' };
+
+    return this.tx(() => {
+      const row = this.db
+        .prepare('SELECT * FROM hub_shared_playlists WHERE playlist_id = ?')
+        .get(shareId);
+      if (!row) return { status: 'not_found' as const };
+
+      const ownerId = String(row.owner_user_id);
+      const isOwner = actorUserId === ownerId;
+      let isAcceptedEditor = false;
+      if (!isOwner) {
+        const collab = this.db
+          .prepare(
+            "SELECT role, status FROM hub_playlist_collaborators WHERE playlist_id = ? AND user_id = ? AND status = 'accepted'",
+          )
+          .get(shareId, actorUserId);
+        isAcceptedEditor = collab?.role === 'editor' && Number(row.collaborative) === 1;
+      }
+
+      if (mutation.op === 'meta' && !isOwner) {
+        return { status: 'forbidden' as const };
+      }
+      if (!isOwner && !isAcceptedEditor) {
+        return { status: 'forbidden' as const };
+      }
+
+      const currentVersion = Number(row.version) || 1;
+      if (mutation.expectedVersion !== currentVersion) {
+        return {
+          status: 'conflict' as const,
+          latest: this.buildSharedPlaylistDetail(row, actorUserId),
+        };
+      }
+
+      let nextName = String(row.name);
+      let nextDesc = String(row.description || '');
+      let nextArt = row.artwork ? String(row.artwork) : null;
+      let nextVis = normalizeVisibility(
+        row.visibility,
+        ['public', 'unlisted', 'private'] as const,
+        'private',
+      );
+      let nextCollab = Number(row.collaborative) === 1;
+      let tracks = parseTracksJson(row.tracks_json);
+      let summary = '';
+
+      if (mutation.op === 'meta') {
+        if (mutation.name !== undefined) nextName = mutation.name.trim().slice(0, 100);
+        if (mutation.description !== undefined) nextDesc = mutation.description.trim().slice(0, 300);
+        if (mutation.artwork !== undefined) nextArt = mutation.artwork.trim() || null;
+        if (mutation.visibility !== undefined) nextVis = mutation.visibility;
+        if (mutation.collaborative !== undefined) nextCollab = mutation.collaborative;
+        summary = `Atualizou configurações (${nextVis}${nextCollab ? ', colaborativa' : ''})`;
+      } else if (mutation.op === 'addTracks') {
+        const incoming = sanitizeTrackList(mutation.tracks || [], now);
+        const existingIds = new Set(tracks.map(t => t.id));
+        const added: Track[] = [];
+        for (const t of incoming) {
+          if (!existingIds.has(t.id) && tracks.length + added.length < 1000) {
+            existingIds.add(t.id);
+            added.push(t);
+          }
+        }
+        tracks = [...tracks, ...added];
+        summary = added.length
+          ? `Adicionou ${added.length} música(s)`
+          : 'Músicas já presentes na playlist';
+      } else if (mutation.op === 'removeTrack') {
+        const targetId = String(mutation.trackId || '');
+        const before = tracks.length;
+        const removed = tracks.find(t => t.id === targetId);
+        tracks = tracks.filter(t => t.id !== targetId);
+        summary =
+          tracks.length < before && removed
+            ? `Removeu "${removed.title}"`
+            : 'Removeu uma faixa da playlist';
+      } else if (mutation.op === 'reorder') {
+        const ids = mutation.trackIds || [];
+        const unique = new Set(ids);
+        const byId = new Map(tracks.map(t => [t.id, t]));
+        if (
+          ids.length !== tracks.length ||
+          unique.size !== tracks.length ||
+          ids.some(id => !byId.has(id))
+        ) {
+          return { status: 'invalid_order' as const };
+        }
+        tracks = ids.map(id => byId.get(id)!);
+        summary = 'Reordenou a playlist';
+      }
+
+      const nextVersion = currentVersion + 1;
+      this.db
+        .prepare(
+          `UPDATE hub_shared_playlists
+           SET name = ?, description = ?, artwork = ?, visibility = ?, collaborative = ?,
+               tracks_json = ?, version = ?, updated_at = ?
+           WHERE playlist_id = ?`,
+        )
+        .run(
+          nextName,
+          nextDesc,
+          nextArt,
+          nextVis,
+          nextCollab ? 1 : 0,
+          JSON.stringify(tracks),
+          nextVersion,
+          now,
+          shareId,
+        );
+      this.recordPlaylistActivity(shareId, actor, mutation.op, summary, nextVersion, now);
+      const updated = this.db
+        .prepare('SELECT * FROM hub_shared_playlists WHERE playlist_id = ?')
+        .get(shareId)!;
+      return {
+        status: 'ok' as const,
+        detail: this.buildSharedPlaylistDetail(updated, actorUserId),
+      };
+    });
+  }
+
+  inviteCollaborator(
+    shareId: string,
+    ownerUserId: string,
+    targetHandle: string,
+    now: number,
+  ):
+    | { status: 'ok'; detail: SharedPlaylistDetail }
+    | { status: 'not_found' }
+    | { status: 'forbidden' }
+    | { status: 'user_not_found' }
+    | { status: 'invalid_target' }
+    | { status: 'target_private' } {
+    this.assertOpen();
+    const row = this.db
+      .prepare('SELECT * FROM hub_shared_playlists WHERE playlist_id = ?')
+      .get(shareId);
+    if (!row) return { status: 'not_found' };
+    if (String(row.owner_user_id) !== ownerUserId) return { status: 'forbidden' };
+    const owner = this.findUserById(ownerUserId);
+    if (!owner) return { status: 'forbidden' };
+
+    const targetRaw = this.findUserByPublicHandle(targetHandle);
+    if (!targetRaw) return { status: 'user_not_found' };
+    const target = this.ensurePublicHandle(targetRaw);
+    if (target.userId === ownerUserId) return { status: 'invalid_target' };
+    if (target.profileVisibility === 'private') return { status: 'target_private' };
+
+    return this.tx(() => {
+      const existing = this.db
+        .prepare(
+          'SELECT status FROM hub_playlist_collaborators WHERE playlist_id = ? AND user_id = ?',
+        )
+        .get(shareId, target.userId);
+      if (!existing) {
+        this.db
+          .prepare(
+            `INSERT INTO hub_playlist_collaborators (
+               playlist_id, user_id, role, status, invited_by, invited_at, accepted_at
+             ) VALUES (?, ?, 'editor', 'pending', ?, ?, NULL)`,
+          )
+          .run(shareId, target.userId, ownerUserId, now);
+      } else if (existing.status !== 'accepted') {
+        this.db
+          .prepare(
+            `UPDATE hub_playlist_collaborators
+             SET status = 'pending', invited_by = ?, invited_at = ?, accepted_at = NULL
+             WHERE playlist_id = ? AND user_id = ?`,
+          )
+          .run(ownerUserId, now, shareId, target.userId);
+      }
+      const nextVersion = (Number(row.version) || 1) + 1;
+      this.db
+        .prepare('UPDATE hub_shared_playlists SET version = ?, updated_at = ? WHERE playlist_id = ?')
+        .run(nextVersion, now, shareId);
+      this.recordPlaylistActivity(
+        shareId,
+        owner,
+        'invite',
+        `Convidou @${target.publicHandle} para colaborar`,
+        nextVersion,
+        now,
+      );
+      const updated = this.db
+        .prepare('SELECT * FROM hub_shared_playlists WHERE playlist_id = ?')
+        .get(shareId)!;
+      return {
+        status: 'ok' as const,
+        detail: this.buildSharedPlaylistDetail(updated, ownerUserId),
+      };
+    });
+  }
+
+  respondPlaylistInvite(
+    shareId: string,
+    userId: string,
+    accept: boolean,
+    now: number,
+  ):
+    | { status: 'ok'; detail?: SharedPlaylistDetail }
+    | { status: 'not_found' } {
+    this.assertOpen();
+    const user = this.findUserById(userId);
+    if (!user) return { status: 'not_found' };
+    return this.tx(() => {
+      const row = this.db
+        .prepare('SELECT * FROM hub_shared_playlists WHERE playlist_id = ?')
+        .get(shareId);
+      if (!row) return { status: 'not_found' as const };
+      const collab = this.db
+        .prepare(
+          'SELECT role, status FROM hub_playlist_collaborators WHERE playlist_id = ? AND user_id = ?',
+        )
+        .get(shareId, userId);
+      if (!collab || collab.role === 'owner') return { status: 'not_found' as const };
+
+      const nextVersion = (Number(row.version) || 1) + 1;
+      if (accept) {
+        this.db
+          .prepare(
+            `UPDATE hub_playlist_collaborators
+             SET status = 'accepted', accepted_at = COALESCE(accepted_at, ?)
+             WHERE playlist_id = ? AND user_id = ?`,
+          )
+          .run(now, shareId, userId);
+        this.db
+          .prepare('UPDATE hub_shared_playlists SET version = ?, updated_at = ? WHERE playlist_id = ?')
+          .run(nextVersion, now, shareId);
+        this.recordPlaylistActivity(
+          shareId,
+          user,
+          'accept_invite',
+          `@${this.ensurePublicHandle(user).publicHandle} entrou na colaboração`,
+          nextVersion,
+          now,
+        );
+        const updated = this.db
+          .prepare('SELECT * FROM hub_shared_playlists WHERE playlist_id = ?')
+          .get(shareId)!;
+        return {
+          status: 'ok' as const,
+          detail: this.buildSharedPlaylistDetail(updated, userId),
+        };
+      }
+
+      this.db
+        .prepare('DELETE FROM hub_playlist_collaborators WHERE playlist_id = ? AND user_id = ?')
+        .run(shareId, userId);
+      this.db
+        .prepare('UPDATE hub_shared_playlists SET version = ?, updated_at = ? WHERE playlist_id = ?')
+        .run(nextVersion, now, shareId);
+      this.recordPlaylistActivity(
+        shareId,
+        user,
+        'decline_invite',
+        `@${this.ensurePublicHandle(user).publicHandle} recusou o convite`,
+        nextVersion,
+        now,
+      );
+      return { status: 'ok' as const };
+    });
+  }
+
+  removeCollaborator(
+    shareId: string,
+    actorUserId: string,
+    targetHandle: string,
+    now: number,
+  ):
+    | { status: 'ok'; detail?: SharedPlaylistDetail }
+    | { status: 'not_found' }
+    | { status: 'forbidden' } {
+    this.assertOpen();
+    const actor = this.findUserById(actorUserId);
+    const targetRaw = this.findUserByPublicHandle(targetHandle);
+    if (!actor || !targetRaw) return { status: 'not_found' };
+    const target = this.ensurePublicHandle(targetRaw);
+
+    return this.tx(() => {
+      const row = this.db
+        .prepare('SELECT * FROM hub_shared_playlists WHERE playlist_id = ?')
+        .get(shareId);
+      if (!row) return { status: 'not_found' as const };
+      const ownerId = String(row.owner_user_id);
+      if (target.userId === ownerId) return { status: 'forbidden' as const };
+
+      const isOwner = actorUserId === ownerId;
+      const isSelfLeave = actorUserId === target.userId;
+      if (!isOwner && !isSelfLeave) return { status: 'forbidden' as const };
+
+      this.db
+        .prepare('DELETE FROM hub_playlist_collaborators WHERE playlist_id = ? AND user_id = ?')
+        .run(shareId, target.userId);
+      const nextVersion = (Number(row.version) || 1) + 1;
+      this.db
+        .prepare('UPDATE hub_shared_playlists SET version = ?, updated_at = ? WHERE playlist_id = ?')
+        .run(nextVersion, now, shareId);
+      this.recordPlaylistActivity(
+        shareId,
+        actor,
+        isSelfLeave ? 'leave_collab' : 'revoke_collab',
+        isSelfLeave
+          ? `@${target.publicHandle} saiu da colaboração`
+          : `Revogou acesso de @${target.publicHandle}`,
+        nextVersion,
+        now,
+      );
+      if (isOwner) {
+        const updated = this.db
+          .prepare('SELECT * FROM hub_shared_playlists WHERE playlist_id = ?')
+          .get(shareId)!;
+        return {
+          status: 'ok' as const,
+          detail: this.buildSharedPlaylistDetail(updated, actorUserId),
+        };
+      }
+      return { status: 'ok' as const };
+    });
+  }
+
   getUserLibrary(userId: string): {
     playlists: unknown[];
     tracks: unknown[];
@@ -1045,6 +2181,94 @@ export class HubAuthStore {
       )
       .run(userId, serialized, now);
     return { ok: true, updatedAt: now };
+  }
+
+  getUserSubscription(userId: string, now: number): LiquidPlusStatus {
+    this.assertOpen();
+    if (!userId || !this.findUserById(userId)) {
+      return defaultFreePlusStatus(false);
+    }
+    const row = this.db
+      .prepare(
+        'SELECT plan_id, status, source, current_period_end FROM hub_subscriptions WHERE user_id = ?',
+      )
+      .get(userId);
+    if (!row) {
+      return defaultFreePlusStatus(true);
+    }
+    const rawPlan = String(row.plan_id);
+    const planId: PlusPlanId =
+      rawPlan === 'plus_monthly' || rawPlan === 'plus_annual' ? rawPlan : 'free';
+    const rawStatus = String(row.status);
+    const status: SubscriptionStatus =
+      rawStatus === 'active' ||
+      rawStatus === 'trialing' ||
+      rawStatus === 'past_due' ||
+      rawStatus === 'canceled' ||
+      rawStatus === 'expired'
+        ? rawStatus
+        : 'none';
+    const rawSource = String(row.source);
+    const source: SubscriptionSource =
+      rawSource === 'admin' ||
+      rawSource === 'stripe' ||
+      rawSource === 'google_play' ||
+      rawSource === 'promo'
+        ? rawSource
+        : 'system';
+    const currentPeriodEnd =
+      typeof row.current_period_end === 'number' && Number.isFinite(row.current_period_end)
+        ? row.current_period_end
+        : null;
+    const resolved = resolvePlusEntitlements(planId, status, now, currentPeriodEnd);
+    return {
+      authenticated: true,
+      planId: resolved.effectivePlanId,
+      status: resolved.effectiveStatus,
+      active: resolved.active,
+      currentPeriodEnd,
+      checkoutEnabled: false,
+      entitlements: resolved.entitlements,
+      audioAdsPolicy: AUDIO_ADS_POLICY,
+      source,
+    };
+  }
+
+  setUserSubscription(
+    userId: string,
+    input: {
+      planId: PlusPlanId;
+      status: SubscriptionStatus;
+      source?: SubscriptionSource;
+      currentPeriodEnd?: number | null;
+    },
+    now: number,
+  ): LiquidPlusStatus {
+    this.assertOpen();
+    if (!this.findUserById(userId)) {
+      throw new Error('user_not_found');
+    }
+    this.db
+      .prepare(
+        `INSERT INTO hub_subscriptions (
+           user_id, plan_id, status, source, current_period_end, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET
+           plan_id = excluded.plan_id,
+           status = excluded.status,
+           source = excluded.source,
+           current_period_end = excluded.current_period_end,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        userId,
+        input.planId,
+        input.status,
+        input.source ?? 'admin',
+        input.currentPeriodEnd ?? null,
+        now,
+      );
+    return this.getUserSubscription(userId, now);
   }
 
   createEmailToken(input: {

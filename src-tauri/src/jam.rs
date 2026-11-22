@@ -544,7 +544,9 @@ pub async fn call(
         payload["action"] = json!("create");
     }
 
-    if ["join", "resume"].contains(&action_raw) {
+    if ["join", "resume", "requestJoin", "checkJoinRequest", "cancelJoinRequest"]
+        .contains(&action_raw)
+    {
         if let Some(norm) = crate::deeplink::normalize_code(s(&payload, "code")) {
             payload["code"] = json!(norm);
         }
@@ -580,6 +582,13 @@ pub async fn call(
         "create",
         "join",
         "resume",
+        "requestJoin",
+        "checkJoinRequest",
+        "cancelJoinRequest",
+        "approveJoin",
+        "rejectJoin",
+        "blockMember",
+        "unblockMember",
         "poll",
         "sync",
         "ping",
@@ -598,7 +607,9 @@ pub async fn call(
         return Err("Operação de JAM inválida.".into());
     }
 
-    if ["create", "join", "resume"].contains(&action.as_str()) && s(&payload, "clientId").is_empty() {
+    if ["create", "join", "resume", "requestJoin"].contains(&action.as_str())
+        && s(&payload, "clientId").is_empty()
+    {
         if let Ok(d) = db_mtx.lock() {
             payload["clientId"] = json!(d.jam_client_id());
         }
@@ -619,7 +630,16 @@ pub async fn call(
         }
     }
 
-    let bearer = if ["create", "join", "resume"].contains(&action.as_str()) {
+    let bearer = if [
+        "create",
+        "join",
+        "resume",
+        "requestJoin",
+        "checkJoinRequest",
+        "cancelJoinRequest",
+    ]
+    .contains(&action.as_str())
+    {
         bearer_for_endpoint(secrets_mtx, &base)
     } else {
         None
@@ -651,6 +671,10 @@ pub async fn call(
         "rotateInvite",
         "updateRoom",
         "kick",
+        "approveJoin",
+        "rejectJoin",
+        "blockMember",
+        "unblockMember",
         "voteSkip",
         "queueAdd",
         "queueRemove",
@@ -661,7 +685,13 @@ pub async fn call(
     {
         validate_room_payload(&value)?;
     }
-    if ["create", "join", "resume"].contains(&action.as_str()) {
+    if action == "checkJoinRequest" && value["session"].is_object() {
+        validate_room_payload(&value["session"])?;
+        remember_lan_endpoint(&base);
+        value["session"]["endpoint"] = json!(base);
+        value["endpoint"] = json!(base);
+    }
+    if ["create", "join", "resume", "requestJoin"].contains(&action.as_str()) {
         remember_lan_endpoint(&base);
         value["endpoint"] = json!(base);
     }

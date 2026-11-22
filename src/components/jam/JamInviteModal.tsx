@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import type { JamErrorCode, JamRoomStatus } from '../../../shared/jam';
 import { buildJamInviteUrl } from '../../lib/jam';
+import { openJamWindow } from '../../lib/jamWindow';
 import { useAccounts } from '../../stores/accounts';
 import { useApp } from '../../stores/app';
 import { IconButton } from '../glass/controls';
@@ -58,16 +59,25 @@ export function HostAvatar({
 
 export function JamInviteModal() {
   const pending = useJam(s => s.pendingInvite),
+    pendingJoinRequest = useJam(s => s.pendingJoinRequest),
     busy = useJam(s => s.busy),
     error = useJam(s => s.error),
     hubSubject = useJam(s => s.hubSubject),
     hubDisplayName = useJam(s => s.hubDisplayName),
     hubAvatar = useJam(s => s.hubAvatar),
     hubAuthenticated = useJam(s => s.hubAuthenticated),
+    accountHub = useAccounts(s => s.hub),
     consent = useApp(s => s.data.preferences.onlineConsent && s.data.preferences.onboardingDone);
 
   const [guestName, setGuestName] = useState('');
   const [copied, setCopied] = useState(false);
+
+  const isAuthenticated = Boolean(
+    (hubAuthenticated || accountHub.authenticated) && !accountHub.needsTermsAcceptance,
+  );
+  const showingActiveRequest =
+    Boolean(pendingJoinRequest) &&
+    (!pending?.result?.preview || pendingJoinRequest?.code === pending.result.preview.code);
 
   useEffect(() => {
     if (pending) {
@@ -77,45 +87,153 @@ export function JamInviteModal() {
   }, [pending?.raw, hubDisplayName, hubSubject]);
 
   useEffect(() => {
-    if (!pending) return;
+    if (!pending && !showingActiveRequest) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !busy) {
-        useJam.getState().closeInviteModal();
+        if (pending) useJam.getState().closeInviteModal();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [pending, busy]);
+  }, [pending, showingActiveRequest, busy]);
 
-  if (!pending) return null;
+  if (!pending && !showingActiveRequest) return null;
 
   const close = () => {
-    if (!busy) useJam.getState().closeInviteModal();
+    if (!busy) {
+      if (pending) useJam.getState().closeInviteModal();
+      else useJam.getState().clearJoinRequest();
+    }
   };
 
-  const result = pending.result;
+  const result = pending?.result;
   const preview = result?.preview ?? null;
   const badge = statusInfo(preview?.status, result?.errorCode);
   const shareUrl = preview
     ? buildJamInviteUrl(preview.code, preview.endpoint)
-    : pending.raw;
+    : pending?.raw || '';
+
+  const needsApproval = preview?.requireApproval !== false;
 
   const handleJoin = async () => {
-    if (!preview || !preview.canJoin || busy) return;
+    if (!preview || !preview.canJoin || busy || !isAuthenticated) return;
     const displayName = guestName.trim() || hubDisplayName || hubSubject || 'Ouvinte';
+    if (needsApproval) {
+      const ok = await useJam
+        .getState()
+        .requestJoin(preview.code, displayName, preview.endpoint, {
+          avatar: hubAvatar || accountHub.avatarUrl || undefined,
+          preview,
+        });
+      if (ok) {
+        useApp
+          .getState()
+          .message(`Solicitação enviada para ${preview.roomName}. Aguarde o anfitrião aprovar.`);
+      }
+      return;
+    }
     const ok = await useJam
       .getState()
       .enter('join', displayName, preview.code, preview.endpoint, {
-        avatar: hubAvatar || undefined,
+        avatar: hubAvatar || accountHub.avatarUrl || undefined,
       });
     if (ok) {
       useApp.getState().message(`Você entrou na JAM ${preview.roomName}.`);
-      useApp.getState().setPage('settings');
-      setTimeout(() => {
-        document.getElementById('jam-section')?.scrollIntoView({ behavior: 'smooth' });
-      }, 60);
+      void openJamWindow();
     }
   };
+
+  if (showingActiveRequest && pendingJoinRequest) {
+    const isWaiting = pendingJoinRequest.status === 'pending';
+    return (
+      <div
+        className="modal-backdrop"
+        onMouseDown={e => e.target === e.currentTarget && isWaiting && close()}
+      >
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="jam-invite-modal-title"
+          className="modal glass jam-invite-modal"
+        >
+          <div className="jam-modal-kicker">
+            <Radio size={14} />
+            <span>{isWaiting ? 'Aguardando aprovação' : 'Solicitação de entrada'}</span>
+            <span className={`jam-status-pill ${isWaiting ? 'warn' : 'ended'}`}>
+              {isWaiting
+                ? 'Pendente'
+                : pendingJoinRequest.status === 'blocked'
+                  ? 'Bloqueado'
+                  : pendingJoinRequest.status === 'rejected'
+                    ? 'Recusado'
+                    : 'Expirado'}
+            </span>
+          </div>
+
+          <div className="jam-preview-card modal-variant">
+            <div className="jam-preview-head">
+              <HostAvatar
+                name={pendingJoinRequest.hostName}
+                avatar={pendingJoinRequest.hostAvatar}
+                size={46}
+              />
+              <div className="jam-preview-meta">
+                <h2 id="jam-invite-modal-title">{pendingJoinRequest.roomName}</h2>
+                <p>
+                  Anfitrião: <strong>{pendingJoinRequest.hostName}</strong>
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {isWaiting ? (
+            <div className="jam-modal-loading" role="status">
+              <LoaderCircle size={18} className="spinner" />
+              <span>Aguardando o anfitrião aceitar sua entrada…</span>
+            </div>
+          ) : (
+            <p className="jam-error-banner" role="alert">
+              {pendingJoinRequest.reason || 'Não foi possível entrar nesta JAM.'}
+            </p>
+          )}
+
+          <div className="modal-actions">
+            {isWaiting ? (
+              <>
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={() => void useJam.getState().cancelJoinRequest()}
+                >
+                  Cancelar solicitação
+                </button>
+                <button
+                  type="button"
+                  className="button primary"
+                  onClick={() => {
+                    useJam.getState().closeInviteModal();
+                    void openJamWindow();
+                  }}
+                >
+                  Abrir janela da JAM
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="button primary"
+                onClick={() => useJam.getState().clearJoinRequest()}
+              >
+                Fechar
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!pending) return null;
 
   return (
     <div
@@ -172,10 +290,10 @@ export function JamInviteModal() {
                     <Headphones size={13} />
                     {preview.mode === 'lan' ? 'Rede local' : 'Online'}
                   </span>
-                  {preview.requireAuth && (
+                  {(preview.requireAuth || needsApproval) && (
                     <span>
                       <Lock size={13} />
-                      Conta verificada
+                      {needsApproval ? 'Requer aprovação' : 'Conta verificada'}
                     </span>
                   )}
                 </div>
@@ -202,9 +320,9 @@ export function JamInviteModal() {
               </p>
             )}
 
-            {preview?.requireAuth && !hubAuthenticated && preview.canJoin && (
+            {!isAuthenticated && (
               <div className="jam-auth-notice">
-                <span>Esta sala exige autenticação no Liquid Hub.</span>
+                <span>Apenas contas autenticadas no Liquid Hub podem entrar na JAM.</span>
                 <button
                   type="button"
                   className="text-button"
@@ -238,7 +356,7 @@ export function JamInviteModal() {
               </div>
             )}
 
-            {preview?.canJoin && consent && (
+            {preview?.canJoin && consent && isAuthenticated && (
               <form
                 className="jam-modal-form"
                 onSubmit={e => {
@@ -290,8 +408,10 @@ export function JamInviteModal() {
                     {busy ? (
                       <>
                         <LoaderCircle size={14} className="spinner" />
-                        Entrando…
+                        {needsApproval ? 'Solicitando…' : 'Entrando…'}
                       </>
+                    ) : needsApproval ? (
+                      'Solicitar entrada'
                     ) : (
                       'Entrar na JAM'
                     )}
@@ -300,7 +420,7 @@ export function JamInviteModal() {
               </form>
             )}
 
-            {(!preview?.canJoin || !consent) && (
+            {(!preview?.canJoin || !consent || !isAuthenticated) && (
               <div className="modal-actions">
                 <button type="button" className="button secondary" onClick={close}>
                   Fechar

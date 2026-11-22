@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
-  AudioLines,
   CheckCircle2,
   LoaderCircle,
   Mail,
@@ -11,6 +10,7 @@ import {
   ShieldCheck,
   X,
 } from 'lucide-react';
+import { LiquidHubLogo } from '../brand/LiquidHubLogo';
 import {
   CURRENT_TERMS_VERSION,
   LEGAL_SUMMARY,
@@ -161,7 +161,7 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
               </button>
             )}
             <span className="collection-type-label auth-brand-row">
-              {mandatory && <AudioLines size={14} />}
+              {mandatory && <LiquidHubLogo size={18} />}
               Liquid Hub
             </span>
             <h2 id="auth-modal-title">
@@ -342,6 +342,26 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
                     paddingTop: 2,
                   }}
                 >
+                  <button
+                    type="button"
+                    className="button ghost"
+                    disabled={!!busy}
+                    onClick={() => {
+                      if (!termsChecked) {
+                        setLocalError(
+                          'Para continuar, confirme que leu e aceita os Termos de Uso e a Política de Privacidade.',
+                        );
+                        return;
+                      }
+                      void ensureLegalConsent()
+                        .then(() => {
+                          useAccounts.getState().enterVisitorMode();
+                        })
+                        .catch(e => setLocalError(cleanError(e)));
+                    }}
+                  >
+                    Continuar como visitante (modo limitado)
+                  </button>
                   <button
                     type="button"
                     className="text-button"

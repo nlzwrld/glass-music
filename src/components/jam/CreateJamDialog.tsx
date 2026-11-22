@@ -13,6 +13,7 @@ import {
   buildWhatsAppShareUrl,
   shareNativeInvite,
 } from '../../lib/jam';
+import { openJamWindow } from '../../lib/jamWindow';
 import { useAccounts } from '../../stores/accounts';
 import { cleanError, useApp } from '../../stores/app';
 import { Input } from '../ui/input';
@@ -51,12 +52,14 @@ export function resolveJamHostIdentity() {
 
 export function CreateJamDialog({ onClose }: { onClose: () => void }) {
   const jam = useJam();
+  const hub = useAccounts(s => s.hub);
   const consent = useApp(
     s => s.data.preferences.onlineConsent && s.data.preferences.onboardingDone,
   );
   const [roomName, setRoomName] = useState('');
   const [copied, setCopied] = useState<'link' | 'discord' | ''>('');
   const [localError, setLocalError] = useState('');
+  const isAuthenticated = Boolean(hub.authenticated && !hub.needsTermsAcceptance);
 
   useEffect(() => {
     void useJam.getState().refresh();
@@ -177,8 +180,19 @@ export function CreateJamDialog({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="modal-actions">
-          <button type="button" className="button primary" onClick={onClose}>
-            Concluir
+          <button type="button" className="button secondary" onClick={onClose}>
+            Fechar
+          </button>
+          <button
+            type="button"
+            className="button primary"
+            onClick={() => {
+              void openJamWindow();
+              onClose();
+            }}
+          >
+            <Radio size={14} />
+            Abrir janela da JAM
           </button>
         </div>
       </div>
@@ -192,6 +206,10 @@ export function CreateJamDialog({ onClose }: { onClose: () => void }) {
         const trimmedRoom = roomName.trim();
         if (!trimmedRoom) return;
         setLocalError('');
+        if (!isAuthenticated) {
+          setLocalError('Entre em uma conta Liquid Hub para criar uma JAM.');
+          return;
+        }
         if (!consent) {
           setLocalError('Ative o acesso online em Configurações para criar uma JAM.');
           return;
@@ -199,6 +217,7 @@ export function CreateJamDialog({ onClose }: { onClose: () => void }) {
         const ok = await useJam.getState().enter('create', host.name, undefined, undefined, {
           roomName: trimmedRoom,
           avatar: host.avatar,
+          requireApproval: true,
         });
         if (ok) {
           useApp.getState().message('JAM criada! Copie o link para convidar seus amigos.');
@@ -210,6 +229,22 @@ export function CreateJamDialog({ onClose }: { onClose: () => void }) {
         Anfitrião: <strong>{host.name}</strong>
         {host.providerLabel ? ` (${host.providerLabel})` : ''}
       </p>
+
+      {!isAuthenticated && (
+        <div className="jam-auth-notice">
+          <span>Apenas usuários autenticados podem criar uma JAM.</span>
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => {
+              onClose();
+              useAccounts.getState().openAuthModal({ view: 'choose' });
+            }}
+          >
+            Fazer login
+          </button>
+        </div>
+      )}
 
       <label className="field-label">
         Nome da JAM
@@ -237,7 +272,7 @@ export function CreateJamDialog({ onClose }: { onClose: () => void }) {
         <button
           type="submit"
           className="button primary"
-          disabled={jam.busy || !roomName.trim()}
+          disabled={jam.busy || !roomName.trim() || !isAuthenticated}
         >
           {jam.busy ? (
             <>

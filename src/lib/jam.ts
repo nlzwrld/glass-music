@@ -2,9 +2,12 @@ import { invoke } from '@tauri-apps/api/core';
 import {
   normalizeJamCode,
   type JamInviteLookupResult,
+  type JamJoinRequestResult,
+  type JamJoinRequestStatus,
   type JamPingResponse,
   type JamRequest,
   type JamRoom,
+  type JamRoomPermissions,
   type JamSession,
   type LanJamAnnouncement,
 } from '../../shared/jam';
@@ -378,6 +381,8 @@ export class JamClient {
       avatar?: string;
       clientId?: string;
       requireAuth?: boolean;
+      requireApproval?: boolean;
+      permissions?: Partial<JamRoomPermissions>;
       inviteTtlMs?: number;
     },
   ): Promise<JamSession> {
@@ -401,6 +406,8 @@ export class JamClient {
         ...(this.lastAvatar ? { avatar: this.lastAvatar } : {}),
         ...(cid ? { clientId: cid } : {}),
         ...(opts?.requireAuth !== undefined ? { requireAuth: opts.requireAuth } : {}),
+        ...(opts?.requireApproval !== undefined ? { requireApproval: opts.requireApproval } : {}),
+        ...(opts?.permissions ? { permissions: opts.permissions } : {}),
         ...(opts?.inviteTtlMs !== undefined ? { inviteTtlMs: opts.inviteTtlMs } : {}),
       });
       rawSession.mode =
@@ -419,6 +426,67 @@ export class JamClient {
     } finally {
       if (this.enterLock === task) this.enterLock = null;
     }
+  }
+
+  async requestJoin(
+    code: string,
+    name: string,
+    endpoint?: string,
+    opts?: { avatar?: string; clientId?: string },
+  ): Promise<JamJoinRequestResult> {
+    this.lastKnownName = name.trim() || 'Ouvinte';
+    if (opts?.avatar !== undefined) this.lastAvatar = opts.avatar.trim();
+    const cid = opts?.clientId || this.clientId || undefined;
+    const normCode = normalizeJamCode(code) || code.trim().toUpperCase();
+    return this.request<JamJoinRequestResult>({
+      action: 'requestJoin',
+      code: normCode,
+      name: this.lastKnownName,
+      ...(endpoint ? { endpoint } : {}),
+      ...(this.lastAvatar ? { avatar: this.lastAvatar } : {}),
+      ...(cid ? { clientId: cid } : {}),
+    });
+  }
+
+  async checkJoinRequest(
+    code: string,
+    requestId: string,
+    requestToken: string,
+    endpoint?: string,
+  ): Promise<JamJoinRequestResult> {
+    const normCode = normalizeJamCode(code) || code.trim().toUpperCase();
+    const res = await this.request<JamJoinRequestResult>({
+      action: 'checkJoinRequest',
+      code: normCode,
+      requestId,
+      requestToken,
+      ...(endpoint ? { endpoint } : {}),
+    });
+    if (res.status === 'approved' && res.session) {
+      res.session.mode = isLocalJamEndpoint(res.session.endpoint || endpoint) ? 'lan' : 'cloud';
+      const session = this.decorateSession(res.session, endpoint);
+      this.session = session;
+      this.cachedRoom = session;
+      this.lastSequence = session.playback.sequence;
+      res.session = session;
+    }
+    return res;
+  }
+
+  async cancelJoinRequest(
+    code: string,
+    requestId: string,
+    requestToken: string,
+    endpoint?: string,
+  ): Promise<{ status: JamJoinRequestStatus; requestId: string; serverTime: number }> {
+    const normCode = normalizeJamCode(code) || code.trim().toUpperCase();
+    return this.request<{ status: JamJoinRequestStatus; requestId: string; serverTime: number }>({
+      action: 'cancelJoinRequest',
+      code: normCode,
+      requestId,
+      requestToken,
+      ...(endpoint ? { endpoint } : {}),
+    });
   }
 
   async resume(): Promise<JamSession> {
@@ -456,6 +524,8 @@ export class JamClient {
     roomName?: string;
     locked?: boolean;
     requireAuth?: boolean;
+    requireApproval?: boolean;
+    permissions?: Partial<JamRoomPermissions>;
   }): Promise<JamRoom> {
     const s = this.session;
     if (!s) throw new Error('Entre em uma JAM.');
@@ -465,6 +535,59 @@ export class JamClient {
       token: s.token,
       endpoint: s.endpoint,
       ...patch,
+    });
+    return this.applyPush(room);
+  }
+
+  async approveJoin(requestId: string): Promise<JamRoom> {
+    const s = this.session;
+    if (!s) throw new Error('Entre em uma JAM.');
+    const room = await this.request<JamRoom>({
+      action: 'approveJoin',
+      code: s.code,
+      token: s.token,
+      endpoint: s.endpoint,
+      requestId,
+    });
+    return this.applyPush(room);
+  }
+
+  async rejectJoin(requestId: string, block = false): Promise<JamRoom> {
+    const s = this.session;
+    if (!s) throw new Error('Entre em uma JAM.');
+    const room = await this.request<JamRoom>({
+      action: 'rejectJoin',
+      code: s.code,
+      token: s.token,
+      endpoint: s.endpoint,
+      requestId,
+      block,
+    });
+    return this.applyPush(room);
+  }
+
+  async blockMember(memberId: string): Promise<JamRoom> {
+    const s = this.session;
+    if (!s) throw new Error('Entre em uma JAM.');
+    const room = await this.request<JamRoom>({
+      action: 'blockMember',
+      code: s.code,
+      token: s.token,
+      endpoint: s.endpoint,
+      memberId,
+    });
+    return this.applyPush(room);
+  }
+
+  async unblockMember(blockKey: string): Promise<JamRoom> {
+    const s = this.session;
+    if (!s) throw new Error('Entre em uma JAM.');
+    const room = await this.request<JamRoom>({
+      action: 'unblockMember',
+      code: s.code,
+      token: s.token,
+      endpoint: s.endpoint,
+      blockKey,
     });
     return this.applyPush(room);
   }

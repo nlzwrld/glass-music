@@ -1,9 +1,14 @@
+import { invoke } from '@tauri-apps/api/core';
 import { create } from 'zustand';
-import type {
-  JamInviteLookupResult,
-  JamRoom,
-  JamSession,
-  LanJamAnnouncement,
+import {
+  normalizeJamCode,
+  type JamInviteLookupResult,
+  type JamInvitePreview,
+  type JamJoinRequestStatus,
+  type JamRoom,
+  type JamRoomPermissions,
+  type JamSession,
+  type LanJamAnnouncement,
 } from '../../../shared/jam';
 import { JamClient, parseJamInvite, sendJam } from '../../lib/jam';
 import { discoverLanJamRooms } from '../../lib/discovery';
@@ -11,6 +16,36 @@ import { useAccounts } from '../../stores/accounts';
 import { useApp, cleanError } from '../../stores/app';
 
 export const jamClient = new JamClient();
+
+export interface PendingJoinRequestState {
+  code: string;
+  endpoint?: string;
+  requestId: string;
+  requestToken: string;
+  roomName: string;
+  hostName: string;
+  hostAvatar?: string;
+  status: JamJoinRequestStatus;
+  expiresAt?: number;
+  reason?: string;
+  errorCode?: string;
+}
+
+let joinRequestPollTimer: ReturnType<typeof setInterval> | null = null;
+let joinRequestPollInFlight = false;
+
+function stopJoinRequestPolling() {
+  if (joinRequestPollTimer !== null) {
+    clearInterval(joinRequestPollTimer);
+    joinRequestPollTimer = null;
+  }
+  joinRequestPollInFlight = false;
+}
+
+function isHubAuthenticated(): boolean {
+  const hub = useAccounts.getState().hub;
+  return Boolean(hub.authenticated && !hub.needsTermsAcceptance);
+}
 
 interface PendingInviteState {
   raw: string;
@@ -42,7 +77,9 @@ interface State {
   hubDisplayName: string;
   hubAvatar: string | null;
   protocolRegistered: boolean;
+  jamWindowOpen: boolean;
   pendingInvite: PendingInviteState | null;
+  pendingJoinRequest: PendingJoinRequestState | null;
   lookupState: LookupState;
   refresh(): Promise<void>;
   scanLan(): Promise<void>;
@@ -55,10 +92,34 @@ interface State {
     name: string,
     code?: string,
     endpoint?: string,
-    opts?: { roomName?: string; avatar?: string; requireAuth?: boolean },
+    opts?: {
+      roomName?: string;
+      avatar?: string;
+      requireAuth?: boolean;
+      requireApproval?: boolean;
+      permissions?: Partial<JamRoomPermissions>;
+    },
   ): Promise<boolean>;
+  requestJoin(
+    code: string,
+    name: string,
+    endpoint?: string,
+    opts?: { avatar?: string; preview?: JamInvitePreview | null },
+  ): Promise<boolean>;
+  cancelJoinRequest(): Promise<void>;
+  clearJoinRequest(): void;
   rotateInvite(): Promise<void>;
-  updateRoom(patch: { roomName?: string; locked?: boolean; requireAuth?: boolean }): Promise<void>;
+  updateRoom(patch: {
+    roomName?: string;
+    locked?: boolean;
+    requireAuth?: boolean;
+    requireApproval?: boolean;
+    permissions?: Partial<JamRoomPermissions>;
+  }): Promise<void>;
+  approveJoin(requestId: string): Promise<void>;
+  rejectJoin(requestId: string, block?: boolean): Promise<void>;
+  blockMember(memberId: string): Promise<void>;
+  unblockMember(blockKey: string): Promise<void>;
   kick(memberId: string): Promise<void>;
   voteSkip(): Promise<void>;
   queueAdd(track: import('../../../shared/types').Track): Promise<void>;
@@ -90,7 +151,9 @@ export const useJam = create<State>((set, get) => ({
   hubDisplayName: '',
   hubAvatar: null,
   protocolRegistered: false,
+  jamWindowOpen: false,
   pendingInvite: null,
+  pendingJoinRequest: null,
   lookupState: { input: '', loading: false, result: null },
 
   refresh: async () => {
@@ -162,7 +225,7 @@ export const useJam = create<State>((set, get) => ({
     const current = get().session;
     const parsed = parseJamInvite(rawInput, get().endpoint);
     if (current && parsed.code && parsed.code === current.code) {
-      useApp.getState().setPage('settings');
+      void invoke('call', { action: 'openJam', payload: null }).catch(() => {});
       useApp.getState().message(`Você já está na JAM ${current.roomName || current.code}.`);
       return;
     }
@@ -194,18 +257,26 @@ export const useJam = create<State>((set, get) => ({
 
   enter: async (action, name, code, endpoint, opts) => {
     if (get().busy || get().session) return false;
+    if (!isHubAuthenticated()) {
+      set({ error: 'Faça login com uma conta Liquid Hub para criar ou participar de uma JAM.' });
+      return false;
+    }
+    const isCreate = action === 'create' || action === 'createLocal';
     set({ busy: true, error: '' });
     try {
       const session = await jamClient.enter(action, name, code, endpoint, {
         ...opts,
+        ...(isCreate ? { requireApproval: opts?.requireApproval ?? true } : {}),
         clientId: get().clientId || undefined,
       });
+      stopJoinRequestPolling();
       set({
         session,
         room: session,
         connected: true,
         reconnecting: false,
         pendingInvite: null,
+        pendingJoinRequest: null,
         lookupState: { input: '', loading: false, result: null },
         rttMs: Math.round(jamClient.clock.rttMs),
       });
@@ -216,6 +287,135 @@ export const useJam = create<State>((set, get) => ({
     } finally {
       set({ busy: false });
     }
+  },
+
+  requestJoin: async (code, name, endpoint, opts) => {
+    if (get().busy || get().session) return false;
+    if (!isHubAuthenticated()) {
+      set({ error: 'Faça login com uma conta Liquid Hub para criar ou participar de uma JAM.' });
+      return false;
+    }
+    const normCode = normalizeJamCode(code) || code.trim().toUpperCase();
+    set({ busy: true, error: '' });
+    try {
+      const res = await jamClient.requestJoin(normCode, name, endpoint, {
+        avatar: opts?.avatar,
+        clientId: get().clientId || undefined,
+      });
+      const reqId = res.requestId;
+      const pendingReq: PendingJoinRequestState = {
+        code: res.preview?.code || normCode,
+        endpoint: res.endpoint || res.preview?.endpoint || endpoint,
+        requestId: reqId,
+        requestToken: res.requestToken || '',
+        roomName: opts?.preview?.roomName || res.preview?.roomName || `JAM ${normCode}`,
+        hostName: opts?.preview?.hostName || res.preview?.hostName || 'Anfitrião',
+        hostAvatar: opts?.preview?.hostAvatar || res.preview?.hostAvatar,
+        status: res.status,
+        expiresAt: res.expiresAt,
+      };
+      stopJoinRequestPolling();
+      set({
+        pendingJoinRequest: pendingReq,
+        pendingInvite: null,
+        lookupState: { input: '', loading: false, result: null },
+      });
+      joinRequestPollTimer = setInterval(() => {
+        const current = get().pendingJoinRequest;
+        if (
+          joinRequestPollInFlight ||
+          !current ||
+          current.requestId !== reqId ||
+          get().session
+        ) {
+          if (!current || get().session) stopJoinRequestPolling();
+          return;
+        }
+        joinRequestPollInFlight = true;
+        void jamClient
+          .checkJoinRequest(
+            current.code,
+            current.requestId,
+            current.requestToken,
+            current.endpoint,
+          )
+          .then(checked => {
+            if (get().pendingJoinRequest?.requestId !== reqId) return;
+            if (checked.status === 'approved' && checked.session) {
+              stopJoinRequestPolling();
+              set({
+                session: checked.session,
+                room: checked.session,
+                connected: true,
+                reconnecting: false,
+                pendingJoinRequest: null,
+                pendingInvite: null,
+                error: '',
+                rttMs: Math.round(jamClient.clock.rttMs),
+              });
+              useApp
+                .getState()
+                .message(`Entrada aprovada! Você entrou na JAM ${checked.session.roomName}.`);
+              void invoke('call', { action: 'openJam', payload: null }).catch(() => {});
+              return;
+            }
+            if (['rejected', 'blocked', 'expired', 'cancelled'].includes(checked.status)) {
+              stopJoinRequestPolling();
+              const terminalReason =
+                checked.reason ||
+                (checked.status === 'blocked'
+                  ? 'Você foi bloqueado pelo anfitrião desta JAM.'
+                  : checked.status === 'rejected'
+                    ? 'O anfitrião recusou sua solicitação de entrada.'
+                    : 'Solicitação de entrada expirada.');
+              set(s =>
+                s.pendingJoinRequest?.requestId === reqId
+                  ? {
+                      pendingJoinRequest: {
+                        ...s.pendingJoinRequest,
+                        status: checked.status,
+                        reason: terminalReason,
+                        errorCode: checked.errorCode,
+                      },
+                      error: terminalReason,
+                    }
+                  : s,
+              );
+            }
+          })
+          .catch(() => {})
+          .finally(() => {
+            joinRequestPollInFlight = false;
+          });
+      }, 1500);
+      return true;
+    } catch (e) {
+      set({ error: cleanError(e) });
+      return false;
+    } finally {
+      set({ busy: false });
+    }
+  },
+
+  cancelJoinRequest: async () => {
+    const current = get().pendingJoinRequest;
+    stopJoinRequestPolling();
+    set({ pendingJoinRequest: null, error: '' });
+    if (current && current.requestToken) {
+      try {
+        await jamClient.cancelJoinRequest(
+          current.code,
+          current.requestId,
+          current.requestToken,
+          current.endpoint,
+        );
+      } catch {}
+    }
+  },
+
+  clearJoinRequest: () => {
+    stopJoinRequestPolling();
+    set({ pendingJoinRequest: null, error: '' });
   },
 
   rotateInvite: async () => {
@@ -240,6 +440,64 @@ export const useJam = create<State>((set, get) => ({
         room,
         error: '',
       });
+    } catch (e) {
+      set({ error: cleanError(e) });
+    }
+  },
+
+  approveJoin: async requestId => {
+    try {
+      const room = await jamClient.approveJoin(requestId);
+      set({
+        session: jamClient.session ? { ...jamClient.session } : null,
+        room,
+        error: '',
+      });
+      useApp.getState().message('Solicitação aprovada!');
+    } catch (e) {
+      set({ error: cleanError(e) });
+    }
+  },
+
+  rejectJoin: async (requestId, block = false) => {
+    try {
+      const room = await jamClient.rejectJoin(requestId, block);
+      set({
+        session: jamClient.session ? { ...jamClient.session } : null,
+        room,
+        error: '',
+      });
+      useApp
+        .getState()
+        .message(block ? 'Solicitante bloqueado nesta JAM.' : 'Solicitação recusada.');
+    } catch (e) {
+      set({ error: cleanError(e) });
+    }
+  },
+
+  blockMember: async memberId => {
+    try {
+      const room = await jamClient.blockMember(memberId);
+      set({
+        session: jamClient.session ? { ...jamClient.session } : null,
+        room,
+        error: '',
+      });
+      useApp.getState().message('Participante bloqueado nesta JAM.');
+    } catch (e) {
+      set({ error: cleanError(e) });
+    }
+  },
+
+  unblockMember: async blockKey => {
+    try {
+      const room = await jamClient.unblockMember(blockKey);
+      set({
+        session: jamClient.session ? { ...jamClient.session } : null,
+        room,
+        error: '',
+      });
+      useApp.getState().message('Participante desbloqueado.');
     } catch (e) {
       set({ error: cleanError(e) });
     }
@@ -328,10 +586,12 @@ export const useJam = create<State>((set, get) => ({
   },
 
   leave: async notice => {
+    stopJoinRequestPolling();
     const wasGuest = !!get().session && !get().session?.host;
     set({
       session: null,
       room: null,
+      pendingJoinRequest: null,
       connected: false,
       realtimeConnected: false,
       reconnecting: false,
@@ -352,10 +612,12 @@ export const useJam = create<State>((set, get) => ({
   },
 
   leaveLocal: notice => {
+    stopJoinRequestPolling();
     jamClient.clearLocal();
     set({
       session: null,
       room: null,
+      pendingJoinRequest: null,
       connected: false,
       realtimeConnected: false,
       reconnecting: false,

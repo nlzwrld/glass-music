@@ -288,10 +288,12 @@ export function scoreStreamCandidate(
   // Official / Topic / ISRC / Provider priority bonus (up to 15 pts)
   const rawArtistLower = candidate.artist.toLowerCase();
   const rawTitleLower = candidate.title.toLowerCase();
+  const candArtistClean = candidate.artist.replace(/ - Topic$/i, '');
   const isTopic =
     Boolean(candidate.isOfficialTopic) ||
     rawArtistLower.endsWith(' - topic') ||
     candidate.provider === 'ytmusic';
+  const isVevo = rawArtistLower.includes('vevo');
   const isOfficialAudio =
     rawTitleLower.includes('official audio') ||
     rawTitleLower.includes('audio oficial') ||
@@ -300,6 +302,31 @@ export function scoreStreamCandidate(
     rawTitleLower.includes('official video') ||
     rawTitleLower.includes('music video') ||
     rawTitleLower.includes('clipe oficial');
+  const exactArtistMatch =
+    !['Spotify', 'Deezer', 'Apple Music', 'Tidal', 'Bandcamp'].includes(reference.artist) &&
+    normalizeAsciiLower(candArtistClean) === normalizeAsciiLower(primaryArtistName(reference.artist));
+  const refWords = new Set(normalizeAsciiLower(refCombined).split(/\s+/).filter(Boolean));
+  const unofficialChannelWords = new Set([
+    'lyrics',
+    'letra',
+    'letras',
+    'traducao',
+    'legendado',
+    'fan',
+    'fanclub',
+    'covers',
+    'karaoke',
+    'nightcore',
+    '8d',
+    'edits',
+    'reupload',
+  ]);
+  const isUnofficialChannel =
+    !isTopic &&
+    !isVevo &&
+    normalizeAsciiLower(candArtistClean)
+      .split(/\s+/)
+      .some(w => unofficialChannelWords.has(w) && !refWords.has(w));
 
   const isrcMatch =
     Boolean(reference.isrc && candidate.isrc) &&
@@ -310,6 +337,9 @@ export function scoreStreamCandidate(
   if (isrcMatch) bonus += 15;
   else if (isTopic) bonus += 12;
   else if (isOfficialAudio) bonus += 9;
+  else if (isVevo) bonus += 6;
+
+  if (exactArtistMatch) bonus += 3;
 
   bonus +=
     candidate.provider === 'ytmusic'
@@ -322,6 +352,9 @@ export function scoreStreamCandidate(
 
   if (isMusicVideo && !isTopic && !isOfficialAudio) {
     bonus -= 4;
+  }
+  if (isUnofficialChannel) {
+    bonus -= 8;
   }
 
   const total = Math.round((durationScore + fidelityScore + Math.min(15, bonus)) * 10) / 10;

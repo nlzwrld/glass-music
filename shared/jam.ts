@@ -16,7 +16,52 @@ export type JamErrorCode =
   | 'SESSION_EXPIRED'
   | 'FORBIDDEN'
   | 'KICKED'
-  | 'UNAVAILABLE';
+  | 'UNAVAILABLE'
+  | 'APPROVAL_REQUIRED'
+  | 'REQUEST_PENDING'
+  | 'REQUEST_REJECTED'
+  | 'REQUEST_DUPLICATE'
+  | 'BLOCKED'
+  | 'RATE_LIMITED';
+
+export type JamJoinRequestStatus =
+  | 'pending'
+  | 'approved'
+  | 'rejected'
+  | 'blocked'
+  | 'expired'
+  | 'cancelled';
+
+export interface JamJoinRequest {
+  id: string;
+  name: string;
+  avatar?: string;
+  userId?: string;
+  clientId?: string;
+  requestedAt: number;
+  expiresAt: number;
+  status: JamJoinRequestStatus;
+}
+
+export interface JamRoomPermissions {
+  allowQueueAdd: boolean;
+  allowVoteSkip: boolean;
+  allowChat: boolean;
+  allowRecommendations: boolean;
+}
+
+export interface JamBlockedParticipant {
+  key: string;
+  name: string;
+  blockedAt: number;
+}
+
+export const DEFAULT_JAM_PERMISSIONS: JamRoomPermissions = {
+  allowQueueAdd: true,
+  allowVoteSkip: true,
+  allowChat: true,
+  allowRecommendations: true,
+};
 
 export interface JamPlayback {
   track: Track | null;
@@ -74,10 +119,25 @@ export interface JamInvitePreview {
   canJoin: boolean;
   reason?: string;
   requireAuth?: boolean;
+  requireApproval?: boolean;
   currentTrack?: Pick<Track, 'id' | 'title' | 'artist' | 'artwork' | 'source'> | null;
   playing?: boolean;
   inviteExpiresAt: number;
   createdAt: number;
+  serverTime: number;
+  endpoint?: string;
+  mode?: JamTransportMode;
+}
+
+export interface JamJoinRequestResult {
+  status: JamJoinRequestStatus;
+  requestId: string;
+  requestToken?: string;
+  expiresAt?: number;
+  preview?: JamInvitePreview | null;
+  session?: JamSession;
+  reason?: string;
+  errorCode?: JamErrorCode;
   serverTime: number;
   endpoint?: string;
   mode?: JamTransportMode;
@@ -94,13 +154,19 @@ export interface JamRoom {
   roomId: string;
   code: string;
   roomName: string;
+  hostAvatar?: string;
   status: JamRoomStatus;
   locked?: boolean;
   requireAuth?: boolean;
+  requireApproval?: boolean;
+  permissions?: JamRoomPermissions;
   maxParticipants: number;
   inviteExpiresAt: number;
   createdAt: number;
   members: JamMember[];
+  joinRequests?: JamJoinRequest[];
+  pendingRequestCount?: number;
+  blockedList?: JamBlockedParticipant[];
   playback: JamPlayback;
   skipVotes?: string[];
   skipThreshold?: number;
@@ -151,6 +217,13 @@ export type JamAction =
   | 'createLocal'
   | 'lookup'
   | 'join'
+  | 'requestJoin'
+  | 'checkJoinRequest'
+  | 'cancelJoinRequest'
+  | 'approveJoin'
+  | 'rejectJoin'
+  | 'blockMember'
+  | 'unblockMember'
   | 'resume'
   | 'poll'
   | 'sync'
@@ -181,6 +254,12 @@ export interface JamRequest {
   memberId?: string;
   locked?: boolean;
   requireAuth?: boolean;
+  requireApproval?: boolean;
+  permissions?: Partial<JamRoomPermissions>;
+  requestId?: string;
+  requestToken?: string;
+  block?: boolean;
+  blockKey?: string;
   inviteTtlMs?: number;
   endpoint?: string;
   nonce?: string;

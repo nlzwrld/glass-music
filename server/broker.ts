@@ -22,7 +22,26 @@ import {
   type KeyObject,
 } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import type { HubOAuthProvider, Track } from '../shared/types.ts';
+import type {
+  HubOAuthProvider,
+  LiquidPlusStatus,
+  MySharedPlaylistsResponse,
+  PublicUserProfile,
+  SharedPlaylistDetail,
+  Track,
+  UserSearchItem,
+} from '../shared/types.ts';
+import {
+  AUDIO_ADS_POLICY,
+  PLUS_PLAN_CATALOG,
+  defaultFreePlusStatus,
+} from '../shared/plus.ts';
+import {
+  APP_VERSION,
+  MIN_SUPPORTED_VERSION,
+  evaluateVersionPolicy,
+  type VersionPolicyResponse,
+} from '../shared/version.ts';
 import {
   acceptTermsSchema,
   credentialLoginSchema,
@@ -30,9 +49,13 @@ import {
   forgotPasswordSchema,
   hubAuthProviderSchema,
   hubOAuthProviderSchema,
+  inviteCollaboratorSchema,
   linkEmailSchema,
+  mutateSharedPlaylistSchema,
   oauthStartSchema,
   pkceAuthorizeSchema,
+  publicHandleSchema,
+  publishPlaylistSchema,
   resendVerificationSchema,
   resetPasswordSchema,
   tokenGrantSchema,
@@ -90,11 +113,18 @@ interface PendingAuthCode {
 export class BrokerHttpError extends Error {
   status: number;
   code: string;
+  extra?: Record<string, unknown>;
 
-  constructor(message: string, status = 400, code = 'invalid_request') {
+  constructor(
+    message: string,
+    status = 400,
+    code = 'invalid_request',
+    extra?: Record<string, unknown>,
+  ) {
     super(message);
     this.status = status;
     this.code = code;
+    this.extra = extra;
   }
 }
 
@@ -405,9 +435,13 @@ export class ZeroTrustAuthEngine {
   private readonly argon2Params: Argon2Params;
   private readonly argon2: Argon2Queue;
   private readonly onAuthEmail?: (email: AuthEmailMessage) => void | Promise<void>;
+  private minSupportedVersion: string;
+  private currentVersion: string;
 
-  constructor(options: ZeroTrustAuthEngineOptions = {}) {
+  constructor(options: ZeroTrustAuthEngineOptions & { minSupportedVersion?: string; currentVersion?: string } = {}) {
     this.clock = options.clock ?? Date.now;
+    this.minSupportedVersion = options.minSupportedVersion || MIN_SUPPORTED_VERSION;
+    this.currentVersion = options.currentVersion || APP_VERSION;
     this.argon2Params = options.argon2Params ?? { memory: 19456, passes: 2, parallelism: 1 };
     this.argon2 = new Argon2Queue(
       options.argon2Adapter ?? nativeArgon2Adapter,
@@ -923,16 +957,267 @@ export class ZeroTrustAuthEngine {
     const parsed = updateProfileSchema.safeParse(raw);
     if (!parsed.success) {
       throw new BrokerHttpError(
-        'Informe um nickname válido (1 a 80 caracteres).',
+        'Dados de perfil inválidos. Verifique nickname, @handle, bio e links HTTPS.',
         400,
         'invalid_request',
       );
     }
+    const res = this.store.updateUserProfile(userId, parsed.data, this.clock());
+    if (res.status === 'not_found') {
+      throw new BrokerHttpError('Usuário não encontrado.', 404, 'user_not_found');
+    }
+    if (res.status === 'handle_taken') {
+      throw new BrokerHttpError(
+        'Este identificador público (@handle) já está em uso.',
+        409,
+        'handle_taken',
+      );
+    }
+    return this.store.toPublicUser(res.user);
+  }
+
+  getPublicProfile(handleRaw: string, viewerUserId: string | null): PublicUserProfile {
+    const parsed = publicHandleSchema.safeParse(handleRaw);
+    if (!parsed.success) {
+      throw new BrokerHttpError('Perfil não encontrado.', 404, 'profile_not_found');
+    }
+    const res = this.store.getPublicProfile(parsed.data, viewerUserId);
+    if (res.status === 'not_found') {
+      throw new BrokerHttpError('Perfil não encontrado.', 404, 'profile_not_found');
+    }
+    if (res.status === 'auth_required') {
+      throw new BrokerHttpError(
+        'Entre em uma conta Liquid Hub para ver este perfil restrito.',
+        401,
+        'auth_required',
+      );
+    }
+    if (res.status === 'private') {
+      throw new BrokerHttpError('Este perfil é privado.', 403, 'profile_private');
+    }
+    return res.profile;
+  }
+
+  searchUsers(query: string, viewerUserId: string | null, limit = 20): { users: UserSearchItem[] } {
+    const trimmed = query.trim();
+    if (!trimmed || trimmed.length > 80) return { users: [] };
+    return {
+      users: this.store.searchDiscoverableUsers(trimmed, Boolean(viewerUserId), limit),
+    };
+  }
+
+  private decorateSharedPlaylist(detail: SharedPlaylistDetail, publicBase = ''): SharedPlaylistDetail {
+    const base = publicBase.replace(/\/+$/, '');
+    return {
+      ...detail,
+      ...(base ? { shareUrl: `${base}/p/${detail.id}` } : {}),
+      deepLinkUrl: `liquidhub://playlist/${detail.id}`,
+    };
+  }
+
+  publishPlaylist(userId: string, raw: unknown, publicBase = ''): SharedPlaylistDetail {
+    const parsed = publishPlaylistSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new BrokerHttpError('Dados da playlist inválidos.', 400, 'invalid_request');
+    }
     if (!this.store.findUserById(userId)) {
       throw new BrokerHttpError('Usuário não encontrado.', 404, 'user_not_found');
     }
-    const updated = this.store.updateDisplayName(userId, parsed.data.displayName, this.clock());
-    return this.store.toPublicUser(updated);
+    const res = this.store.upsertSharedPlaylist(userId, parsed.data, this.clock());
+    if (res.status === 'forbidden') {
+      throw new BrokerHttpError('Somente o proprietário pode publicar esta playlist.', 403, 'forbidden');
+    }
+    return this.decorateSharedPlaylist(res.detail, publicBase);
+  }
+
+  mySharedPlaylists(userId: string): MySharedPlaylistsResponse {
+    if (!this.store.findUserById(userId)) {
+      throw new BrokerHttpError('Usuário não encontrado.', 404, 'user_not_found');
+    }
+    return this.store.listMySharedPlaylists(userId);
+  }
+
+  getSharedPlaylist(
+    shareId: string,
+    viewerUserId: string | null,
+    sinceVersion?: number,
+    publicBase = '',
+  ): SharedPlaylistDetail {
+    if (!/^[A-Za-z0-9_-]{4,64}$/.test(shareId)) {
+      throw new BrokerHttpError('Playlist compartilhada não encontrada.', 404, 'playlist_not_found');
+    }
+    const res = this.store.getSharedPlaylist(shareId, viewerUserId, sinceVersion);
+    if (res.status === 'not_found') {
+      throw new BrokerHttpError('Playlist compartilhada não encontrada.', 404, 'playlist_not_found');
+    }
+    if (res.status === 'auth_required') {
+      throw new BrokerHttpError(
+        'Entre no Liquid Hub para acessar esta playlist privada.',
+        401,
+        'auth_required',
+      );
+    }
+    if (res.status === 'forbidden') {
+      throw new BrokerHttpError(
+        'Você não tem permissão para acessar esta playlist privada.',
+        403,
+        'forbidden',
+      );
+    }
+    return this.decorateSharedPlaylist(res.detail, publicBase);
+  }
+
+  mutateSharedPlaylist(
+    shareId: string,
+    actorUserId: string,
+    raw: unknown,
+    publicBase = '',
+  ): SharedPlaylistDetail {
+    if (!/^[A-Za-z0-9_-]{4,64}$/.test(shareId)) {
+      throw new BrokerHttpError('Playlist compartilhada não encontrada.', 404, 'playlist_not_found');
+    }
+    const parsed = mutateSharedPlaylistSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new BrokerHttpError('Alteração de playlist inválida.', 400, 'invalid_request');
+    }
+    const res = this.store.mutateSharedPlaylist(shareId, actorUserId, parsed.data, this.clock());
+    if (res.status === 'not_found') {
+      throw new BrokerHttpError('Playlist compartilhada não encontrada.', 404, 'playlist_not_found');
+    }
+    if (res.status === 'forbidden') {
+      throw new BrokerHttpError('Você não tem permissão para editar esta playlist.', 403, 'forbidden');
+    }
+    if (res.status === 'invalid_order') {
+      throw new BrokerHttpError(
+        'A nova ordem precisa incluir exatamente as mesmas faixas da versão atual.',
+        400,
+        'invalid_order',
+      );
+    }
+    if (res.status === 'conflict') {
+      throw new BrokerHttpError(
+        'A playlist foi modificada por outro colaborador. Carregando a versão mais recente.',
+        409,
+        'version_conflict',
+        { latest: this.decorateSharedPlaylist(res.latest, publicBase) },
+      );
+    }
+    return this.decorateSharedPlaylist(res.detail, publicBase);
+  }
+
+  inviteCollaborator(
+    shareId: string,
+    ownerUserId: string,
+    raw: unknown,
+    publicBase = '',
+  ): SharedPlaylistDetail {
+    if (!/^[A-Za-z0-9_-]{4,64}$/.test(shareId)) {
+      throw new BrokerHttpError('Playlist compartilhada não encontrada.', 404, 'playlist_not_found');
+    }
+    const parsed = inviteCollaboratorSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new BrokerHttpError('Informe um @handle válido.', 400, 'invalid_request');
+    }
+    const res = this.store.inviteCollaborator(shareId, ownerUserId, parsed.data.handle, this.clock());
+    if (res.status === 'not_found') {
+      throw new BrokerHttpError('Playlist compartilhada não encontrada.', 404, 'playlist_not_found');
+    }
+    if (res.status === 'forbidden') {
+      throw new BrokerHttpError('Somente o proprietário pode convidar colaboradores.', 403, 'forbidden');
+    }
+    if (res.status === 'user_not_found') {
+      throw new BrokerHttpError('Usuário não encontrado com esse @handle.', 404, 'user_not_found');
+    }
+    if (res.status === 'invalid_target') {
+      throw new BrokerHttpError('Você já é o proprietário desta playlist.', 400, 'invalid_request');
+    }
+    if (res.status === 'target_private') {
+      throw new BrokerHttpError(
+        'Este usuário mantém o perfil privado e não recebe convites.',
+        403,
+        'profile_private',
+      );
+    }
+    return this.decorateSharedPlaylist(res.detail, publicBase);
+  }
+
+  respondPlaylistInvite(
+    shareId: string,
+    userId: string,
+    accept: boolean,
+    publicBase = '',
+  ): SharedPlaylistDetail | { ok: boolean } {
+    if (!/^[A-Za-z0-9_-]{4,64}$/.test(shareId)) {
+      throw new BrokerHttpError('Playlist compartilhada não encontrada.', 404, 'playlist_not_found');
+    }
+    const res = this.store.respondPlaylistInvite(shareId, userId, accept, this.clock());
+    if (res.status === 'not_found') {
+      throw new BrokerHttpError('Convite de colaboração não encontrado.', 404, 'invite_not_found');
+    }
+    return res.detail ? this.decorateSharedPlaylist(res.detail, publicBase) : { ok: true };
+  }
+
+  removeCollaborator(
+    shareId: string,
+    actorUserId: string,
+    handleRaw: string,
+    publicBase = '',
+  ): SharedPlaylistDetail | { ok: boolean } {
+    if (!/^[A-Za-z0-9_-]{4,64}$/.test(shareId)) {
+      throw new BrokerHttpError('Playlist compartilhada não encontrada.', 404, 'playlist_not_found');
+    }
+    const parsed = publicHandleSchema.safeParse(handleRaw);
+    if (!parsed.success) {
+      throw new BrokerHttpError('Colaborador inválido.', 400, 'invalid_request');
+    }
+    const res = this.store.removeCollaborator(shareId, actorUserId, parsed.data, this.clock());
+    if (res.status === 'not_found') {
+      throw new BrokerHttpError('Colaborador ou playlist não encontrada.', 404, 'not_found');
+    }
+    if (res.status === 'forbidden') {
+      throw new BrokerHttpError('Sem permissão para remover este colaborador.', 403, 'forbidden');
+    }
+    return res.detail ? this.decorateSharedPlaylist(res.detail, publicBase) : { ok: true };
+  }
+
+  getPlusPlans() {
+    return {
+      plans: PLUS_PLAN_CATALOG,
+      audioAdsPolicy: AUDIO_ADS_POLICY,
+      checkoutEnabled: false,
+    };
+  }
+
+  getPlusStatus(viewerUserId: string | null): LiquidPlusStatus {
+    if (!viewerUserId) return defaultFreePlusStatus(false);
+    return this.store.getUserSubscription(viewerUserId, this.clock());
+  }
+
+  setMinSupportedVersion(minVersion: string, currentVersion = this.currentVersion): void {
+    this.minSupportedVersion = minVersion;
+    this.currentVersion = currentVersion;
+  }
+
+  getVersionPolicy(input: { clientVersion?: string | null; platform?: string | null } = {}): VersionPolicyResponse {
+    return evaluateVersionPolicy({
+      clientVersion: input.clientVersion,
+      platform: input.platform,
+      currentVersion: this.currentVersion,
+      minSupportedVersion: this.minSupportedVersion,
+    });
+  }
+
+  assertCompatibleClientVersion(clientVersionHeader?: string | null): void {
+    if (!clientVersionHeader || !clientVersionHeader.trim()) return;
+    const policy = this.getVersionPolicy({ clientVersion: clientVersionHeader });
+    if (policy.mandatoryUpdate) {
+      throw new BrokerHttpError(policy.reason, 426, 'client_update_required', {
+        minSupportedVersion: policy.minSupportedVersion,
+        currentVersion: policy.currentVersion,
+        updateUrl: policy.updateUrl,
+        mandatoryUpdate: true,
+      });
+    }
   }
 
   getUserLibrary(userId: string) {
@@ -1573,6 +1858,18 @@ export function createBroker(
     return identity;
   }
 
+  function optionalHubUser(req: IncomingMessage): string | null {
+    const rawHeader = req.headers.authorization || '';
+    if (!rawHeader) return null;
+    if (!rawHeader.startsWith('Bearer ')) {
+      throw new BrokerHttpError('Não autorizado', 401, 'unauthorized');
+    }
+    const bearer = rawHeader.slice(7).trim();
+    if (!bearer) return null;
+    const claims = auth.verifyAccessToken(bearer);
+    return claims.sub;
+  }
+
   function resolvePublicBase(req: IncomingMessage): string {
     const configured = authOptions.publicUrl || env.BROKER_PUBLIC_URL;
     if (configured) return configured.replace(/\/+$/, '');
@@ -1631,6 +1928,25 @@ export function createBroker(
         send(200, { keys: [auth.publicJwk()] });
         return;
       }
+
+      const clientVersionHeader =
+        typeof req.headers['x-liquid-client-version'] === 'string'
+          ? req.headers['x-liquid-client-version']
+          : null;
+
+      if (req.method === 'GET' && u.pathname === '/v1/version') {
+        enforceRateLimit(`ip:${ip}:version`, 120);
+        send(
+          200,
+          auth.getVersionPolicy({
+            clientVersion: u.searchParams.get('clientVersion') || clientVersionHeader,
+            platform: u.searchParams.get('platform'),
+          }),
+        );
+        return;
+      }
+
+      auth.assertCompatibleClientVersion(clientVersionHeader);
 
       if (req.method === 'GET' && u.pathname === '/v1/auth/providers') {
         enforceRateLimit(`ip:${ip}:providers`, 60);
@@ -1911,6 +2227,30 @@ export function createBroker(
         return;
       }
 
+      const socialResult = await dispatchSocialBrokerRoute(auth, {
+        method: req.method || 'GET',
+        pathname: u.pathname,
+        searchParams: u.searchParams,
+        publicBase: resolvePublicBase(req),
+        viewerUserId: () => optionalHubUser(req),
+        requireUserId: () => requireHubUser(req).userId,
+        readJson: maxBytes => readJsonBody(req, maxBytes),
+      });
+      if (socialResult) {
+        enforceRateLimit(`ip:${ip}:api`, apiLimit * 2);
+        if (socialResult.kind === 'html') {
+          res
+            .writeHead(socialResult.status, {
+              'Content-Type': 'text/html; charset=utf-8',
+              'Content-Security-Policy': `default-src 'none'; style-src 'nonce-${socialResult.nonce}'; img-src https: data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+            })
+            .end(socialResult.html);
+        } else {
+          send(socialResult.status, socialResult.body);
+        }
+        return;
+      }
+
       // Protected /search route
       const identity = authenticateBearer(req);
       enforceRateLimit(`ip:${ip}:api`, apiLimit);
@@ -2016,7 +2356,7 @@ export function createBroker(
       });
     } catch (err) {
       if (err instanceof BrokerHttpError) {
-        send(err.status, { error: err.message, code: err.code });
+        send(err.status, { error: err.message, code: err.code, ...(err.extra || {}) });
         return;
       }
       if (!res.headersSent) {
@@ -2043,6 +2383,194 @@ function escapeHtmlText(s: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function renderUnavailableSocialHtml(title: string, message: string, nonce: string): string {
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtmlText(title)} · Liquid Hub</title><style nonce="${escapeHtmlText(nonce)}">:root{color-scheme:dark}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#0b0d10;color:#f3f5f7;font:400 14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}.card{max-width:440px;width:100%;padding:24px;border-radius:14px;background:#14171c;border:1px solid rgba(255,255,255,.1);display:grid;gap:12px}h1{margin:0;font-size:18px}p{margin:0;color:#9aa4b2}</style></head><body><main class="card"><h1>${escapeHtmlText(title)}</h1><p>${escapeHtmlText(message)}</p></main></body></html>`;
+}
+
+function renderPublicProfileHtml(profile: PublicUserProfile, nonce: string): string {
+  const deepLink = `liquidhub://profile/${encodeURIComponent(profile.handle)}`;
+  const bio = profile.bio ? `<p class="bio">${escapeHtmlText(profile.bio)}</p>` : '';
+  const lists = profile.publicPlaylists
+    .map(
+      pl =>
+        `<li><strong>${escapeHtmlText(pl.name)}</strong><span>${pl.trackCount} músicas</span></li>`,
+    )
+    .join('');
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtmlText(profile.displayName)} (@${escapeHtmlText(profile.handle)}) · Liquid Hub</title><style nonce="${escapeHtmlText(nonce)}">:root{color-scheme:dark}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#0b0d10;color:#f3f5f7;font:400 14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}.card{max-width:460px;width:100%;padding:24px;border-radius:14px;background:#14171c;border:1px solid rgba(255,255,255,.1);display:grid;gap:14px}h1{margin:0;font-size:20px}.handle,.bio{margin:0;color:#9aa4b2}.btn{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:0 16px;border-radius:9px;background:#52b79a;color:#08120e;font-weight:600;text-decoration:none}ul{margin:0;padding:0;list-style:none;display:grid;gap:8px}li{display:flex;justify-content:space-between;padding:8px 10px;border-radius:8px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08)}li span{color:#9aa4b2;font-size:12px}</style></head><body><main class="card"><div><h1>${escapeHtmlText(profile.displayName)}</h1><p class="handle">@${escapeHtmlText(profile.handle)} · Liquid Hub</p></div>${bio}${lists ? `<ul>${lists}</ul>` : ''}<a class="btn" href="${escapeHtmlText(deepLink)}">Abrir perfil no Liquid Hub</a></main></body></html>`;
+}
+
+function renderSharedPlaylistHtml(detail: SharedPlaylistDetail, nonce: string): string {
+  const deepLink = `liquidhub://playlist/${encodeURIComponent(detail.id)}`;
+  const desc = detail.description ? `<p class="desc">${escapeHtmlText(detail.description)}</p>` : '';
+  const sample = detail.tracks
+    .slice(0, 8)
+    .map(t => `<li><strong>${escapeHtmlText(t.title)}</strong><span>${escapeHtmlText(t.artist)}</span></li>`)
+    .join('');
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtmlText(detail.name)} · Liquid Hub</title><style nonce="${escapeHtmlText(nonce)}">:root{color-scheme:dark}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#0b0d10;color:#f3f5f7;font:400 14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}.card{max-width:460px;width:100%;padding:24px;border-radius:14px;background:#14171c;border:1px solid rgba(255,255,255,.1);display:grid;gap:14px}h1{margin:0;font-size:20px}.meta,.desc{margin:0;color:#9aa4b2}.btn{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:0 16px;border-radius:9px;background:#52b79a;color:#08120e;font-weight:600;text-decoration:none}ul{margin:0;padding:0;list-style:none;display:grid;gap:6px}li{display:flex;justify-content:space-between;gap:8px;padding:7px 10px;border-radius:8px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08)}li span{color:#9aa4b2;font-size:12px}</style></head><body><main class="card"><div><h1>${escapeHtmlText(detail.name)}</h1><p class="meta">por ${escapeHtmlText(detail.ownerDisplayName)} (@${escapeHtmlText(detail.ownerHandle)}) · ${detail.trackCount} músicas</p></div>${desc}${sample ? `<ul>${sample}</ul>` : ''}<a class="btn" href="${escapeHtmlText(deepLink)}">Abrir playlist no Liquid Hub</a></main></body></html>`;
+}
+
+async function dispatchSocialBrokerRoute(
+  auth: ZeroTrustAuthEngine,
+  ctx: {
+    method: string;
+    pathname: string;
+    searchParams: URLSearchParams;
+    publicBase: string;
+    viewerUserId: () => string | null;
+    requireUserId: () => string;
+    readJson: (maxBytes?: number) => Promise<unknown>;
+  },
+): Promise<
+  | { kind: 'json'; status: number; body: unknown }
+  | { kind: 'html'; status: number; html: string; nonce: string }
+  | null
+> {
+  if (ctx.pathname === '/v1/plus/plans') {
+    if (ctx.method !== 'GET') {
+      throw new BrokerHttpError('Método não permitido.', 405, 'method_not_allowed');
+    }
+    return { kind: 'json', status: 200, body: auth.getPlusPlans() };
+  }
+  if (ctx.pathname === '/v1/plus/status') {
+    if (ctx.method !== 'GET') {
+      throw new BrokerHttpError(
+        'Assinaturas só podem ser atualizadas pelo servidor.',
+        405,
+        'method_not_allowed',
+      );
+    }
+    return { kind: 'json', status: 200, body: auth.getPlusStatus(ctx.viewerUserId()) };
+  }
+  if (ctx.pathname.startsWith('/v1/plus/')) {
+    throw new BrokerHttpError('Operação de assinatura não permitida neste cliente.', 405, 'method_not_allowed');
+  }
+  if (ctx.method === 'GET' && ctx.pathname.startsWith('/v1/profiles/')) {
+    const handle = decodeURIComponent(ctx.pathname.slice('/v1/profiles/'.length));
+    return { kind: 'json', status: 200, body: auth.getPublicProfile(handle, ctx.viewerUserId()) };
+  }
+  if (ctx.method === 'GET' && ctx.pathname === '/v1/users/search') {
+    const q = ctx.searchParams.get('q') || '';
+    const limit = Number(ctx.searchParams.get('limit') || '20');
+    return { kind: 'json', status: 200, body: auth.searchUsers(q, ctx.viewerUserId(), limit) };
+  }
+  if (ctx.method === 'GET' && ctx.pathname === '/v1/playlists/mine') {
+    return { kind: 'json', status: 200, body: auth.mySharedPlaylists(ctx.requireUserId()) };
+  }
+  if (ctx.method === 'POST' && ctx.pathname === '/v1/playlists') {
+    const body = await ctx.readJson(512 * 1024);
+    return {
+      kind: 'json',
+      status: 201,
+      body: auth.publishPlaylist(ctx.requireUserId(), body, ctx.publicBase),
+    };
+  }
+  const inviteRespondMatch = /^\/v1\/playlists\/([A-Za-z0-9_-]+)\/invites\/(accept|decline)$/.exec(
+    ctx.pathname,
+  );
+  if (ctx.method === 'POST' && inviteRespondMatch) {
+    return {
+      kind: 'json',
+      status: 200,
+      body: auth.respondPlaylistInvite(
+        inviteRespondMatch[1]!,
+        ctx.requireUserId(),
+        inviteRespondMatch[2] === 'accept',
+        ctx.publicBase,
+      ),
+    };
+  }
+  const inviteCreateMatch = /^\/v1\/playlists\/([A-Za-z0-9_-]+)\/invites$/.exec(ctx.pathname);
+  if (ctx.method === 'POST' && inviteCreateMatch) {
+    const body = await ctx.readJson();
+    return {
+      kind: 'json',
+      status: 200,
+      body: auth.inviteCollaborator(inviteCreateMatch[1]!, ctx.requireUserId(), body, ctx.publicBase),
+    };
+  }
+  const removeCollabMatch = /^\/v1\/playlists\/([A-Za-z0-9_-]+)\/collaborators\/([^/]+)$/.exec(
+    ctx.pathname,
+  );
+  if (ctx.method === 'DELETE' && removeCollabMatch) {
+    return {
+      kind: 'json',
+      status: 200,
+      body: auth.removeCollaborator(
+        removeCollabMatch[1]!,
+        ctx.requireUserId(),
+        decodeURIComponent(removeCollabMatch[2]!),
+        ctx.publicBase,
+      ),
+    };
+  }
+  const plMatch = /^\/v1\/playlists\/([A-Za-z0-9_-]+)$/.exec(ctx.pathname);
+  if (plMatch) {
+    if (ctx.method === 'GET') {
+      const svRaw = ctx.searchParams.get('sinceVersion');
+      const sinceVersion = svRaw !== null && svRaw !== '' ? Number(svRaw) : undefined;
+      return {
+        kind: 'json',
+        status: 200,
+        body: auth.getSharedPlaylist(
+          plMatch[1]!,
+          ctx.viewerUserId(),
+          Number.isFinite(sinceVersion) ? sinceVersion : undefined,
+          ctx.publicBase,
+        ),
+      };
+    }
+    if (ctx.method === 'PATCH') {
+      const body = await ctx.readJson(256 * 1024);
+      return {
+        kind: 'json',
+        status: 200,
+        body: auth.mutateSharedPlaylist(plMatch[1]!, ctx.requireUserId(), body, ctx.publicBase),
+      };
+    }
+  }
+  if (ctx.method === 'GET' && ctx.pathname.startsWith('/u/')) {
+    const handle = decodeURIComponent(ctx.pathname.slice('/u/'.length).split('/')[0] || '');
+    const nonce = nodeCrypto.randomBytes(16).toString('base64');
+    try {
+      const profile = auth.getPublicProfile(handle, ctx.viewerUserId());
+      return { kind: 'html', status: 200, html: renderPublicProfileHtml(profile, nonce), nonce };
+    } catch (e) {
+      const status = e instanceof BrokerHttpError ? e.status : 404;
+      const msg =
+        status === 401 || status === 403
+          ? 'Este perfil possui restrição de privacidade. Abra no aplicativo Liquid Hub.'
+          : 'Perfil indisponível.';
+      return {
+        kind: 'html',
+        status,
+        html: renderUnavailableSocialHtml('Perfil no Liquid Hub', msg, nonce),
+        nonce,
+      };
+    }
+  }
+  if (ctx.method === 'GET' && ctx.pathname.startsWith('/p/')) {
+    const shareId = decodeURIComponent(ctx.pathname.slice('/p/'.length).split('/')[0] || '');
+    const nonce = nodeCrypto.randomBytes(16).toString('base64');
+    try {
+      const detail = auth.getSharedPlaylist(shareId, ctx.viewerUserId(), undefined, ctx.publicBase);
+      return { kind: 'html', status: 200, html: renderSharedPlaylistHtml(detail, nonce), nonce };
+    } catch (e) {
+      const status = e instanceof BrokerHttpError ? e.status : 404;
+      const msg =
+        status === 401 || status === 403
+          ? 'Esta playlist é privada. Entre no Liquid Hub com uma conta autorizada.'
+          : 'Playlist indisponível.';
+      return {
+        kind: 'html',
+        status,
+        html: renderUnavailableSocialHtml('Playlist no Liquid Hub', msg, nonce),
+        nonce,
+      };
+    }
+  }
+  return null;
 }
 
 function renderBrowserOAuthAuthorizeHtml(input: {
@@ -2335,6 +2863,17 @@ export async function handleFetchAuthRequest(input: {
     if (request.method === 'GET' && u.pathname === '/.well-known/jwks.json') {
       return sendJson(200, { keys: [auth.publicJwk()] });
     }
+    const clientVersionHeader = request.headers.get('x-liquid-client-version');
+    if (request.method === 'GET' && u.pathname === '/v1/version') {
+      return sendJson(
+        200,
+        auth.getVersionPolicy({
+          clientVersion: u.searchParams.get('clientVersion') || clientVersionHeader,
+          platform: u.searchParams.get('platform'),
+        }),
+      );
+    }
+    auth.assertCompatibleClientVersion(clientVersionHeader);
     if (request.method === 'GET' && u.pathname === '/v1/auth/providers') {
       return sendJson(
         200,
@@ -2746,10 +3285,39 @@ export async function handleFetchAuthRequest(input: {
       const identity = requireUser();
       return sendJson(200, auth.unlinkIdentity(identity.userId, unlinkMatch[1]));
     }
+    const optionalViewer = (): string | null => {
+      const rawHeader = request.headers.get('authorization') || '';
+      if (!rawHeader) return null;
+      return requireUser().userId;
+    };
+    const socialResult = await dispatchSocialBrokerRoute(auth, {
+      method: request.method,
+      pathname: u.pathname,
+      searchParams: u.searchParams,
+      publicBase,
+      viewerUserId: optionalViewer,
+      requireUserId: () => requireUser().userId,
+      readJson,
+    });
+    if (socialResult) {
+      if (socialResult.kind === 'html') {
+        return new Response(socialResult.html, {
+          status: socialResult.status,
+          headers: {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Cache-Control': 'no-store',
+            'X-Content-Type-Options': 'nosniff',
+            'X-Frame-Options': 'DENY',
+            'Content-Security-Policy': `default-src 'none'; style-src 'nonce-${socialResult.nonce}'; img-src https: data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+          },
+        });
+      }
+      return sendJson(socialResult.status, socialResult.body);
+    }
     return sendJson(404, { error: 'Não encontrado.' });
   } catch (err) {
     if (err instanceof BrokerHttpError) {
-      return sendJson(err.status, { error: err.message, code: err.code });
+      return sendJson(err.status, { error: err.message, code: err.code, ...(err.extra || {}) });
     }
     return sendJson(500, { error: 'Erro interno no servidor de autenticação.' });
   }

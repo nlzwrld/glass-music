@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { AudioLines, ArrowUpRight } from 'lucide-react';
+import { ArrowUpRight } from 'lucide-react';
+import { LiquidHubLogo } from '../brand/LiquidHubLogo';
 import { motion, useReducedMotion } from 'motion/react';
 import { CURRENT_PRIVACY_VERSION, CURRENT_TERMS_VERSION } from '../../../shared/auth';
 import { useApp } from '../../stores/app';
@@ -118,7 +119,7 @@ export default function Welcome() {
             animate={{ opacity: 1, scale: 1 }}
             transition={{ duration: reduced ? 0 : 1, ease: [0.22, 1, 0.36, 1] }}
           >
-            <AudioLines size={29} strokeWidth={1.35} />
+            <LiquidHubLogo size={36} />
           </motion.div>
           <motion.h1
             initial={reduced ? false : { opacity: 0, y: 8 }}

@@ -309,12 +309,51 @@ pub fn score_candidate(reference: &Value, candidate: &Value, provider: &str) -> 
     let raw_artist_low = s(candidate, "artist").to_lowercase();
     let raw_title_low = s(candidate, "title").to_lowercase();
     let is_topic = raw_artist_low.ends_with(" - topic") || provider == "ytmusic";
+    let is_vevo = raw_artist_low.contains("vevo");
     let is_official_audio = raw_title_low.contains("official audio")
         || raw_title_low.contains("audio oficial")
         || raw_title_low.contains("áudio oficial");
     let is_music_video = raw_title_low.contains("official video")
         || raw_title_low.contains("music video")
         || raw_title_low.contains("clipe oficial");
+    let exact_artist_match = ![
+        "Spotify",
+        "Deezer",
+        "Apple Music",
+        "Tidal",
+        "Bandcamp",
+        "YouTube",
+        "SoundCloud",
+    ]
+    .contains(&ref_artist)
+        && normalize_ascii_lower(cand_artist_clean)
+            == normalize_ascii_lower(primary_artist(ref_artist));
+    let ref_norm_words: HashSet<String> = normalize_ascii_lower(&ref_combined)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let is_unofficial_channel = !is_topic
+        && !is_vevo
+        && normalize_ascii_lower(cand_artist_clean)
+            .split_whitespace()
+            .any(|w| {
+                matches!(
+                    w,
+                    "lyrics"
+                        | "letra"
+                        | "letras"
+                        | "traducao"
+                        | "legendado"
+                        | "fan"
+                        | "fanclub"
+                        | "covers"
+                        | "karaoke"
+                        | "nightcore"
+                        | "8d"
+                        | "edits"
+                        | "reupload"
+                ) && !ref_norm_words.contains(w)
+            });
 
     let isrc_a = s(reference, "isrc").replace('-', "").to_uppercase();
     let isrc_b = s(candidate, "isrc").replace('-', "").to_uppercase();
@@ -326,9 +365,15 @@ pub fn score_candidate(reference: &Value, candidate: &Value, provider: &str) -> 
         12.0
     } else if is_official_audio {
         9.0
+    } else if is_vevo {
+        6.0
     } else {
         0.0
     };
+
+    if exact_artist_match {
+        bonus += 3.0;
+    }
 
     bonus += match provider {
         "ytmusic" => 3.0,
@@ -339,6 +384,9 @@ pub fn score_candidate(reference: &Value, candidate: &Value, provider: &str) -> 
 
     if is_music_video && !is_topic && !is_official_audio {
         bonus -= 4.0;
+    }
+    if is_unofficial_channel {
+        bonus -= 8.0;
     }
 
     let total = ((duration_score + fidelity_score + bonus.min(15.0)) * 10.0).round() / 10.0;

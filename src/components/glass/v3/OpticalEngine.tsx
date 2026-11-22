@@ -1,5 +1,4 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { MotionConfig } from 'motion/react';
 import { useApp, setPreferencesFromUI } from '../../../stores/app';
 import { getAudioReactiveFrame } from '../../../lib/audioGraph';
 import { coverURL } from '../Cover';
@@ -11,6 +10,7 @@ import {
   normalizeOptics,
   opticalDefaults,
   materialPresets,
+  resolveGlassQualityTier,
   surfaceTint,
   type OpticalSettings,
 } from './model';
@@ -41,6 +41,12 @@ export function OpticalEngine({ children }: { children: ReactNode }) {
     [ready, setReady] = useState(false),
     [systemReduced, setSystemReduced] = useState(
       matchMedia('(prefers-reduced-motion: reduce)').matches,
+    ),
+    [prefersContrastMore, setPrefersContrastMore] = useState(
+      matchMedia('(prefers-contrast: more)').matches,
+    ),
+    [prefersReducedTransparency, setPrefersReducedTransparency] = useState(
+      matchMedia('(prefers-reduced-transparency: reduce)').matches,
     );
   const source = useRef<HTMLCanvasElement>(null),
     surface = useRef<HTMLCanvasElement>(null),
@@ -62,11 +68,25 @@ export function OpticalEngine({ children }: { children: ReactNode }) {
     glass = useApp(s => s.data.preferences.glass);
   const reduced = userReduced || systemReduced || performanceMode,
     artwork = useApp(s => s.queue[s.index]?.artwork);
+  const isMobileTouch =
+    typeof navigator !== 'undefined' &&
+    matchMedia('(pointer: coarse)').matches &&
+    /Android|Mobile/i.test(navigator.userAgent);
+  const preTier = resolveGlassQualityTier({
+    requested: settings.quality,
+    uiStyle,
+    performanceMode,
+    prefersContrastMore,
+    prefersReducedTransparency,
+    hardwareConcurrency: typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined,
+    deviceMemory:
+      typeof navigator !== 'undefined'
+        ? (navigator as Navigator & { deviceMemory?: number }).deviceMemory
+        : undefined,
+    isMobileTouch,
+  });
   const disabled =
-    uiStyle === 'matte' ||
-    performanceMode ||
-    settings.quality === 'economy' ||
-    (!lab && settings.background === 'desktop');
+    preTier.engine === 'css' || (!lab && settings.background === 'desktop');
 
   useEffect(() => {
     if (
@@ -83,8 +103,18 @@ export function OpticalEngine({ children }: { children: ReactNode }) {
   useEffect(() => {
     const media = matchMedia('(prefers-reduced-motion: reduce)'),
       update = () => setSystemReduced(media.matches);
+    const contrast = matchMedia('(prefers-contrast: more)'),
+      updateContrast = () => setPrefersContrastMore(contrast.matches);
+    const trans = matchMedia('(prefers-reduced-transparency: reduce)'),
+      updateTrans = () => setPrefersReducedTransparency(trans.matches);
     media.addEventListener('change', update);
-    return () => media.removeEventListener('change', update);
+    contrast.addEventListener('change', updateContrast);
+    trans.addEventListener('change', updateTrans);
+    return () => {
+      media.removeEventListener('change', update);
+      contrast.removeEventListener('change', updateContrast);
+      trans.removeEventListener('change', updateTrans);
+    };
   }, []);
 
   useEffect(() => {
@@ -184,13 +214,24 @@ export function OpticalEngine({ children }: { children: ReactNode }) {
         capability = ext
           ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL))
           : String(gl.getParameter(gl.RENDERER));
-        if (
-          settings.quality === 'auto' &&
-          (/swiftshader|llvmpipe|software/i.test(capability) ||
-            maxTexture < 4096 ||
-            navigator.hardwareConcurrency <= 2)
-        ) {
-          effective = 'economy';
+        const tier = resolveGlassQualityTier({
+          requested: settings.quality,
+          uiStyle,
+          performanceMode,
+          prefersContrastMore,
+          prefersReducedTransparency,
+          rendererName: capability,
+          maxTextureSize: maxTexture,
+          hardwareConcurrency:
+            typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined,
+          deviceMemory:
+            typeof navigator !== 'undefined'
+              ? (navigator as Navigator & { deviceMemory?: number }).deviceMemory
+              : undefined,
+          isMobileTouch,
+        });
+        effective = tier.quality;
+        if (tier.engine === 'css') {
           engine.dispose();
           renderer.current = null;
           status('css');
@@ -206,10 +247,12 @@ export function OpticalEngine({ children }: { children: ReactNode }) {
     };
     if (!disabled) init();
     else {
-      effective = 'economy';
+      effective = preTier.quality;
       status('css');
     }
     html.dataset.glassQuality = effective;
+    if (prefersContrastMore) html.dataset.glassContrast = 'high';
+    else delete html.dataset.glassContrast;
 
     const render = (now: number) => {
       raf = 0;
@@ -420,7 +463,7 @@ export function OpticalEngine({ children }: { children: ReactNode }) {
       renderer.current?.dispose();
       renderer.current = null;
     };
-  }, [disabled, reduced, performanceMode, settings.quality]);
+  }, [disabled, reduced, performanceMode, settings.quality, uiStyle, prefersContrastMore, prefersReducedTransparency, isMobileTouch]);
 
   const setSettings = (patch: Partial<OpticalSettings>) => {
     const next = normalizeOptics({ ...settings, ...patch });
@@ -429,40 +472,35 @@ export function OpticalEngine({ children }: { children: ReactNode }) {
   const windowPreset = materialPresets[settings.material];
   return (
     <Context.Provider value={{ settings, setSettings, lab, setLab, reduced }}>
-      <MotionConfig
-        reducedMotion={reduced ? 'always' : 'never'}
-        transition={{ duration: reduced ? 0 : 0.3, ease: [0.22, 1, 0.36, 1] }}
+      <div
+        className={`optical-root ${ready ? 'engine-ready' : ''}`}
+        data-background={settings.background}
+        style={
+          {
+            '--lab-blur': `${settings.blur}px`,
+            '--lab-saturation': `${settings.saturation * 100}%`,
+            '--appearance-opacity': glass / 100,
+            '--appearance-blur-scale': windowPreset.blur,
+            '--appearance-blur': `${performanceMode ? 0 : settings.blur}px`,
+            '--appearance-specular': settings.specular,
+            '--appearance-saturation': `${settings.background === 'desktop' ? 100 : settings.saturation * 100}%`,
+            '--glass-tint': settings.tint,
+            '--glass-opacity': settings.opacity,
+          } as React.CSSProperties
+        }
       >
+        <canvas ref={source} className="optical-scene" aria-hidden="true" />
+        <canvas ref={surface} className="optical-surfaces" aria-hidden="true" />
         <div
-          className={`optical-root ${ready ? 'engine-ready' : ''}`}
-          data-background={settings.background}
-          style={
-            {
-              '--lab-blur': `${settings.blur}px`,
-              '--lab-saturation': `${settings.saturation * 100}%`,
-              '--appearance-opacity': glass / 100,
-              '--appearance-blur-scale': windowPreset.blur,
-              '--appearance-blur': `${performanceMode ? 0 : settings.blur}px`,
-              '--appearance-specular': settings.specular,
-              '--appearance-saturation': `${settings.background === 'desktop' ? 100 : settings.saturation * 100}%`,
-              '--glass-tint': settings.tint,
-              '--glass-opacity': settings.opacity,
-            } as React.CSSProperties
-          }
-        >
-          <canvas ref={source} className="optical-scene" aria-hidden="true" />
-          <canvas ref={surface} className="optical-surfaces" aria-hidden="true" />
-          <div
-            className="glass-material optical-window-material"
-            data-window-material
-            data-optic="auto"
-            data-material={settings.material}
-            data-crystal={windowPreset.crystal}
-            aria-hidden="true"
-          />
-          {children}
-        </div>
-      </MotionConfig>
+          className="glass-material optical-window-material"
+          data-window-material
+          data-optic="auto"
+          data-material={settings.material}
+          data-crystal={windowPreset.crystal}
+          aria-hidden="true"
+        />
+        {children}
+      </div>
     </Context.Provider>
   );
 }

@@ -49,6 +49,11 @@ pub struct HubVaultSession {
     pub privacy_version: Option<String>,
     pub terms_accepted_at: Option<i64>,
     pub needs_terms_acceptance: bool,
+    pub public_handle: String,
+    pub bio: String,
+    pub profile_visibility: String,
+    pub social_links: Value,
+    pub show_public_tracks: bool,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -271,7 +276,12 @@ impl Secrets {
                     "termsVersion": session.terms_version,
                     "privacyVersion": session.privacy_version,
                     "termsAcceptedAt": session.terms_accepted_at,
-                    "needsTermsAcceptance": session.needs_terms_acceptance
+                    "needsTermsAcceptance": session.needs_terms_acceptance,
+                    "publicHandle": if session.public_handle.is_empty() { Value::Null } else { json!(session.public_handle) },
+                    "bio": session.bio,
+                    "profileVisibility": if session.profile_visibility.is_empty() { "public" } else { &session.profile_visibility },
+                    "socialLinks": if session.social_links.is_object() { session.social_links.clone() } else { json!({}) },
+                    "showPublicTracks": session.show_public_tracks
                 });
                 if let Some(obj) = out.as_object_mut() {
                     if obj.get("identities").is_some_and(|v| v.as_array().is_none()) {

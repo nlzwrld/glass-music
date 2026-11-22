@@ -198,6 +198,8 @@ export const preferencesSchema = z
     volume: z.number().min(0).max(100),
     repeat: z.enum(['off', 'all', 'one']),
     shuffle: z.boolean(),
+    shuffleMode: z.enum(['standard', 'smart']).optional(),
+    smartShuffleDiscoveries: z.boolean().optional(),
     tray: z.boolean(),
     startup: z.boolean(),
     notifications: z.boolean(),
@@ -251,7 +253,7 @@ export const librarySchema = z.discriminatedUnion('action', [
 export const searchSchema = z
   .object({
     query: z.string().trim().min(1).max(200),
-    kind: z.enum(['all', 'track', 'artist', 'playlist', 'album', 'lyrics']),
+    kind: z.enum(['all', 'track', 'artist', 'playlist', 'album', 'user', 'lyrics']),
     source: z.enum([
       'all',
       'local',
@@ -474,9 +476,109 @@ export const acceptTermsSchema = z
   })
   .strict();
 
+export const publicHandleSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(3)
+  .max(32)
+  .regex(/^[a-z0-9][a-z0-9._-]{1,30}[a-z0-9]$/);
+
+export const bioSchema = z.string().trim().max(240);
+export const profileVisibilitySchema = z.enum(['public', 'restricted', 'private']);
+export const playlistVisibilitySchema = z.enum(['public', 'unlisted', 'private']);
+
+const optionalSocialUrl = z.union([
+  z.literal(''),
+  z.string().trim().max(2048).refine(publicMusicUrl),
+]);
+
+export const socialLinksSchema = z
+  .object({
+    website: optionalSocialUrl.optional(),
+    instagram: optionalSocialUrl.optional(),
+    twitter: optionalSocialUrl.optional(),
+    youtube: optionalSocialUrl.optional(),
+    spotify: optionalSocialUrl.optional(),
+    github: optionalSocialUrl.optional(),
+  })
+  .strict();
+
 export const updateProfileSchema = z
   .object({
-    displayName: displayNameSchema,
+    displayName: displayNameSchema.optional(),
+    publicHandle: publicHandleSchema.optional(),
+    bio: bioSchema.optional(),
+    profileVisibility: profileVisibilitySchema.optional(),
+    socialLinks: socialLinksSchema.optional(),
+    showPublicTracks: z.boolean().optional(),
+  })
+  .strict()
+  .refine(
+    v =>
+      v.displayName !== undefined ||
+      v.publicHandle !== undefined ||
+      v.bio !== undefined ||
+      v.profileVisibility !== undefined ||
+      v.socialLinks !== undefined ||
+      v.showPublicTracks !== undefined,
+    { message: 'Informe ao menos um campo do perfil para atualizar.' },
+  );
+
+export const sharedTrackSchema = z
+  .object({
+    id: idSchema,
+    source: z.enum(['youtube', 'soundcloud', 'link']),
+    kind: z.enum(['track', 'artist', 'playlist', 'album']),
+    sourceId: idSchema,
+    title: text,
+    artist: text,
+    album: z.string().max(500).optional(),
+    artwork: z.string().max(2048).refine(artworkUrl).optional(),
+    duration: z.number().finite().min(0).max(604800),
+    durationMs: z.number().finite().min(0).max(604_800_000).optional(),
+    isrc: isrcSchema.optional(),
+    catalogSource: catalogSourceSchema.optional(),
+    streamProvider: streamProviderSchema.optional(),
+    resolvedExternalId: z.string().min(1).max(200).regex(/^[\w:.\-/]+$/).optional(),
+    url: z.string().max(2048).refine(publicMusicUrl).optional(),
+    addedAt: z.number().finite().min(0).optional(),
+    available: z.boolean().optional(),
+    playbackId: z.string().regex(/^[\w-]{11}$/).optional(),
+  })
+  .strip();
+
+export const publishPlaylistSchema = z
+  .object({
+    shareId: idSchema.optional(),
+    localPlaylistId: idSchema.optional(),
+    name: z.string().trim().min(1).max(100),
+    description: z.string().trim().max(300).optional(),
+    artwork: z.union([z.literal(''), z.string().max(2048).refine(artworkUrl)]).optional(),
+    visibility: playlistVisibilitySchema.default('private'),
+    collaborative: z.boolean().default(false),
+    tracks: z.array(z.unknown()).max(1000),
+  })
+  .strict();
+
+export const mutateSharedPlaylistSchema = z
+  .object({
+    op: z.enum(['meta', 'addTracks', 'removeTrack', 'reorder']),
+    expectedVersion: z.number().int().min(1),
+    name: z.string().trim().min(1).max(100).optional(),
+    description: z.string().trim().max(300).optional(),
+    artwork: z.union([z.literal(''), z.string().max(2048).refine(artworkUrl)]).optional(),
+    visibility: playlistVisibilitySchema.optional(),
+    collaborative: z.boolean().optional(),
+    tracks: z.array(z.unknown()).max(100).optional(),
+    trackId: idSchema.optional(),
+    trackIds: z.array(idSchema).max(1000).optional(),
+  })
+  .strict();
+
+export const inviteCollaboratorSchema = z
+  .object({
+    handle: publicHandleSchema,
   })
   .strict();
 
@@ -574,6 +676,7 @@ const ALLOWED_WEB_STORAGE_KEYS = new Set([
   'liquid-optics-v3',
   'glass:discover:v2',
   'liquid:discover:v2',
+  'glass:recommendations:v1',
 ]);
 
 /**

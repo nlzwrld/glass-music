@@ -6,6 +6,8 @@ import { transport } from '../components/player/engine';
 import { IconButton } from '../components/glass/controls';
 import type { Preferences } from '../../shared/types';
 
+import { APP_VERSION, evaluateVersionPolicy, type VersionPolicyResponse } from '../../shared/version';
+
 export function shouldCheckAutomatically(
   ready: boolean,
   preferences: Pick<Preferences, 'autoUpdate' | 'onlineConsent' | 'onboardingDone'>,
@@ -19,27 +21,105 @@ interface UpdateState {
   availableVersion: string;
   dismissedVersion: string;
   installing: boolean;
+  mandatory: boolean;
+  clientVersion: string;
+  minSupportedVersion: string;
+  updateUrl: string;
+  releaseNotes: string;
+  reason: string;
+  packageIntegrity: string;
   setAvailable: (version: string) => void;
   dismiss: () => void;
   installNow: () => Promise<void>;
+  applyVersionPolicy: (policy: VersionPolicyResponse) => void;
+  triggerMandatoryUpdate: (reason?: string, minSupportedVersion?: string) => void;
+  checkVersionPolicy: (brokerUrl?: string) => Promise<VersionPolicyResponse | null>;
 }
 
 export const useUpdateNotice = create<UpdateState>((set, get) => ({
   availableVersion: '',
   dismissedVersion: '',
   installing: false,
+  mandatory: false,
+  clientVersion: APP_VERSION,
+  minSupportedVersion: APP_VERSION,
+  updateUrl: 'https://github.com/nlzwrld/glass-music/releases/latest',
+  releaseNotes: '',
+  reason: '',
+  packageIntegrity: 'Minisign-Ed25519+SHA-256',
   setAvailable: version => set({ availableVersion: version }),
-  dismiss: () => set(s => ({ dismissedVersion: s.availableVersion })),
+  dismiss: () => {
+    if (get().mandatory) return;
+    set(s => ({ dismissedVersion: s.availableVersion }));
+  },
   installNow: async () => {
     if (get().installing) return;
     set({ installing: true });
     try {
       transport.pause();
-      await window.glass.updateStatus(true);
+      const res = await window.glass.updateStatus(true);
+      if (!res?.available && get().mandatory && get().updateUrl) {
+        await window.glass.external(get().updateUrl);
+        set({ installing: false });
+      }
     } catch (e) {
       set({ installing: false });
       useApp.getState().message(cleanError(e));
     }
+  },
+  applyVersionPolicy: policy => {
+    set(s => ({
+      mandatory: Boolean(policy.mandatoryUpdate),
+      clientVersion: policy.clientVersion || s.clientVersion,
+      minSupportedVersion: policy.minSupportedVersion || s.minSupportedVersion,
+      availableVersion:
+        policy.mandatoryUpdate || policy.updateAvailable
+          ? policy.currentVersion || s.availableVersion
+          : s.availableVersion,
+      updateUrl: policy.updateUrl || s.updateUrl,
+      releaseNotes: policy.releaseNotes || s.releaseNotes,
+      reason: policy.reason || s.reason,
+      packageIntegrity:
+        (typeof policy.packageIntegrity === 'object' && policy.packageIntegrity?.algorithm
+          ? `${policy.packageIntegrity.algorithm} (${policy.packageIntegrity.pubkeyFingerprint})`
+          : typeof policy.packageIntegrity === 'string'
+            ? policy.packageIntegrity
+            : '') || s.packageIntegrity,
+    }));
+  },
+  triggerMandatoryUpdate: (reason, minVer) => {
+    const policy = evaluateVersionPolicy({
+      clientVersion: get().clientVersion || APP_VERSION,
+      minSupportedVersion: minVer || get().minSupportedVersion || APP_VERSION,
+    });
+    set({
+      mandatory: true,
+      minSupportedVersion: policy.minSupportedVersion,
+      availableVersion: policy.currentVersion,
+      reason:
+        reason ||
+        policy.reason ||
+        `Esta versão do Liquid Hub não é mais compatível com o protocolo atual. Atualize para a versão ${policy.minSupportedVersion} ou superior.`,
+    });
+  },
+  checkVersionPolicy: async brokerUrl => {
+    try {
+      if (!window.glass.hubVersionPolicy) return null;
+      const policy = await window.glass.hubVersionPolicy({
+        brokerUrl,
+        clientVersion: APP_VERSION,
+      });
+      if (policy && typeof policy === 'object' && 'minSupportedVersion' in policy) {
+        get().applyVersionPolicy(policy);
+        return policy;
+      }
+    } catch (e) {
+      const msg = cleanError(e);
+      if (msg.includes('client_update_required')) {
+        get().triggerMandatoryUpdate(msg.replace(/^client_update_required:\s*/i, ''));
+      }
+    }
+    return null;
   },
 }));
 
@@ -61,11 +141,12 @@ export function AutoUpdates() {
       if (busy || !navigator.onLine || useUpdateNotice.getState().installing) return;
       busy = true;
       try {
+        await useUpdateNotice.getState().checkVersionPolicy();
         const result = await window.glass.updateStatus(false);
         if (stopped) return;
         if (result.available && result.version) {
           useUpdateNotice.getState().setAvailable(result.version);
-        } else {
+        } else if (!useUpdateNotice.getState().mandatory) {
           useUpdateNotice.getState().setAvailable('');
         }
       } catch {

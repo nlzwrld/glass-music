@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   Heart,
@@ -21,9 +22,17 @@ import {
   MicVocal,
   LoaderCircle,
   Radio,
+  Sparkles,
 } from 'lucide-react';
-import { useApp, formatTime, cleanError, setPreferencesFromUI } from '../../stores/app';
+import {
+  useApp,
+  formatTime,
+  cleanError,
+  setPreferencesFromUI,
+  upcomingIndex,
+} from '../../stores/app';
 import { useJam } from '../jam/state';
+import { openJamWindow } from '../../lib/jamWindow';
 import { PlayerEngine, transport } from './engine';
 import Cover from '../glass/Cover';
 import { IconButton, OfflineIndicator, SourceBadge } from '../glass/controls';
@@ -76,15 +85,35 @@ export function PlaybackControls({
     playbackIntent &&
     (status === 'Carregando' || status === 'Sincronizando fonte de áudio...');
 
+  const shuffleMode = p.shuffleMode ?? 'smart';
+  const shuffleLabel = !p.shuffle
+    ? 'Aleatório'
+    : shuffleMode === 'smart'
+      ? 'Aleatório Inteligente'
+      : 'Aleatório tradicional';
+
   return (
     <div className={`transport ${large ? 'large' : ''}`}>
       <IconButton
-        label="Aleatório"
+        label={shuffleLabel}
         active={p.shuffle}
         aria-pressed={p.shuffle}
-        onClick={() => setPreferencesFromUI({ shuffle: !p.shuffle })}
+        data-shuffle-mode={p.shuffle ? shuffleMode : 'off'}
+        className="shuffle-transport-btn"
+        onClick={() => {
+          if (!p.shuffle) {
+            setPreferencesFromUI({ shuffle: true, shuffleMode: 'smart' });
+          } else if (shuffleMode === 'smart') {
+            setPreferencesFromUI({ shuffle: true, shuffleMode: 'standard' });
+          } else {
+            setPreferencesFromUI({ shuffle: false });
+          }
+        }}
       >
         <Shuffle size={15} />
+        {p.shuffle && shuffleMode === 'smart' && (
+          <Sparkles size={9} className="shuffle-smart-badge" aria-hidden="true" />
+        )}
       </IconButton>
       <IconButton
         label="Faixa anterior"
@@ -290,7 +319,8 @@ function AuxiliaryControls() {
     mini = useApp(s => s.mini),
     jamSession = useJam(s => s.session),
     jamConnected = useJam(s => s.connected),
-    jamListeners = useJam(s => s.room?.members.length ?? (s.session ? 1 : 0));
+    jamListeners = useJam(s => s.room?.members.length ?? (s.session ? 1 : 0)),
+    jamPendingReqCount = useJam(s => (s.session?.host ? s.room?.pendingRequestCount ?? 0 : 0));
 
   const showLyrics = shouldRenderLyricsButton({ hasActive, lyricsAvailable });
 
@@ -300,21 +330,23 @@ function AuxiliaryControls() {
         <button
           type="button"
           className={`jam-player-badge ${jamConnected ? 'connected' : 'reconnecting'}`}
-          aria-label={`JAM ativa com ${jamListeners} ouvinte(s)`}
-          title={`JAM ao vivo · ${jamListeners} ouvinte(s)`}
+          aria-label={`JAM ativa com ${jamListeners} ouvinte(s)${jamPendingReqCount > 0 ? ` e ${jamPendingReqCount} pedido(s) pendente(s)` : ''}`}
+          title={`JAM ao vivo · ${jamListeners} ouvinte(s)${jamPendingReqCount > 0 ? ` · ${jamPendingReqCount} pedido(s) pendente(s)` : ''}`}
           onClick={() => {
             if (mini) {
               void window.glass.window('restore').then(() => useApp.setState({ mini: false }));
             }
-            useApp.getState().setPage('settings');
-            setTimeout(() => {
-              document.getElementById('jam-section')?.scrollIntoView({ behavior: 'smooth' });
-            }, 60);
+            void openJamWindow();
           }}
         >
           <span className="jam-pulse-dot" aria-hidden="true" />
           <Radio size={14} />
           <span>{jamListeners}</span>
+          {jamPendingReqCount > 0 && (
+            <span className="detached-jam-tab-badge" aria-hidden="true">
+              +{jamPendingReqCount}
+            </span>
+          )}
         </button>
       )}
       <AnimatePresence initial={false}>
@@ -380,8 +412,29 @@ function AuxiliaryControls() {
 export function SidePlayer() {
   const track = useDisplayTrack(),
     active = useApp(s => s.queue[s.index]),
+    queue = useApp(s => s.queue),
+    index = useApp(s => s.index),
+    shufflePlayed = useApp(s => s.shufflePlayed),
+    shuffleNext = useApp(s => s.shuffleNext),
+    preferences = useApp(s => s.data.preferences),
     downloadingIds = useApp(s => s.downloadingIds);
   const isDownloading = !!track && downloadingIds.includes(track.id);
+  const nextIdx = useMemo(
+    () =>
+      upcomingIndex(
+        {
+          queue,
+          index,
+          shufflePlayed,
+          shuffleNext,
+          data: { tracks: [], likes: [], history: [], preferences },
+        },
+        false,
+      ),
+    [queue, index, shufflePlayed, shuffleNext, preferences],
+  );
+  const nextTrack = nextIdx >= 0 ? queue[nextIdx] : undefined;
+
   return (
     <GlassPanel
       className={`side-player ${active && active.source !== 'local' ? 'external-track' : ''}`}
@@ -430,12 +483,25 @@ export function SidePlayer() {
           />
         </div>
       )}
-      <Seekbar />
-      <PlaybackControls large localSurface />
-      <div className="side-tools">
-        <AuxiliaryControls />
-        <VolumeControl />
-      </div>
+      {nextTrack && (
+        <div className="side-next-up">
+          <span className="side-panel-label">A seguir</span>
+          <button
+            type="button"
+            className="side-next-card"
+            onClick={() => useApp.getState().jumpQueue(nextIdx)}
+            aria-label={`Reproduzir a seguir: ${nextTrack.title}`}
+          >
+            <span className="side-next-cover">
+              <Cover track={nextTrack} />
+            </span>
+            <span className="side-next-meta">
+              <strong>{nextTrack.title}</strong>
+              <small>{nextTrack.artist}</small>
+            </span>
+          </button>
+        </div>
+      )}
     </GlassPanel>
   );
 }

@@ -28,9 +28,124 @@ pub async fn status(app:&AppHandle,consent:bool,install:bool,before_install:impl
  Ok(json!({"configured":true,"available":true,"version":version,"message":format!("Versão {version} disponível.")}))
 }
 
+fn count_and_clean_orphaned_temp_files(root: &Path, clean: bool) -> (usize, usize) {
+    let mut found = 0usize;
+    let mut removed = 0usize;
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return (0, 0);
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let (sub_f, sub_r) = count_and_clean_orphaned_temp_files(&path, clean);
+            found += sub_f;
+            removed += sub_r;
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if name.ends_with(".part") || name.ends_with(".pending") || name.ends_with(".tmp") {
+            found += 1;
+            if clean && std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    (found, removed)
+}
+
+pub fn verify_and_repair(db: &Library, data_dir: &Path, repair: bool) -> Result<Value> {
+    let db_ok = db.check_integrity(repair).unwrap_or(false);
+    let secrets_path = data_dir.join("secrets.json");
+    let vault_readable = if secrets_path.exists() {
+        std::fs::read(&secrets_path).is_ok()
+    } else {
+        true
+    };
+    let (orphaned, removed) = count_and_clean_orphaned_temp_files(data_dir, repair);
+    let mut backup_created: Option<String> = None;
+    if repair {
+        let _ = db.clean_cloned_playlist_covers();
+        if db_ok {
+            let backup_dir = data_dir.join("backups");
+            if let Ok(path) = backup_library(db, &backup_dir) {
+                backup_created = Some(path.to_string_lossy().to_string());
+            }
+        }
+    }
+    let backups_count = std::fs::read_dir(data_dir.join("backups"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .map(|ext| ext.eq_ignore_ascii_case("sqlite"))
+                        .unwrap_or(false)
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    let ok = db_ok && vault_readable;
+    let message = if repair {
+        if ok {
+            format!(
+                "Reparo concluído: banco íntegro, {removed} arquivos temporários órfãos removidos e backup preventivo atualizado."
+            )
+        } else {
+            "A verificação identificou inconsistências locais que exigem restauração de backup.".to_string()
+        }
+    } else if ok {
+        "Instalação íntegra: banco SQLite, cofre local e diretórios verificados sem erros.".to_string()
+    } else {
+        "Inconsistência detectada na instalação local. Execute o reparo para corrigir.".to_string()
+    };
+    let checked_at = crate::db::now();
+    Ok(json!({
+        "ok": ok,
+        "repaired": repair,
+        "version": env!("CARGO_PKG_VERSION"),
+        "dbIntegrityOk": db_ok,
+        "vaultReadable": vault_readable,
+        "orphanedTempFiles": orphaned,
+        "removedOrphanedTempFiles": removed,
+        "backupsCount": backups_count,
+        "backupCreated": backup_created,
+        "checkedAt": checked_at,
+        "message": message
+    }))
+}
+
 #[cfg(test)]
 mod tests{
  use super::*;
+ #[test]
+ fn verify_and_repair_checks_integrity_cleans_orphaned_temp_files_and_creates_backup(){
+  let dir=std::env::temp_dir().join(format!("liquid-maint-test-{}",uuid::Uuid::new_v4()));
+  std::fs::create_dir_all(dir.join("offline")).unwrap();
+  std::fs::write(dir.join("offline").join("orphan.part"),b"partial").unwrap();
+  let db=Library::open(&dir.join("library.sqlite")).unwrap();
+
+  let inspect=verify_and_repair(&db,&dir,false).unwrap();
+  assert_eq!(inspect["ok"],true);
+  assert_eq!(inspect["dbIntegrityOk"],true);
+  assert_eq!(inspect["orphanedTempFiles"],1);
+  assert_eq!(inspect["removedOrphanedTempFiles"],0);
+
+  let repaired=verify_and_repair(&db,&dir,true).unwrap();
+  assert_eq!(repaired["ok"],true);
+  assert_eq!(repaired["repaired"],true);
+  assert_eq!(repaired["removedOrphanedTempFiles"],1);
+  assert!(repaired["backupsCount"].as_u64().unwrap_or(0)>=1);
+  assert!(!dir.join("offline").join("orphan.part").exists());
+
+  drop(db);
+  let _=std::fs::remove_dir_all(&dir);
+ }
  #[test]
  fn update_backups_coexist_and_never_overwrite_existing_files(){
   let directory=std::env::temp_dir().join(format!("liquid-update-test-{}",uuid::Uuid::new_v4()));

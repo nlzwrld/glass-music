@@ -1,12 +1,20 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Cloud, LoaderCircle, Music2, RefreshCw } from 'lucide-react';
 import { useApp, cleanError } from '../../stores/app';
 import type { CatalogResult, Track } from '../../../shared/types';
 import TrackCard from './TrackCard';
-import { cachedDiscoveries, discoverMusic, cancelDiscoveries } from '../../lib/discovery';
+import {
+  cachedDiscoveries,
+  cancelDiscoveries,
+  clearDiscoveryCache,
+  discoverMusic,
+  hydrateDiscoveries,
+} from '../../lib/discovery';
 import {
   buildTasteProfile,
+  clearRecommendationsCache,
   fetchPersonalizedTracks,
+  loadCachedPersonalRecommendations,
   rankCatalogByTaste,
 } from '../../lib/recommendations';
 
@@ -33,28 +41,50 @@ export default function OnlineCatalog({ expanded = false }: { expanded?: boolean
       : { sections: [], notices: [] },
   );
   const [personalTracks, setPersonalTracks] = useState<Track[]>([]);
-  const [loading, setLoading] = useState(false),
-    [retry, setRetry] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [retry, setRetry] = useState(0);
+  const catalogReqGen = useRef(0);
+  const personalReqGen = useRef(0);
 
   useEffect(() => {
     if (!consent || !configured) {
-      if (!consent) cancelDiscoveries();
+      if (!consent) {
+        cancelDiscoveries();
+        clearDiscoveryCache();
+        clearRecommendationsCache();
+      }
       return;
     }
+    const gen = ++catalogReqGen.current;
     let active = true;
-    setLoading(true);
     const previous = cachedDiscoveries();
     if (previous) setResult(previous);
-    void discoverMusic(retry > 0)
-      .then(value => {
-        if (active) setResult(value);
-      })
-      .catch(error => {
-        if (active) setResult(old => ({ sections: old.sections, notices: [cleanError(error)] }));
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+
+    void (async () => {
+      const hydrated = previous
+        ? { value: previous, fresh: false, at: 0 }
+        : await hydrateDiscoveries();
+      if (!active || catalogReqGen.current !== gen) return;
+      if (hydrated) {
+        setResult(hydrated.value);
+      }
+      setLoading(true);
+      try {
+        const freshValue = await discoverMusic(retry > 0);
+        if (active && catalogReqGen.current === gen) {
+          setResult(freshValue);
+        }
+      } catch (error) {
+        if (active && catalogReqGen.current === gen) {
+          setResult(old => ({ sections: old.sections, notices: [cleanError(error)] }));
+        }
+      } finally {
+        if (active && catalogReqGen.current === gen) {
+          setLoading(false);
+        }
+      }
+    })();
+
     return () => {
       active = false;
     };
@@ -65,11 +95,29 @@ export default function OnlineCatalog({ expanded = false }: { expanded?: boolean
       setPersonalTracks([]);
       return;
     }
+    const gen = ++personalReqGen.current;
     let active = true;
     const excludeIds = history.slice(0, 15).map(h => h.id);
-    void fetchPersonalizedTracks(taste, excludeIds, retry > 0).then(items => {
-      if (active) setPersonalTracks(items);
-    });
+
+    void (async () => {
+      const cachedEntry = await loadCachedPersonalRecommendations(taste.signature);
+      if (!active || personalReqGen.current !== gen) return;
+      if (cachedEntry?.items.length) {
+        setPersonalTracks(cachedEntry.items);
+      }
+      const items = await fetchPersonalizedTracks(taste, excludeIds, {
+        force: retry > 0,
+        onRevalidated: freshItems => {
+          if (active && personalReqGen.current === gen && freshItems.length) {
+            setPersonalTracks(freshItems);
+          }
+        },
+      });
+      if (active && personalReqGen.current === gen && items.length) {
+        setPersonalTracks(items);
+      }
+    })();
+
     return () => {
       active = false;
     };
@@ -79,21 +127,26 @@ export default function OnlineCatalog({ expanded = false }: { expanded?: boolean
     const base = rankCatalogByTaste(result, taste);
     if (!personalTracks.length) return base;
     const subtitle = taste.topArtists.length
-      ? `Recomendado para você · ${taste.topArtists.slice(0, 2).join(', ')}`
+      ? `Recomendado para você · ${taste.topArtists.slice(0, 3).join(', ')}`
       : 'Recomendado para você';
     const personalSections: CatalogResult['sections'] = [
       {
         id: 'personal:recent-vibe',
         source: 'youtube',
         title: subtitle,
-        items: personalTracks,
+        items: personalTracks.slice(0, 8),
       },
     ];
-    if (expanded && personalTracks.length > 6 && taste.topArtists[0]) {
+    if (personalTracks.length > 6) {
+      const exploreLabel = taste.topStyles[1]
+        ? `Explorar novos estilos · ${taste.topStyles.slice(0, 2).join(' · ')}`
+        : taste.topArtists[1]
+          ? `Mais no estilo de ${taste.topArtists[1]}`
+          : 'Descobertas para variar seu estilo';
       personalSections.push({
-        id: 'personal:more-like-top',
+        id: 'personal:more-styles',
         source: 'youtube',
-        title: `Mais no estilo de ${taste.topArtists[0]}`,
+        title: exploreLabel,
         items: personalTracks.slice(6),
       });
     }
@@ -101,7 +154,7 @@ export default function OnlineCatalog({ expanded = false }: { expanded?: boolean
       ...base,
       sections: [...personalSections, ...base.sections],
     };
-  }, [result, taste, personalTracks, expanded]);
+  }, [result, taste, personalTracks]);
 
   if (!consent)
     return (
@@ -143,10 +196,22 @@ export default function OnlineCatalog({ expanded = false }: { expanded?: boolean
           Carregando…
         </div>
       )}
-      {rankedResult.sections.map(section => (
+      {rankedResult.sections.map((section, idx) => (
         <section className="catalog-section" key={section.id} aria-label={section.title}>
           <div className="section-heading">
             <h2>{section.title}</h2>
+            {idx === 0 && (
+              <button
+                type="button"
+                className="text-button"
+                disabled={loading}
+                aria-label="Atualizar recomendações e descobertas"
+                onClick={() => setRetry(n => n + 1)}
+              >
+                <RefreshCw size={13} className={loading ? 'spinner' : ''} />
+                {loading ? 'Atualizando…' : 'Atualizar'}
+              </button>
+            )}
           </div>
           {section.items.length ? (
             <div className="catalog-grid">

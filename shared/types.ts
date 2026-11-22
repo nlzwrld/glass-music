@@ -1,3 +1,32 @@
+import type { LiquidPlusStatus } from './plus';
+import type { SupportedPlatform, VersionPolicyResponse } from './version';
+
+export type {
+  LiquidPlusStatus,
+  PlusEntitlementKey,
+  PlusEntitlements,
+  PlusPlanDefinition,
+  PlusPlanId,
+  SubscriptionSource,
+  SubscriptionStatus,
+} from './plus';
+
+export type { SupportedPlatform, VersionPolicyResponse } from './version';
+
+export interface MaintenanceReport {
+  ok: boolean;
+  repaired: boolean;
+  version: string;
+  dbIntegrityOk: boolean;
+  vaultReadable: boolean;
+  orphanedTempFiles: number;
+  removedOrphanedTempFiles: number;
+  backupsCount: number;
+  backupCreated?: string | null;
+  checkedAt: number;
+  message: string;
+}
+
 export type Source = 'local' | 'youtube' | 'soundcloud' | 'link';
 export type Kind = 'track' | 'artist' | 'playlist' | 'album';
 
@@ -128,6 +157,18 @@ export function canPlay(track: Track) {
   );
 }
 
+export type ProfileVisibility = 'public' | 'restricted' | 'private';
+export type PlaylistVisibility = 'public' | 'unlisted' | 'private';
+
+export interface SocialLinks {
+  website?: string;
+  instagram?: string;
+  twitter?: string;
+  youtube?: string;
+  spotify?: string;
+  github?: string;
+}
+
 export interface Playlist {
   artwork?: string;
   description?: string;
@@ -135,6 +176,118 @@ export interface Playlist {
   name: string;
   createdAt: number;
   trackIds: string[];
+  shareId?: string;
+  visibility?: PlaylistVisibility;
+  collaborative?: boolean;
+  remoteVersion?: number;
+  ownerHandle?: string;
+}
+
+export interface PlaylistCollaborator {
+  handle: string;
+  displayName: string;
+  avatarUrl: string | null;
+  role: 'owner' | 'editor';
+  status: 'pending' | 'accepted';
+  invitedAt: number;
+  acceptedAt?: number | null;
+}
+
+export interface PlaylistActivityEntry {
+  id: string;
+  actorHandle: string;
+  actorName: string;
+  action: string;
+  summary: string;
+  version: number;
+  createdAt: number;
+}
+
+export interface SharedPlaylistSummary {
+  id: string;
+  name: string;
+  description: string;
+  artwork?: string;
+  visibility: PlaylistVisibility;
+  collaborative: boolean;
+  trackCount: number;
+  ownerHandle: string;
+  ownerDisplayName: string;
+  ownerAvatarUrl: string | null;
+  version: number;
+  updatedAt: number;
+}
+
+export interface SharedPlaylistDetail extends SharedPlaylistSummary {
+  localPlaylistId?: string | null;
+  tracks: Track[];
+  role: 'owner' | 'editor' | 'viewer';
+  collaborators: PlaylistCollaborator[];
+  activity: PlaylistActivityEntry[];
+  shareUrl?: string;
+  deepLinkUrl?: string;
+  unchanged?: boolean;
+}
+
+export interface PublicUserProfile {
+  handle: string;
+  displayName: string;
+  avatarUrl: string | null;
+  bio: string;
+  visibility: ProfileVisibility;
+  socialLinks: SocialLinks;
+  showPublicTracks: boolean;
+  publicPlaylists: SharedPlaylistSummary[];
+  publicTracks: Track[];
+  createdAt: number;
+  accountType: 'user';
+}
+
+export interface UserSearchItem {
+  handle: string;
+  displayName: string;
+  avatarUrl: string | null;
+  bio: string;
+  visibility: ProfileVisibility;
+  publicPlaylistCount: number;
+  accountType: 'user';
+}
+
+export interface MySharedPlaylistsResponse {
+  owned: SharedPlaylistSummary[];
+  collaborating: SharedPlaylistSummary[];
+  pendingInvites: (SharedPlaylistSummary & { invitedAt: number })[];
+}
+
+export type ShuffleMode = 'standard' | 'smart';
+
+export interface OfflineTrackInfo {
+  trackId: string;
+  size: number;
+  duration: number;
+  createdAt: number;
+  verified: boolean;
+}
+
+export interface OfflineSummary {
+  tracks: OfflineTrackInfo[];
+  totalTracks: number;
+  totalBytes: number;
+}
+
+export interface DownloadProgressEvent {
+  trackId: string;
+  downloadedBytes: number;
+  totalBytes: number;
+  percent: number;
+  status: 'downloading' | 'completed' | 'cancelled' | 'error';
+}
+
+export interface DiscoveryCacheEntry<T = unknown> {
+  signature: string;
+  payload: T;
+  updatedAt: number;
+  expiresAt: number;
 }
 
 export type NotificationMode = 'off' | 'background' | 'always';
@@ -173,6 +326,8 @@ export interface Preferences {
   volume: number;
   repeat: 'off' | 'all' | 'one';
   shuffle: boolean;
+  shuffleMode?: ShuffleMode;
+  smartShuffleDiscoveries?: boolean;
   tray: boolean;
   startup: boolean;
   notifications: boolean;
@@ -208,6 +363,8 @@ export const defaults: Preferences = {
   volume: 65,
   repeat: 'off',
   shuffle: false,
+  shuffleMode: 'smart',
+  smartShuffleDiscoveries: false,
   tray: true,
   startup: false,
   notifications: false,
@@ -228,7 +385,7 @@ export interface Snapshot {
   preferences: Preferences;
 }
 
-export type SearchKind = 'all' | 'track' | 'artist' | 'playlist' | 'album' | 'lyrics';
+export type SearchKind = 'all' | 'track' | 'artist' | 'playlist' | 'album' | 'user' | 'lyrics';
 export type SearchSource = 'all' | Source | 'deezer' | 'apple' | 'ytmusic' | 'spotify';
 
 export interface SearchRequest {
@@ -274,6 +431,7 @@ export interface MusicProvider {
 export interface IntegrationStatus {
   youtube: boolean;
   soundcloud: boolean;
+  spotify?: boolean;
   catalogConfigured: boolean;
   catalogMode?: 'direct' | 'hosted' | 'unavailable';
   encrypted: boolean;
@@ -337,6 +495,11 @@ export interface HubSessionStatus {
   privacyVersion?: string | null;
   termsAcceptedAt?: number | null;
   needsTermsAcceptance?: boolean;
+  publicHandle?: string;
+  bio?: string;
+  profileVisibility?: ProfileVisibility;
+  socialLinks?: SocialLinks;
+  showPublicTracks?: boolean;
 }
 
 export interface CatalogResult {
@@ -358,7 +521,7 @@ export type LibraryCommand =
   | { action: 'removeTrack'; id: string }
   | { action: 'clearHistory' };
 
-export type MediaCommand = 'playPause' | 'next' | 'previous' | 'pauseVideo';
+export type MediaCommand = 'playPause' | 'next' | 'previous';
 
 export interface AccountStatus {
   provider: 'youtube' | 'soundcloud' | 'spotify';
@@ -392,7 +555,18 @@ export interface GlassAPI {
   importLink(url: string, playlist?: boolean): Promise<LinkImport>;
   previewCollection(url: string): Promise<CollectionPreview>;
   recommendations(seeds: Track[], excludeIds: string[]): Promise<Track[]>;
-  playlistMeta(id: string, meta: { artwork?: string; description?: string }): Promise<Snapshot>;
+  playlistMeta(
+    id: string,
+    meta: {
+      artwork?: string;
+      description?: string;
+      shareId?: string;
+      visibility?: PlaylistVisibility;
+      collaborative?: boolean;
+      remoteVersion?: number;
+      ownerHandle?: string;
+    },
+  ): Promise<Snapshot>;
   accounts(): Promise<AccountStatus[]>;
   configureAccounts(): Promise<AccountStatus[]>;
   connectAccount(provider: string): Promise<AccountStatus[]>;
@@ -461,8 +635,74 @@ export interface GlassAPI {
   }): Promise<HubSessionStatus>;
   hubUpdateProfile(payload: {
     brokerUrl?: string;
-    displayName: string;
+    displayName?: string;
+    publicHandle?: string;
+    bio?: string;
+    profileVisibility?: ProfileVisibility;
+    socialLinks?: SocialLinks;
+    showPublicTracks?: boolean;
   }): Promise<HubSessionStatus>;
+  hubGetProfile(payload: {
+    brokerUrl?: string;
+    handle: string;
+  }): Promise<PublicUserProfile>;
+  hubSearchUsers(payload: {
+    brokerUrl?: string;
+    query: string;
+    limit?: number;
+  }): Promise<{ users: UserSearchItem[] }>;
+  hubPublishPlaylist(payload: {
+    brokerUrl?: string;
+    shareId?: string;
+    localPlaylistId?: string;
+    name: string;
+    description?: string;
+    artwork?: string;
+    visibility: PlaylistVisibility;
+    collaborative: boolean;
+    tracks: Track[];
+  }): Promise<SharedPlaylistDetail>;
+  hubMyPlaylists(payload?: { brokerUrl?: string }): Promise<MySharedPlaylistsResponse>;
+  hubGetSharedPlaylist(payload: {
+    brokerUrl?: string;
+    shareId: string;
+    sinceVersion?: number;
+  }): Promise<SharedPlaylistDetail>;
+  hubMutateSharedPlaylist(payload: {
+    brokerUrl?: string;
+    shareId: string;
+    op: 'meta' | 'addTracks' | 'removeTrack' | 'reorder';
+    expectedVersion: number;
+    name?: string;
+    description?: string;
+    artwork?: string;
+    visibility?: PlaylistVisibility;
+    collaborative?: boolean;
+    tracks?: Track[];
+    trackId?: string;
+    trackIds?: string[];
+  }): Promise<SharedPlaylistDetail>;
+  hubInviteCollaborator(payload: {
+    brokerUrl?: string;
+    shareId: string;
+    handle: string;
+  }): Promise<SharedPlaylistDetail>;
+  hubRespondPlaylistInvite(payload: {
+    brokerUrl?: string;
+    shareId: string;
+    accept: boolean;
+  }): Promise<SharedPlaylistDetail | { ok: boolean }>;
+  hubRemoveCollaborator(payload: {
+    brokerUrl?: string;
+    shareId: string;
+    handle: string;
+  }): Promise<SharedPlaylistDetail | { ok: boolean }>;
+  hubPlusStatus?(payload?: { brokerUrl?: string }): Promise<LiquidPlusStatus>;
+  hubVersionPolicy?(payload?: {
+    brokerUrl?: string;
+    clientVersion?: string;
+    platform?: SupportedPlatform;
+  }): Promise<VersionPolicyResponse>;
   hubLibraryPull(payload?: {
     brokerUrl?: string;
   }): Promise<{ playlists: Playlist[]; tracks: Track[]; likes: string[]; updatedAt: number }>;
@@ -475,12 +715,18 @@ export interface GlassAPI {
   offlineSource(id: string): Promise<{ url: string; duration: number } | null>;
   downloadOffline(track: Track): Promise<Snapshot>;
   removeOffline(id: string): Promise<Snapshot>;
+  cancelDownload?(id: string): Promise<void>;
+  offlineSummary?(): Promise<OfflineSummary>;
+  onDownloadProgress?(callback: (event: DownloadProgressEvent) => void): () => void;
+  cacheGet?<T = unknown>(key: string): Promise<DiscoveryCacheEntry<T> | null>;
+  cacheSet?(entry: { key: string; signature: string; payload: unknown; ttlMs: number }): Promise<void>;
   openLyrics(): Promise<void>;
   closeLyrics(): Promise<void>;
   pinLyrics(pinned: boolean): Promise<{ pinned: boolean }>;
   updateStatus(
     install?: boolean,
   ): Promise<{ configured: boolean; available: boolean; version: string; message: string }>;
+  maintenanceStatus?(repair?: boolean): Promise<MaintenanceReport>;
   lyrics(track: Track): Promise<LyricsResult | null>;
   playlistArtwork(id: string): Promise<string | null>;
   trackArtwork(id: string): Promise<string | null>;

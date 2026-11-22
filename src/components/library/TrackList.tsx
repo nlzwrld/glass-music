@@ -2,7 +2,7 @@ import { GlassContextMenu } from '../glass/materials';
 import { trackActions } from './trackActions';
 import { moveWithinPlaylist } from '../../lib/playlist';
 import { warmTrack, cancelWarmTrack, shufflePlay } from '../../lib/playback';
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   Play,
@@ -14,6 +14,9 @@ import {
   Music2,
   Clock3,
   Shuffle,
+  ChevronUp,
+  ChevronDown,
+  Trash2,
 } from 'lucide-react';
 import { canPlay, type Track } from '../../../shared/types';
 import { useApp, formatTime } from '../../stores/app';
@@ -25,17 +28,57 @@ export default function TrackList({
   tracks,
   playlistId,
   empty = 'Nenhuma música.',
+  showHeaderShuffle = true,
+  canReorder,
+  onReorder,
+  onRemoveTrack,
 }: {
   tracks: Track[];
   playlistId?: string;
   empty?: string;
+  showHeaderShuffle?: boolean;
+  canReorder?: boolean;
+  onReorder?: (fromId: string, toId: string) => Promise<void> | void;
+  onRemoveTrack?: (track: Track) => Promise<void> | void;
 }) {
   const parent = useRef<HTMLDivElement>(null);
   const dragIndex = useRef<string | null>(null);
+  const dropTargetRef = useRef<string | null>(null);
+  const pointerDragActive = useRef(false);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const likes = useApp(s => s.data.likes),
     downloadingIds = useApp(s => s.downloadingIds),
     current = useApp(s => s.queue[s.index]),
     playing = useApp(s => s.playing);
+
+  const reorderEnabled = Boolean(canReorder ?? playlistId);
+  const reorderHandler =
+    onReorder ??
+    (playlistId
+      ? (fromId: string, toId: string) => moveWithinPlaylist(playlistId, fromId, toId)
+      : undefined);
+
+  const commitReorder = (fromId: string, toId: string) => {
+    if (!reorderEnabled || !reorderHandler || !fromId || !toId || fromId === toId) return;
+    void Promise.resolve(reorderHandler(fromId, toId)).catch(() => {});
+  };
+
+  const updateDropTarget = (targetId: string | null) => {
+    dropTargetRef.current = targetId;
+    setDropTargetId(curr => (curr === targetId ? curr : targetId));
+  };
+
+  const clearDragState = () => {
+    dragIndex.current = null;
+    pointerDragActive.current = false;
+    dropTargetRef.current = null;
+    setDraggingId(null);
+    setDropTargetId(null);
+    parent.current
+      ?.querySelectorAll('.drop-target')
+      .forEach(el => el.classList.remove('drop-target'));
+  };
 
   const hasSnippets = tracks.some(t => !!t.lyricSnippet);
   const rowHeight = hasSnippets ? 56 : 48;
@@ -64,13 +107,13 @@ export default function TrackList({
     );
 
   return (
-    <div className="track-table">
+    <div className={`track-table ${reorderEnabled ? 'is-reorderable' : ''}`}>
       <div className="track-table-heading">
         <span className="col-index">#</span>
         <span>Título</span>
         <span>Álbum / Origem</span>
         <span className="col-quick-shuffle">
-          {playableCount > 1 && (
+          {showHeaderShuffle && playableCount > 1 && (
             <button
               type="button"
               className="tracklist-shuffle-btn"
@@ -99,13 +142,25 @@ export default function TrackList({
             const playable = canPlay(track);
             const liked = likes.includes(track.id);
             const isDownloading = downloadingIds.includes(track.id);
+            const prevTrack = row.index > 0 ? tracks[row.index - 1] : undefined;
+            const nextTrack = row.index < tracks.length - 1 ? tracks[row.index + 1] : undefined;
+            const contextItems = trackActions(track, tracks, playlistId);
+            if (onRemoveTrack && !playlistId) {
+              contextItems.push({
+                label: 'Remover da playlist',
+                icon: <Trash2 size={17} />,
+                danger: true,
+                action: () => void onRemoveTrack(track),
+              });
+            }
             return (
               <div
                 data-track-item
+                data-track-id={track.id}
                 tabIndex={0}
                 onPointerEnter={() => warmTrack(track)}
                 onPointerLeave={cancelWarmTrack}
-                className={`track-row ${active ? 'current' : ''} ${track.available === false ? 'unavailable' : ''}`}
+                className={`track-row ${active ? 'current' : ''} ${track.available === false ? 'unavailable' : ''} ${draggingId === track.id ? 'dragging' : ''} ${dropTargetId === track.id ? 'drop-target' : ''}`}
                 key={track.id}
                 style={{
                   position: 'absolute',
@@ -115,13 +170,15 @@ export default function TrackList({
                   transform: `translateY(${row.start}px)`,
                   height: row.size,
                 }}
-                onDragLeave={e => e.currentTarget.classList.remove('drop-target')}
+                onDragLeave={() => {
+                  if (dropTargetRef.current === track.id) updateDropTarget(null);
+                }}
                 onDragOver={
-                  playlistId
+                  reorderEnabled
                     ? e => {
                         e.preventDefault();
-                        if (!dragIndex.current) return;
-                        e.currentTarget.classList.add('drop-target');
+                        if (!dragIndex.current || dragIndex.current === track.id) return;
+                        updateDropTarget(track.id);
                         const box = parent.current?.getBoundingClientRect();
                         if (box && parent.current) {
                           if (e.clientY < box.top + 36) parent.current.scrollTop -= 12;
@@ -131,31 +188,76 @@ export default function TrackList({
                     : undefined
                 }
                 onDrop={
-                  playlistId
+                  reorderEnabled
                     ? e => {
                         e.preventDefault();
-                        e.currentTarget.classList.remove('drop-target');
                         const from = dragIndex.current;
-                        dragIndex.current = null;
-                        if (from) void moveWithinPlaylist(playlistId, from, track.id).catch(() => {});
+                        clearDragState();
+                        if (from) commitReorder(from, track.id);
                       }
                     : undefined
                 }
               >
-                {playlistId ? (
+                {reorderEnabled ? (
                   <span
                     className="drag-handle"
                     draggable
                     onDragStart={e => {
                       dragIndex.current = track.id;
+                      setDraggingId(track.id);
                       e.dataTransfer.setData('text/plain', track.id);
                       e.dataTransfer.effectAllowed = 'move';
                     }}
                     onDragEnd={() => {
-                      dragIndex.current = null;
-                      parent.current
-                        ?.querySelectorAll('.drop-target')
-                        .forEach(el => el.classList.remove('drop-target'));
+                      clearDragState();
+                    }}
+                    onPointerDown={e => {
+                      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return;
+                      pointerDragActive.current = true;
+                      dragIndex.current = track.id;
+                      setDraggingId(track.id);
+                      updateDropTarget(null);
+                      try {
+                        e.currentTarget.setPointerCapture(e.pointerId);
+                      } catch {}
+                    }}
+                    onPointerMove={e => {
+                      if (!pointerDragActive.current || dragIndex.current !== track.id) return;
+                      const box = parent.current?.getBoundingClientRect();
+                      if (box && parent.current) {
+                        if (e.clientY < box.top + 40) parent.current.scrollTop -= 12;
+                        if (e.clientY > box.bottom - 40) parent.current.scrollTop += 12;
+                      }
+                      const hovered = document
+                        .elementFromPoint(e.clientX, e.clientY)
+                        ?.closest<HTMLElement>('[data-track-id]');
+                      const targetId = hovered?.dataset.trackId;
+                      if (targetId && targetId !== track.id) {
+                        updateDropTarget(targetId);
+                      } else if (targetId === track.id) {
+                        updateDropTarget(null);
+                      }
+                    }}
+                    onPointerUp={e => {
+                      if (!pointerDragActive.current || dragIndex.current !== track.id) return;
+                      const from = dragIndex.current;
+                      const to = dropTargetRef.current;
+                      try {
+                        if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+                          e.currentTarget.releasePointerCapture(e.pointerId);
+                        }
+                      } catch {}
+                      clearDragState();
+                      if (from && to) commitReorder(from, to);
+                    }}
+                    onPointerCancel={e => {
+                      if (!pointerDragActive.current) return;
+                      try {
+                        if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+                          e.currentTarget.releasePointerCapture(e.pointerId);
+                        }
+                      } catch {}
+                      clearDragState();
                     }}
                     role="button"
                     tabIndex={0}
@@ -163,13 +265,8 @@ export default function TrackList({
                     onKeyDown={e => {
                       if (e.altKey && ['ArrowUp', 'ArrowDown'].includes(e.key)) {
                         e.preventDefault();
-                        const p = useApp
-                            .getState()
-                            .data.playlists.find(p => p.id === playlistId),
-                          i = p?.trackIds.indexOf(track.id) ?? -1,
-                          target = p?.trackIds[i + (e.key === 'ArrowUp' ? -1 : 1)];
-                        if (target)
-                          void moveWithinPlaylist(playlistId, track.id, target).catch(() => {});
+                        const target = e.key === 'ArrowUp' ? prevTrack : nextTrack;
+                        if (target) commitReorder(track.id, target.id);
                       }
                     }}
                     title="Arraste ou use Alt + ↑ / ↓"
@@ -226,6 +323,24 @@ export default function TrackList({
                 </span>
 
                 <div className="row-actions">
+                  {reorderEnabled && (
+                    <span className="reorder-step-controls">
+                      <IconButton
+                        label={`Mover ${track.title} para cima`}
+                        disabled={row.index <= 0}
+                        onClick={() => prevTrack && commitReorder(track.id, prevTrack.id)}
+                      >
+                        <ChevronUp size={14} />
+                      </IconButton>
+                      <IconButton
+                        label={`Mover ${track.title} para baixo`}
+                        disabled={row.index >= tracks.length - 1}
+                        onClick={() => nextTrack && commitReorder(track.id, nextTrack.id)}
+                      >
+                        <ChevronDown size={14} />
+                      </IconButton>
+                    </span>
+                  )}
                   <IconButton
                     label={`Curtir ${track.title}`}
                     active={liked}
@@ -246,7 +361,7 @@ export default function TrackList({
                   </IconButton>
                   <GlassContextMenu
                     label={`Opções de ${track.title}`}
-                    items={trackActions(track, tracks, playlistId)}
+                    items={contextItems}
                   />
                 </div>
 

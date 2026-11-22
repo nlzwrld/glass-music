@@ -48,6 +48,7 @@ pub struct Accounts {
     vault: Mutex<Vault>,
     pub gate: tokio::sync::Mutex<()>,
     cancel: AtomicBool,
+    spotify_app_token: tokio::sync::Mutex<Option<(String, i64)>>,
 }
 
 fn generate_pkce_pair() -> Result<(String, String)> {
@@ -111,6 +112,7 @@ impl Accounts {
             vault: Mutex::new(vault),
             gate: tokio::sync::Mutex::new(()),
             cancel: AtomicBool::new(false),
+            spotify_app_token: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -617,6 +619,62 @@ impl Accounts {
         }
         self.save(&v)
     }
+
+    pub fn spotify_search_ready(&self) -> bool {
+        let vault = self.vault.lock().unwrap();
+        vault.sessions.contains_key("spotify")
+            || vault
+                .clients
+                .get("spotify")
+                .is_some_and(|c| !c.client_id.is_empty() && !c.client_secret.is_empty())
+    }
+
+    pub async fn spotify_search_token(&self) -> Result<String> {
+        let has_session = self.vault.lock().unwrap().sessions.contains_key("spotify");
+        if has_session {
+            if let Ok(tok) = self.token("spotify").await {
+                return Ok(tok);
+            }
+        }
+        let client = {
+            let vault = self.vault.lock().unwrap();
+            vault
+                .clients
+                .get("spotify")
+                .filter(|c| !c.client_id.is_empty() && !c.client_secret.is_empty())
+                .cloned()
+        };
+        let Some(client) = client else {
+            if has_session {
+                return self.token("spotify").await;
+            }
+            return Err("Conecte sua conta Spotify ou configure o cadastro OAuth do Spotify nas Configurações para pesquisar no Spotify.".into());
+        };
+        let mut cached = self.spotify_app_token.lock().await;
+        if let Some((ref tok, expires_at)) = *cached {
+            if expires_at > now() + 60_000 {
+                return Ok(tok.clone());
+            }
+        }
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let basic = STANDARD.encode(format!("{}:{}", client.client_id, client.client_secret));
+        let res = crate::providers::client()
+            .post("https://accounts.spotify.com/api/token")
+            .header("Authorization", format!("Basic {basic}"))
+            .form(&[("grant_type", "client_credentials")])
+            .send()
+            .await
+            .map_err(|_| "Não foi possível autenticar na Spotify Web API.")?;
+        let data = collections::read(res).await?;
+        let access = data["access_token"]
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() < 16_000)
+            .ok_or("A Spotify Web API não retornou um token de acesso válido.")?
+            .to_string();
+        let expires_in = data["expires_in"].as_i64().unwrap_or(3600).clamp(60, 86_400);
+        *cached = Some((access.clone(), now() + expires_in * 1000));
+        Ok(access)
+    }
 }
 
 fn resolve_hub_broker(secrets_mtx: &Mutex<Secrets>, override_url: Option<&str>) -> Result<String> {
@@ -694,6 +752,25 @@ fn apply_hub_user_profile(session: &mut HubVaultSession, user: &Value) {
     }
     if let Some(needs) = obj.get("needsTermsAcceptance").and_then(|v| v.as_bool()) {
         session.needs_terms_acceptance = needs;
+    }
+    if let Some(ph) = obj.get("publicHandle").and_then(|v| v.as_str()) {
+        session.public_handle = ph.trim().to_ascii_lowercase();
+    }
+    if let Some(bio) = obj.get("bio").and_then(|v| v.as_str()) {
+        session.bio = bio.to_string();
+    }
+    if let Some(pv) = obj.get("profileVisibility").and_then(|v| v.as_str()) {
+        if !pv.is_empty() {
+            session.profile_visibility = pv.to_string();
+        }
+    }
+    if let Some(links) = obj.get("socialLinks") {
+        if links.is_object() {
+            session.social_links = links.clone();
+        }
+    }
+    if let Some(show_tracks) = obj.get("showPublicTracks").and_then(|v| v.as_bool()) {
+        session.show_public_tracks = show_tracks;
     }
 }
 
@@ -1413,34 +1490,87 @@ pub async fn hub_update_profile(
 ) -> Result<Value> {
     let obj = payload.as_object().ok_or("Solicitação inválida.")?;
     for k in obj.keys() {
-        if !["brokerUrl", "displayName"].contains(&k.as_str()) {
+        if ![
+            "brokerUrl",
+            "displayName",
+            "publicHandle",
+            "bio",
+            "profileVisibility",
+            "socialLinks",
+            "showPublicTracks",
+        ]
+        .contains(&k.as_str())
+        {
             return Err("Campo inválido.".into());
         }
     }
-    let display_name = s(payload, "displayName").trim().to_string();
-    if display_name.is_empty() || display_name.len() > 80 {
-        return Err("Informe um nickname válido (1 a 80 caracteres).".into());
+
+    let mut body = serde_json::Map::new();
+    if let Some(val) = obj.get("displayName") {
+        let display_name = val
+            .as_str()
+            .map(str::trim)
+            .ok_or("Informe um nickname válido (1 a 80 caracteres).")?;
+        if display_name.is_empty() || display_name.chars().count() > 80 {
+            return Err("Informe um nickname válido (1 a 80 caracteres).".into());
+        }
+        body.insert("displayName".into(), json!(display_name));
     }
+    if let Some(val) = obj.get("publicHandle") {
+        let raw_handle = val
+            .as_str()
+            .ok_or("Informe um @handle válido (3 a 32 caracteres).")?;
+        let normalized = valid_handle_segment(raw_handle)?;
+        body.insert("publicHandle".into(), json!(normalized));
+    }
+    if let Some(val) = obj.get("bio") {
+        let bio = val
+            .as_str()
+            .map(str::trim)
+            .ok_or("Bio inválida.")?;
+        if bio.chars().count() > 240 {
+            return Err("A bio deve ter no máximo 240 caracteres.".into());
+        }
+        body.insert("bio".into(), json!(bio));
+    }
+    if let Some(val) = obj.get("profileVisibility") {
+        let vis = val
+            .as_str()
+            .ok_or("Visibilidade de perfil inválida.")?;
+        if !["public", "restricted", "private"].contains(&vis) {
+            return Err("Visibilidade de perfil inválida.".into());
+        }
+        body.insert("profileVisibility".into(), json!(vis));
+    }
+    if let Some(val) = obj.get("socialLinks") {
+        if !val.is_object() {
+            return Err("Links sociais inválidos.".into());
+        }
+        body.insert("socialLinks".into(), val.clone());
+    }
+    if let Some(val) = obj.get("showPublicTracks") {
+        let show = val.as_bool().ok_or("Campo showPublicTracks inválido.")?;
+        body.insert("showPublicTracks".into(), json!(show));
+    }
+    if body.is_empty() {
+        return Err("Informe ao menos um campo do perfil para atualizar.".into());
+    }
+
     let (broker, token) =
-        ensure_fresh_hub_token(secrets_mtx, secrets_path, Some(s(payload, "brokerUrl"))).await?;
-    let res = crate::providers::client()
-        .post(format!("{broker}/v1/auth/profile"))
-        .header("Authorization", format!("Bearer {token}"))
-        .json(&json!({ "displayName": display_name }))
-        .send()
-        .await
-        .map_err(|_| "Falha ao atualizar nickname no servidor.")?;
-    let status = res.status();
-    let body: Value = res.json().await.unwrap_or(Value::Null);
-    if !status.is_success() {
-        return Err(parse_broker_error(
-            &body,
-            "Não foi possível atualizar o nickname.",
-        ));
-    }
+        ensure_fresh_hub_token(secrets_mtx, secrets_path, opt_str(payload, "brokerUrl")).await?;
+    let resp_body = hub_json_request(
+        reqwest::Method::POST,
+        format!("{broker}/v1/auth/profile"),
+        Some(&token),
+        Some(&Value::Object(body)),
+        "Falha ao atualizar perfil no servidor.",
+        "Não foi possível atualizar o perfil.",
+    )
+    .await?;
+
     let mut guard = secrets_mtx.lock().unwrap();
     if let Some(sess) = guard.hub_session.as_mut() {
-        apply_hub_user_profile(sess, &body);
+        apply_hub_user_profile(sess, resp_body.get("user").unwrap_or(&resp_body));
     }
     guard.save(secrets_path)?;
     Ok(guard.public_hub_status(now()))
@@ -1498,6 +1628,479 @@ pub async fn hub_library_push(
         ));
     }
     Ok(resp_body)
+}
+
+fn opt_str<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+}
+
+fn valid_handle_segment(raw: &str) -> Result<String> {
+    let clean = raw.trim().trim_start_matches('@').to_ascii_lowercase();
+    let bytes = clean.as_bytes();
+    if !(3..=32).contains(&bytes.len())
+        || !bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        || !bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        || !bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(b))
+        || clean.contains("..")
+    {
+        return Err("Informe um @handle válido (3 a 32 caracteres: a-z, 0-9, ., _ ou -).".into());
+    }
+    Ok(clean)
+}
+
+fn valid_share_id_segment(raw: &str) -> Result<String> {
+    let clean = raw.trim();
+    if !(4..=64).contains(&clean.len())
+        || !clean
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+    {
+        return Err("Identificador da playlist compartilhada inválido.".into());
+    }
+    Ok(clean.to_string())
+}
+
+fn encode_url_component(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for b in raw.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*b as char);
+            }
+            _ => {
+                out.push_str(&format!("%{:02X}", b));
+            }
+        }
+    }
+    out
+}
+
+async fn optional_hub_auth(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    broker_override: Option<&str>,
+) -> Result<(String, Option<String>)> {
+    let broker = resolve_hub_broker(secrets_mtx, broker_override)?;
+    let has_session = {
+        let guard = secrets_mtx.lock().unwrap();
+        guard
+            .hub_session
+            .as_ref()
+            .is_some_and(|sess| !sess.refresh_token.is_empty())
+    };
+    if !has_session {
+        return Ok((broker, None));
+    }
+    match ensure_fresh_hub_token(secrets_mtx, secrets_path, broker_override).await {
+        Ok((b, token)) => Ok((b, Some(token))),
+        Err(_) => Ok((broker, None)),
+    }
+}
+
+async fn hub_json_request(
+    method: reqwest::Method,
+    url: String,
+    token: Option<&str>,
+    body: Option<&Value>,
+    net_err: &str,
+    api_err: &str,
+) -> Result<Value> {
+    let mut req = crate::providers::client()
+        .request(method, url)
+        .header("X-Liquid-Client-Version", env!("CARGO_PKG_VERSION"));
+    if let Some(tok) = token {
+        req = req.header("Authorization", format!("Bearer {tok}"));
+    }
+    if let Some(payload) = body {
+        req = req.json(payload);
+    }
+    let res = req.send().await.map_err(|_| net_err.to_string())?;
+    let status = res.status();
+    let resp_body: Value = res.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        if status == reqwest::StatusCode::CONFLICT
+            && resp_body["code"].as_str() == Some("version_conflict")
+        {
+            return Err(format!(
+                "version_conflict: {}",
+                parse_broker_error(&resp_body, api_err)
+            ));
+        }
+        if status.as_u16() == 426
+            || resp_body["code"].as_str() == Some("client_update_required")
+        {
+            return Err(format!(
+                "client_update_required: {}",
+                parse_broker_error(&resp_body, api_err)
+            ));
+        }
+        return Err(parse_broker_error(&resp_body, api_err));
+    }
+    Ok(resp_body)
+}
+
+pub async fn hub_get_profile(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    payload: &Value,
+) -> Result<Value> {
+    let handle = valid_handle_segment(s(payload, "handle"))?;
+    let (broker, token) =
+        optional_hub_auth(secrets_mtx, secrets_path, opt_str(payload, "brokerUrl")).await?;
+    let url = format!("{broker}/v1/profiles/{}", encode_url_component(&handle));
+    hub_json_request(
+        reqwest::Method::GET,
+        url,
+        token.as_deref(),
+        None,
+        "Falha ao carregar perfil no Liquid Hub.",
+        "Perfil não encontrado ou privado.",
+    )
+    .await
+}
+
+pub async fn hub_search_users(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    payload: &Value,
+) -> Result<Value> {
+    let query = payload
+        .get("query")
+        .or_else(|| payload.get("q"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .unwrap_or("");
+    if query.is_empty() {
+        return Ok(json!({ "users": [] }));
+    }
+    if query.chars().count() > 120 {
+        return Err("Termo de pesquisa muito longo.".into());
+    }
+    let limit = payload
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(20)
+        .clamp(1, 50);
+    let (broker, token) =
+        optional_hub_auth(secrets_mtx, secrets_path, opt_str(payload, "brokerUrl")).await?;
+    let mut url = url::Url::parse(&format!("{broker}/v1/users/search"))
+        .map_err(|_| "Endereço do servidor inválido.")?;
+    url.query_pairs_mut()
+        .append_pair("q", query)
+        .append_pair("limit", &limit.to_string());
+    hub_json_request(
+        reqwest::Method::GET,
+        url.to_string(),
+        token.as_deref(),
+        None,
+        "Falha ao pesquisar usuários no Liquid Hub.",
+        "Não foi possível pesquisar usuários.",
+    )
+    .await
+}
+
+pub async fn hub_publish_playlist(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    payload: &Value,
+) -> Result<Value> {
+    let obj = payload.as_object().ok_or("Solicitação inválida.")?;
+    for k in obj.keys() {
+        if ![
+            "brokerUrl",
+            "shareId",
+            "localPlaylistId",
+            "name",
+            "description",
+            "artwork",
+            "visibility",
+            "collaborative",
+            "tracks",
+        ]
+        .contains(&k.as_str())
+        {
+            return Err("Campo inválido.".into());
+        }
+    }
+    let name = s(payload, "name").trim();
+    if name.is_empty() || name.chars().count() > 100 {
+        return Err("Informe um nome válido para a playlist (1 a 100 caracteres).".into());
+    }
+    let tracks = obj
+        .get("tracks")
+        .filter(|v| v.is_array())
+        .ok_or("Lista de faixas inválida.")?;
+
+    let mut body = serde_json::Map::new();
+    if let Some(sid) = opt_str(payload, "shareId") {
+        body.insert("shareId".into(), json!(valid_share_id_segment(sid)?));
+    }
+    if let Some(lid) = opt_str(payload, "localPlaylistId") {
+        body.insert("localPlaylistId".into(), json!(lid));
+    }
+    body.insert("name".into(), json!(name));
+    if let Some(desc) = obj.get("description").and_then(|v| v.as_str()) {
+        body.insert("description".into(), json!(desc.trim()));
+    }
+    if let Some(art) = obj.get("artwork").and_then(|v| v.as_str()) {
+        body.insert("artwork".into(), json!(art));
+    }
+    let visibility = obj
+        .get("visibility")
+        .and_then(|v| v.as_str())
+        .unwrap_or("private");
+    if !["public", "unlisted", "private"].contains(&visibility) {
+        return Err("Visibilidade de playlist inválida.".into());
+    }
+    body.insert("visibility".into(), json!(visibility));
+    body.insert(
+        "collaborative".into(),
+        json!(obj
+            .get("collaborative")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)),
+    );
+    body.insert("tracks".into(), tracks.clone());
+
+    let (broker, token) =
+        ensure_fresh_hub_token(secrets_mtx, secrets_path, opt_str(payload, "brokerUrl")).await?;
+    hub_json_request(
+        reqwest::Method::POST,
+        format!("{broker}/v1/playlists"),
+        Some(&token),
+        Some(&Value::Object(body)),
+        "Falha ao publicar playlist no Liquid Hub.",
+        "Não foi possível publicar a playlist.",
+    )
+    .await
+}
+
+pub async fn hub_my_playlists(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    payload: &Value,
+) -> Result<Value> {
+    let (broker, token) =
+        ensure_fresh_hub_token(secrets_mtx, secrets_path, opt_str(payload, "brokerUrl")).await?;
+    hub_json_request(
+        reqwest::Method::GET,
+        format!("{broker}/v1/playlists/mine"),
+        Some(&token),
+        None,
+        "Falha ao carregar suas playlists compartilhadas.",
+        "Não foi possível listar suas playlists compartilhadas.",
+    )
+    .await
+}
+
+pub async fn hub_get_shared_playlist(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    payload: &Value,
+) -> Result<Value> {
+    let share_id = valid_share_id_segment(s(payload, "shareId"))?;
+    let (broker, token) =
+        optional_hub_auth(secrets_mtx, secrets_path, opt_str(payload, "brokerUrl")).await?;
+    let mut url = url::Url::parse(&format!(
+        "{broker}/v1/playlists/{}",
+        encode_url_component(&share_id)
+    ))
+    .map_err(|_| "Endereço do servidor inválido.")?;
+    if let Some(sv) = payload.get("sinceVersion").and_then(|v| v.as_u64()) {
+        url.query_pairs_mut()
+            .append_pair("sinceVersion", &sv.to_string());
+    }
+    hub_json_request(
+        reqwest::Method::GET,
+        url.to_string(),
+        token.as_deref(),
+        None,
+        "Falha ao carregar playlist compartilhada.",
+        "Playlist indisponível ou privada.",
+    )
+    .await
+}
+
+pub async fn hub_mutate_shared_playlist(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    payload: &Value,
+) -> Result<Value> {
+    let obj = payload.as_object().ok_or("Solicitação inválida.")?;
+    for k in obj.keys() {
+        if ![
+            "brokerUrl",
+            "shareId",
+            "op",
+            "expectedVersion",
+            "name",
+            "description",
+            "artwork",
+            "visibility",
+            "collaborative",
+            "tracks",
+            "trackId",
+            "trackIds",
+        ]
+        .contains(&k.as_str())
+        {
+            return Err("Campo inválido.".into());
+        }
+    }
+    let share_id = valid_share_id_segment(s(payload, "shareId"))?;
+    let mut body = serde_json::Map::new();
+    for key in [
+        "op",
+        "expectedVersion",
+        "name",
+        "description",
+        "artwork",
+        "visibility",
+        "collaborative",
+        "tracks",
+        "trackId",
+        "trackIds",
+    ] {
+        if let Some(val) = obj.get(key) {
+            body.insert(key.into(), val.clone());
+        }
+    }
+
+    let (broker, token) =
+        ensure_fresh_hub_token(secrets_mtx, secrets_path, opt_str(payload, "brokerUrl")).await?;
+    hub_json_request(
+        reqwest::Method::PATCH,
+        format!("{broker}/v1/playlists/{}", encode_url_component(&share_id)),
+        Some(&token),
+        Some(&Value::Object(body)),
+        "Falha ao atualizar a playlist compartilhada.",
+        "Não foi possível atualizar a playlist compartilhada.",
+    )
+    .await
+}
+
+pub async fn hub_invite_collaborator(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    payload: &Value,
+) -> Result<Value> {
+    let share_id = valid_share_id_segment(s(payload, "shareId"))?;
+    let handle = valid_handle_segment(s(payload, "handle"))?;
+    let (broker, token) =
+        ensure_fresh_hub_token(secrets_mtx, secrets_path, opt_str(payload, "brokerUrl")).await?;
+    hub_json_request(
+        reqwest::Method::POST,
+        format!(
+            "{broker}/v1/playlists/{}/invites",
+            encode_url_component(&share_id)
+        ),
+        Some(&token),
+        Some(&json!({ "handle": handle })),
+        "Falha ao enviar convite de colaboração.",
+        "Não foi possível convidar este usuário.",
+    )
+    .await
+}
+
+pub async fn hub_respond_playlist_invite(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    payload: &Value,
+) -> Result<Value> {
+    let share_id = valid_share_id_segment(s(payload, "shareId"))?;
+    let accept = payload
+        .get("accept")
+        .and_then(|v| v.as_bool())
+        .ok_or("Informe se aceita ou recusa o convite.")?;
+    let action = if accept { "accept" } else { "decline" };
+    let (broker, token) =
+        ensure_fresh_hub_token(secrets_mtx, secrets_path, opt_str(payload, "brokerUrl")).await?;
+    hub_json_request(
+        reqwest::Method::POST,
+        format!(
+            "{broker}/v1/playlists/{}/invites/{action}",
+            encode_url_component(&share_id)
+        ),
+        Some(&token),
+        None,
+        "Falha ao responder ao convite da playlist.",
+        "Não foi possível responder ao convite.",
+    )
+    .await
+}
+
+pub async fn hub_remove_collaborator(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    payload: &Value,
+) -> Result<Value> {
+    let share_id = valid_share_id_segment(s(payload, "shareId"))?;
+    let handle = valid_handle_segment(s(payload, "handle"))?;
+    let (broker, token) =
+        ensure_fresh_hub_token(secrets_mtx, secrets_path, opt_str(payload, "brokerUrl")).await?;
+    hub_json_request(
+        reqwest::Method::DELETE,
+        format!(
+            "{broker}/v1/playlists/{}/collaborators/{}",
+            encode_url_component(&share_id),
+            encode_url_component(&handle)
+        ),
+        Some(&token),
+        None,
+        "Falha ao atualizar participantes da playlist.",
+        "Não foi possível remover o colaborador.",
+    )
+    .await
+}
+
+pub async fn hub_plus_status(
+    secrets_mtx: &Mutex<Secrets>,
+    secrets_path: &Path,
+    payload: &Value,
+) -> Result<Value> {
+    let (broker, token) =
+        optional_hub_auth(secrets_mtx, secrets_path, opt_str(payload, "brokerUrl")).await?;
+    hub_json_request(
+        reqwest::Method::GET,
+        format!("{broker}/v1/plus/status"),
+        token.as_deref(),
+        None,
+        "Falha ao consultar assinatura Liquid Plus.",
+        "Não foi possível carregar o status do Liquid Plus.",
+    )
+    .await
+}
+
+pub async fn hub_version_policy(
+    secrets_mtx: &Mutex<Secrets>,
+    payload: &Value,
+) -> Result<Value> {
+    let broker = resolve_hub_broker(secrets_mtx, opt_str(payload, "brokerUrl"))?;
+    let client_version = opt_str(payload, "clientVersion")
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or(env!("CARGO_PKG_VERSION"));
+    let platform = opt_str(payload, "platform")
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or(std::env::consts::OS);
+    let url = format!(
+        "{broker}/v1/version?clientVersion={}&platform={}",
+        encode_url_component(client_version),
+        encode_url_component(platform)
+    );
+    hub_json_request(
+        reqwest::Method::GET,
+        url,
+        None,
+        None,
+        "Falha ao verificar política de versão do Liquid Hub.",
+        "Não foi possível consultar a versão mínima exigida pelo servidor.",
+    )
+    .await
 }
 
 pub async fn hub_link_email(

@@ -5,8 +5,8 @@ import { pathToFileURL } from 'node:url';
 import { CatalogError, createPlatforms, type CatalogKind, type CatalogSource } from './catalog-platforms.ts';
 
 const discoverySources: CatalogSource[] = ['youtube', 'soundcloud'];
-const searchSources: CatalogSource[] = ['youtube', 'soundcloud', 'deezer'];
-const kinds: CatalogKind[] = ['all', 'track', 'artist', 'playlist'];
+const searchSources: CatalogSource[] = ['youtube', 'soundcloud', 'deezer', 'spotify'];
+const kinds: CatalogKind[] = ['all', 'track', 'artist', 'playlist', 'album'];
 const bounded = (raw: string | undefined, fallback: number, maximum: number) =>
   Math.max(1, Math.min(maximum, Number(raw) || fallback));
 

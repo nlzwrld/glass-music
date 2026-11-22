@@ -123,7 +123,14 @@ pub fn validate_search(r: &Value) -> Result<()> {
     }
     Ok(())
 }
-pub async fn search(r: &Value, local: Vec<Value>, consent: bool, catalog: &str, direct: &crate::direct_catalog::DirectCatalog) -> Result<Value> {
+pub async fn search(
+    r: &Value,
+    local: Vec<Value>,
+    consent: bool,
+    catalog: &str,
+    direct: &crate::direct_catalog::DirectCatalog,
+    accounts: &crate::accounts::Accounts,
+) -> Result<Value> {
     let source = s(r, "source");
     let kind = s(r, "kind");
     let query = s(r, "query").to_lowercase();
@@ -147,7 +154,7 @@ pub async fn search(r: &Value, local: Vec<Value>, consent: bool, catalog: &str, 
                     .contains(&query)
         }));
     }
-    let (yt, dz, ap, sc) = tokio::join!(
+    let (yt, dz, ap, sc, sp) = tokio::join!(
         async {
             if consent && source == "ytmusic" && kind != "album" {
                 Some(direct.ytmusic_search(s(r, "query")).await)
@@ -177,9 +184,17 @@ pub async fn search(r: &Value, local: Vec<Value>, consent: bool, catalog: &str, 
             } else {
                 None
             }
+        },
+        async {
+            if consent && (source == "spotify" || (source == "all" && (!catalog.is_empty() || accounts.spotify_search_ready()))) {
+                Some(if !catalog.is_empty() { crate::catalog::search(catalog, "spotify", r).await } else { crate::platforms::search_spotify(r, accounts).await })
+            } else {
+                None
+            }
         }
     );
     for (key, label, result) in [
+        ("spotify", "Spotify", sp),
         ("youtube", "YouTube", yt),
         ("deezer", "Deezer", dz),
         ("apple", "Apple Music", ap),
@@ -203,6 +218,9 @@ pub async fn search(r: &Value, local: Vec<Value>, consent: bool, catalog: &str, 
                 }
             }
         }
+    }
+    if !items.is_empty() {
+        items = crate::ranking::rank_search_results(items, s(r, "query"), kind);
     }
     if !consent && source != "local" {
         notices.push("Ative as integrações em Configurações para pesquisar online.".into());

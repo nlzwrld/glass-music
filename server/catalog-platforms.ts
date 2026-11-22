@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto';
 import type { StreamCandidate, Track } from '../shared/types.ts';
 import { buildResolverQuery, scoreStreamCandidate } from '../desktop/providers/resolver.ts';
 
-export type CatalogSource = 'youtube' | 'soundcloud' | 'deezer';
-export type CatalogKind = 'all' | 'track' | 'artist' | 'playlist';
+export type CatalogSource = 'youtube' | 'soundcloud' | 'deezer' | 'spotify';
+export type CatalogKind = 'all' | 'track' | 'artist' | 'playlist' | 'album';
 export interface CatalogPage {
   items: Track[];
   next?: string;
@@ -44,6 +44,10 @@ function artwork(raw: unknown): string | undefined {
         'i.ytimg.com',
         'i1.sndcdn.com',
         'i2.sndcdn.com',
+        'i.scdn.co',
+        'mosaic.scdn.co',
+        'image-cdn-fa.spotifycdn.com',
+        'image-cdn-ak.spotifycdn.com',
         'cdn-images.dzcdn.net',
         'e-cdns-images.dzcdn.net',
         'cdns-images.dzcdn.net',
@@ -75,10 +79,13 @@ export function createPlatforms(env: NodeJS.ProcessEnv, request: typeof fetch = 
   const configured = {
     youtube: !!env.YOUTUBE_API_KEY,
     soundcloud: !!env.SOUNDCLOUD_CLIENT_ID && !!env.SOUNDCLOUD_CLIENT_SECRET,
+    spotify: !!env.SPOTIFY_CLIENT_ID && !!env.SPOTIFY_CLIENT_SECRET,
   };
   const deezerEnabled = env.CATALOG_ENABLE_DEEZER === '1';
   let token: { access: string; refresh?: string; expires: number } | undefined;
   let pendingToken: Promise<string> | undefined;
+  let spotifyToken: { access: string; expires: number } | undefined;
+  let pendingSpotifyToken: Promise<string> | undefined;
   let youtubeDay = '',
     youtubeCalls = 0;
   const searchBudget = Math.max(1, Math.min(100000, Number(env.YOUTUBE_DAILY_SEARCH_LIMIT) || 90));
@@ -282,12 +289,198 @@ export function createPlatforms(env: NodeJS.ProcessEnv, request: typeof fetch = 
     };
   }
 
+  async function spotifyAccess() {
+    if (!configured.spotify) {
+      throw new CatalogError('O catálogo do Spotify ainda não foi ativado pelo Liquid Hub.');
+    }
+    if (spotifyToken && spotifyToken.expires > Date.now() + 60000) return spotifyToken.access;
+    if (pendingSpotifyToken) return pendingSpotifyToken;
+    pendingSpotifyToken = (async () => {
+      const data = await json('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${Buffer.from(
+            `${env.SPOTIFY_CLIENT_ID}:${env.SPOTIFY_CLIENT_SECRET}`,
+          ).toString('base64')}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Accept: 'application/json',
+        },
+        body: new URLSearchParams({ grant_type: 'client_credentials' }),
+      });
+      if (typeof data.access_token !== 'string') {
+        throw new CatalogError('A autorização do Spotify está indisponível.');
+      }
+      spotifyToken = {
+        access: data.access_token,
+        expires: Date.now() + (Number(data.expires_in) || 3600) * 1000,
+      };
+      return spotifyToken.access;
+    })();
+    try {
+      return await pendingSpotifyToken;
+    } catch (e) {
+      spotifyToken = undefined;
+      throw e;
+    } finally {
+      pendingSpotifyToken = undefined;
+    }
+  }
+
+  function mapSpotifyItem(row: any, kind: 'track' | 'album' | 'artist' | 'playlist'): Track | undefined {
+    if (!row || typeof row !== 'object') return undefined;
+    const spId = String(row.id || '');
+    if (!/^[A-Za-z0-9]{22}$/.test(spId)) return undefined;
+    const canonical = `https://open.spotify.com/${kind}/${spId}`;
+    const hash = createHash('sha256').update(canonical).digest('hex').slice(0, 32);
+    const art = artwork(
+      row.album?.images?.[0]?.url || row.images?.[0]?.url,
+    );
+    if (kind === 'track') {
+      const durMs = Math.max(0, Math.round(Number(row.duration_ms || 0)));
+      const sec = Math.min(604800, durMs / 1000);
+      const artists = Array.isArray(row.artists)
+        ? row.artists.map((a: any) => a?.name).filter(Boolean).join(', ')
+        : '';
+      const isrc =
+        typeof row.external_ids?.isrc === 'string' && /^[A-Z0-9-]{12,15}$/i.test(row.external_ids.isrc)
+          ? row.external_ids.isrc.toUpperCase()
+          : undefined;
+      return {
+        id: `link:${hash}`,
+        source: 'link',
+        sourceId: hash,
+        kind: 'track',
+        title: text(row.name, 'Spotify'),
+        artist: text(artists, 'Spotify'),
+        album: row.album?.name ? text(row.album.name, '') : undefined,
+        artwork: art,
+        duration: sec,
+        durationMs: Math.round(sec * 1000),
+        isrc,
+        catalogSource: 'spotify',
+        url: canonical,
+        addedAt: Date.now(),
+      };
+    }
+    const artist =
+      kind === 'album'
+        ? text(
+            Array.isArray(row.artists)
+              ? row.artists.map((a: any) => a?.name).filter(Boolean).join(', ')
+              : '',
+            'Spotify',
+          )
+        : kind === 'playlist'
+          ? text(row.owner?.display_name, 'Spotify')
+          : text(row.name, 'Spotify');
+    return {
+      id: `link:${hash}`,
+      source: 'link',
+      sourceId: hash,
+      kind,
+      title: text(row.name, 'Spotify'),
+      artist,
+      ...(kind === 'album' ? { album: text(row.name, 'Spotify') } : {}),
+      artwork: art,
+      duration: 0,
+      catalogSource: 'spotify',
+      url: canonical,
+      addedAt: Date.now(),
+    };
+  }
+
+  async function searchSpotify(
+    query: string,
+    kind: CatalogKind,
+    cursor?: string,
+  ): Promise<CatalogPage> {
+    if (cursor && !/^\d{1,3}$/.test(cursor)) {
+      throw new CatalogError('Página inválida.', 400);
+    }
+    const offset = cursor ? Number(cursor) : 0;
+    if (offset > 190 || offset % 10 !== 0) {
+      throw new CatalogError('Página inválida.', 400);
+    }
+    const auth = await spotifyAccess();
+    const searchType =
+      kind === 'all' ? 'track,album,artist,playlist' : kind;
+    const url = `https://api.spotify.com/v1/search?${new URLSearchParams({
+      q: query,
+      type: searchType,
+      limit: '10',
+      offset: String(offset),
+      market: region,
+    })}`;
+    let response: Response;
+    try {
+      response = await request(url, {
+        headers: { Authorization: `Bearer ${auth}`, Accept: 'application/json' },
+        signal: AbortSignal.timeout(15000),
+        redirect: 'error',
+      });
+    } catch {
+      throw new CatalogError('O Spotify está temporariamente indisponível.', 503);
+    }
+    if (response.status === 401) {
+      spotifyToken = undefined;
+      throw new CatalogError('A autorização do Spotify expirou.', 503);
+    }
+    if (!response.ok) {
+      if (response.status === 429) {
+        let bodyText = '';
+        try {
+          bodyText = await response.text();
+        } catch {}
+        if (bodyText.includes('QUOTA_EXCEEDED')) {
+          throw new CatalogError(
+            'A cota da Spotify Web API foi excedida temporariamente.',
+            429,
+          );
+        }
+        throw new CatalogError(
+          'O catálogo atingiu um limite temporário. Tente novamente mais tarde.',
+          429,
+        );
+      }
+      throw new CatalogError('Não foi possível consultar o Spotify agora.', 503);
+    }
+    const data = await response.json();
+    const items: Track[] = [];
+    let hasNext = false;
+    const sections: Array<['tracks' | 'albums' | 'artists' | 'playlists', 'track' | 'album' | 'artist' | 'playlist']> = [
+      ['tracks', 'track'],
+      ['albums', 'album'],
+      ['artists', 'artist'],
+      ['playlists', 'playlist'],
+    ];
+    for (const [secKey, itemKind] of sections) {
+      const sec = data?.[secKey];
+      if (!sec) continue;
+      if (Array.isArray(sec.items)) {
+        for (const row of sec.items) {
+          const mapped = mapSpotifyItem(row, itemKind);
+          if (mapped) items.push(mapped);
+        }
+      }
+      if (typeof sec.next === 'string' && offset + 10 <= 190) {
+        hasNext = true;
+      }
+    }
+    return { items, next: hasNext ? String(offset + 10) : undefined };
+  }
+
   async function search(
     source: CatalogSource,
     query: string,
     kind: CatalogKind,
     cursor?: string,
   ): Promise<CatalogPage> {
+    if (source === 'spotify') {
+      return searchSpotify(query, kind, cursor);
+    }
+    if (kind === 'album' && (source === 'youtube' || source === 'soundcloud')) {
+      return { items: [] };
+    }
     if (source === 'deezer') {
       if (!deezerEnabled) {
         throw new CatalogError('O catálogo do Deezer não está habilitado neste servidor.');
@@ -417,7 +610,7 @@ export function createPlatforms(env: NodeJS.ProcessEnv, request: typeof fetch = 
     isrc?: string;
     excludeIds?: string[];
   }): Promise<StreamCandidate[]> {
-    const activeSources: CatalogSource[] = [];
+    const activeSources: Array<'youtube' | 'soundcloud' | 'deezer'> = [];
     if (configured.youtube) activeSources.push('youtube');
     if (configured.soundcloud) activeSources.push('soundcloud');
     if (deezerEnabled) activeSources.push('deezer');

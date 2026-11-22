@@ -5,11 +5,14 @@ import {
   AlertCircle,
   Link2,
   Play,
+  UserRound,
 } from 'lucide-react';
 import { useApp, cleanError, looksLikeMusicLink, handleDirectLink } from '../stores/app';
-import type { SearchKind, SearchSource, SearchResult } from '../../shared/types';
+import { resolveEffectiveBroker, useAccounts } from '../stores/accounts';
+import type { SearchKind, SearchSource, SearchResult, UserSearchItem } from '../../shared/types';
 import TrackList from '../components/library/TrackList';
 import TrackCard from '../components/library/TrackCard';
+import { rankSearchTracks } from '../lib/searchRanking';
 
 const KINDS: [SearchKind, string][] = [
   ['all', 'Tudo'],
@@ -17,11 +20,13 @@ const KINDS: [SearchKind, string][] = [
   ['album', 'Álbuns'],
   ['playlist', 'Playlists'],
   ['artist', 'Artistas'],
+  ['user', 'Usuários'],
   ['lyrics', 'Letras'],
 ];
 
 const SOURCES: [SearchSource, string][] = [
   ['all', 'Todas'],
+  ['spotify', 'Spotify'],
   ['youtube', 'YouTube'],
   ['deezer', 'Deezer'],
   ['apple', 'Apple Music'],
@@ -32,17 +37,22 @@ const SOURCES: [SearchSource, string][] = [
 export default function Search() {
   const query = useApp(s => s.filter),
     local = useApp(s => s.data.tracks),
+    onlineConsent = useApp(s => s.data.preferences.onlineConsent),
     consent = useApp(
       s =>
         s.data.preferences.onlineConsent &&
         (!s.integrations?.catalogConfigured || s.data.preferences.catalogConsent),
-    );
+    ),
+    hub = useAccounts(s => s.hub),
+    preferredBrokerUrl = useAccounts(s => s.preferredBrokerUrl);
   const [kind, setKind] = useState<SearchKind>('all');
   const [source, setSource] = useState<SearchSource>('all');
   const [result, setResult] = useState<SearchResult>({ items: [], next: {}, notices: [] });
+  const [users, setUsers] = useState<UserSearchItem[]>([]);
   const [loading, setLoading] = useState(false);
   const generation = useRef(0);
   const active = useRef<string[]>([]);
+  const brokerUrl = resolveEffectiveBroker(undefined, { preferredBrokerUrl, hub });
 
   useEffect(() => {
     useApp.setState({ searchBusy: loading });
@@ -51,7 +61,7 @@ export default function Search() {
 
   const isLink = looksLikeMusicLink(query);
   const localMatches =
-    kind !== 'lyrics' && (source === 'all' || source === 'local')
+    kind !== 'lyrics' && kind !== 'user' && (source === 'all' || source === 'local')
       ? local.filter(
           t =>
             (source === 'local' ? t.source === 'local' : true) &&
@@ -65,10 +75,47 @@ export default function Search() {
     const gen = ++generation.current;
     const q = query.trim();
     setResult({ items: [], next: {}, notices: [] });
+    setUsers([]);
     active.current.forEach(id => void window.glass.cancelSearch(id));
     active.current = [];
     setLoading(false);
-    if (!q || isLink || (source === 'local' && kind !== 'lyrics')) return;
+    if (!q || isLink) return;
+    if (kind === 'user') {
+      if (!onlineConsent) {
+        setResult({
+          items: [],
+          next: {},
+          notices: ['Ative o acesso online para buscar usuários.'],
+        });
+        return;
+      }
+      if (!window.glass?.hubSearchUsers) return;
+      setLoading(true);
+      const timer = setTimeout(async () => {
+        try {
+          const res = await window.glass.hubSearchUsers({
+            brokerUrl,
+            query: q,
+            limit: 24,
+          });
+          if (generation.current === gen) {
+            setUsers(Array.isArray(res?.users) ? res.users : []);
+          }
+        } catch (e) {
+          if (generation.current === gen) {
+            setResult({ items: [], next: {}, notices: [cleanError(e)] });
+          }
+        } finally {
+          if (generation.current === gen) setLoading(false);
+        }
+      }, 300);
+      return () => {
+        clearTimeout(timer);
+        generation.current++;
+      };
+    }
+
+    if (source === 'local' && kind !== 'lyrics') return;
     if (!consent) {
       setResult({ items: [], next: {}, notices: ['Ative o acesso online para buscar.'] });
       return;
@@ -78,8 +125,18 @@ export default function Search() {
       const requestId = crypto.randomUUID();
       active.current = [requestId];
       try {
-        const data = await window.glass.search({ query: q, kind, source, requestId });
-        if (generation.current === gen) setResult(data);
+        const searchPromise = window.glass.search({ query: q, kind, source, requestId });
+        const usersPromise =
+          kind === 'all' && source === 'all' && window.glass?.hubSearchUsers
+            ? window.glass
+                .hubSearchUsers({ brokerUrl, query: q, limit: 8 })
+                .catch(() => ({ users: [] as UserSearchItem[] }))
+            : Promise.resolve({ users: [] as UserSearchItem[] });
+        const [data, userData] = await Promise.all([searchPromise, usersPromise]);
+        if (generation.current === gen) {
+          setResult(data);
+          setUsers(Array.isArray(userData?.users) ? userData.users : []);
+        }
       } catch (e) {
         if (generation.current === gen)
           setResult({ items: [], next: {}, notices: [cleanError(e)] });
@@ -92,7 +149,7 @@ export default function Search() {
       generation.current++;
       active.current.forEach(id => void window.glass.cancelSearch(id));
     };
-  }, [query, isLink, kind, source, consent]);
+  }, [query, isLink, kind, source, consent, onlineConsent, brokerUrl]);
 
   const more = async () => {
     const gen = generation.current;
@@ -129,11 +186,13 @@ export default function Search() {
   };
 
   const localFiltered = kind === 'all' || kind === 'track' ? localMatches : [];
-  const combined = [
+  const rawCombined = [
     ...new Map([...localFiltered, ...result.items].map(t => [t.id, t])).values(),
   ];
+  const combined = query.trim() ? rankSearchTracks(rawCombined, query, kind) : rawCombined;
   const tracksOnly = combined.filter(t => t.kind === 'track');
   const collectionsOnly = combined.filter(t => t.kind !== 'track');
+  const hasSpotifyResults = combined.some(t => t.catalogSource === 'spotify');
 
   return (
     <div className="search-page">
@@ -155,7 +214,7 @@ export default function Search() {
             </button>
           ))}
         </div>
-        {kind !== 'lyrics' && (
+        {kind !== 'lyrics' && kind !== 'user' && (
           <div className="source-filters" role="group" aria-label="Plataforma">
             {SOURCES.map(([id, label]) => (
               <button
@@ -174,7 +233,7 @@ export default function Search() {
       {!query ? (
         <div className="search-empty">
           <SearchIcon size={20} />
-          <p>Pesquise por música, álbum, artista, letra ou link.</p>
+          <p>Pesquise por música, álbum, artista, usuário, letra ou link.</p>
         </div>
       ) : isLink ? (
         <div className="notice">
@@ -194,19 +253,69 @@ export default function Search() {
             <div className="notice" key={n}>
               <AlertCircle size={15} />
               <span>{n}</span>
-              {!consent && (
+              {(!consent || n.includes('Configurações')) && (
                 <button
                   className="button secondary"
-                  onClick={() => useApp.getState().setPage('settings')}
+                  onClick={() => {
+                    useApp.getState().setSettingsTab('privacy');
+                    useApp.getState().setPage('settings');
+                  }}
                 >
                   Configurações
                 </button>
               )}
             </div>
           ))}
+          {hasSpotifyResults && (
+            <div className="notice spotify-provenance-banner" role="note">
+              <span>
+                Metadados via Spotify Web API · A reprodução utiliza as fontes de áudio integradas do Liquid Hub.
+              </span>
+            </div>
+          )}
+          {users.length > 0 && (kind === 'user' || kind === 'all') && (
+            <section className="catalog-section" style={{ marginBottom: 20 }} aria-label="Usuários do Liquid Hub">
+              {kind === 'all' && (
+                <div className="section-heading">
+                  <h2>Usuários do Liquid Hub</h2>
+                </div>
+              )}
+              <div className="user-search-grid">
+                {users.map(u => (
+                  <button
+                    key={u.handle}
+                    type="button"
+                    className="user-search-card"
+                    onClick={() => useApp.getState().setPage(`profile:${u.handle}`)}
+                  >
+                    <div className="user-search-avatar" aria-hidden="true">
+                      {u.avatarUrl ? (
+                        <img src={u.avatarUrl} alt="" />
+                      ) : (
+                        <span>{(u.displayName || u.handle).charAt(0).toUpperCase()}</span>
+                      )}
+                    </div>
+                    <div className="user-search-meta">
+                      <div className="user-search-title-row">
+                        <strong>{u.displayName}</strong>
+                        <span className="entity-badge entity-badge-user">
+                          <UserRound size={10} />
+                          Perfil
+                        </span>
+                      </div>
+                      <small>
+                        @{u.handle} · {u.publicPlaylistCount} playlist(s) pública(s)
+                      </small>
+                      {u.bio && <p className="user-search-bio">{u.bio}</p>}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
           {collectionsOnly.length > 0 && (
             <section className="catalog-section" style={{ marginBottom: 20 }}>
-              {tracksOnly.length > 0 && (
+              {(tracksOnly.length > 0 || users.length > 0) && (
                 <div className="section-heading">
                   <h2>Coleções e artistas</h2>
                 </div>
@@ -219,7 +328,7 @@ export default function Search() {
             </section>
           )}
           {tracksOnly.length > 0 && <TrackList tracks={tracksOnly} />}
-          {!combined.length && !loading && (
+          {!combined.length && !users.length && !loading && (
             <div className="empty-state">
               <SearchIcon size={20} />
               <h3>Sem resultados</h3>

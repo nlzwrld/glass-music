@@ -1,19 +1,17 @@
 import { useState } from 'react';
 import {
   ArrowLeft,
+  BadgeCheck,
   Download,
   ExternalLink,
   LoaderCircle,
-  Pause,
-  Play,
   Plus,
-  Shuffle,
 } from 'lucide-react';
 import { useApp, cleanError } from '../stores/app';
-import { shufflePlay } from '../lib/playback';
-import { transport } from '../components/player/engine';
+import { inspectMusicLink } from '../lib/playlist';
 import Cover from '../components/glass/Cover';
 import TrackList from '../components/library/TrackList';
+import { CollectionPlaybackActions } from '../components/library/CollectionPlaybackActions';
 import { SourceBadge } from '../components/glass/controls';
 
 export default function Collection() {
@@ -43,6 +41,7 @@ export default function Collection() {
 
   const tracks = preview.tracks;
   const activeHere = !!current && tracks.some(t => t.id === current.id);
+  const isVerifiedArtist = inspectMusicLink(preview.url).kind === 'artist';
 
   const importToLibrary = async () => {
     setSaving(true);
@@ -71,7 +70,15 @@ export default function Collection() {
           <Cover track={{ title: preview.name, artwork: preview.artwork, source: 'link' }} />
         </div>
         <div>
-          <SourceBadge source="link" url={preview.url} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <SourceBadge source="link" url={preview.url} />
+            {isVerifiedArtist && (
+              <span className="entity-badge entity-badge-artist">
+                <BadgeCheck size={12} />
+                Artista verificado
+              </span>
+            )}
+          </div>
           <h1>{preview.name}</h1>
           <p>{tracks.length} faixas</p>
         </div>
@@ -108,32 +115,11 @@ export default function Collection() {
 
       <div className="library-toolbar">
         <div>
-          <button
-            className="playlist-play"
-            disabled={!tracks.length}
-            aria-label={activeHere && playing ? 'Pausar coleção' : 'Reproduzir coleção'}
-            onClick={() => {
-              if (activeHere) transport.toggle();
-              else if (tracks[0]) useApp.getState().play(tracks[0], tracks);
-            }}
-          >
-            {activeHere && playing ? (
-              <Pause size={16} fill="currentColor" />
-            ) : (
-              <Play size={16} fill="currentColor" />
-            )}
-            <span>{activeHere && playing ? 'Pausar' : 'Reproduzir'}</span>
-          </button>
-          <button
-            type="button"
-            className="button secondary playlist-shuffle-play"
-            disabled={!tracks.length}
-            aria-label="Reproduzir coleção no aleatório"
-            onClick={() => shufflePlay(tracks)}
-          >
-            <Shuffle size={15} />
-            <span>Aleatório</span>
-          </button>
+          <CollectionPlaybackActions
+            tracks={tracks}
+            activeHere={activeHere}
+            playing={playing}
+          />
           {tracks.some(t => ['youtube', 'link'].includes(t.source)) && (
             <button
               className="button secondary"
@@ -150,7 +136,7 @@ export default function Collection() {
         </button>
       </div>
 
-      <TrackList tracks={tracks} />
+      <TrackList tracks={tracks} showHeaderShuffle={false} />
     </div>
   );
 }

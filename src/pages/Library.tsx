@@ -1,20 +1,27 @@
-import { preparePlayback, shufflePlay } from '../lib/playback';
-import { useState, useEffect, useMemo } from 'react';
+import { preparePlayback } from '../lib/playback';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { GlassContextMenu } from '../components/glass/materials';
-import { transport } from '../components/player/engine';
 import {
   Search,
   Pencil,
   Trash2,
-  Play,
-  Pause,
   Download,
   Share2,
-  Shuffle,
+  Users,
+  ExternalLink,
+  Check,
+  X,
+  ListMusic,
+  Globe,
+  Link2,
+  Lock,
 } from 'lucide-react';
-import { useApp } from '../stores/app';
+import type { MySharedPlaylistsResponse } from '../../shared/types';
+import { resolveEffectiveBroker, useAccounts } from '../stores/accounts';
+import { cleanError, useApp } from '../stores/app';
 import PlaylistCover from '../components/library/PlaylistCover';
 import TrackList from '../components/library/TrackList';
+import { CollectionPlaybackActions } from '../components/library/CollectionPlaybackActions';
 import Cover from '../components/glass/Cover';
 import { IconButton } from '../components/glass/controls';
 
@@ -32,8 +39,33 @@ function formatTotalDuration(seconds: number) {
 export default function Library() {
   const data = useApp(s => s.data),
     page = useApp(s => s.page),
+    hub = useAccounts(s => s.hub),
+    preferredBrokerUrl = useAccounts(s => s.preferredBrokerUrl),
     [query, setQuery] = useState(''),
-    [tab, setTab] = useState<LibTab>('all');
+    [tab, setTab] = useState<LibTab>('all'),
+    [myShared, setMyShared] = useState<MySharedPlaylistsResponse | null>(null),
+    [inviteBusy, setInviteBusy] = useState('');
+
+  const brokerUrl = resolveEffectiveBroker(undefined, { preferredBrokerUrl, hub });
+
+  const refreshShared = useCallback(async () => {
+    if (!hub.authenticated || !window.glass?.hubMyPlaylists || !data.preferences.onlineConsent) {
+      setMyShared(null);
+      return;
+    }
+    try {
+      const res = await window.glass.hubMyPlaylists({ brokerUrl });
+      setMyShared(res);
+    } catch {
+      // Keep local library responsive if broker is unreachable
+    }
+  }, [hub.authenticated, brokerUrl, data.preferences.onlineConsent]);
+
+  useEffect(() => {
+    if (page === 'library') {
+      void refreshShared();
+    }
+  }, [page, refreshShared]);
 
   const playlist = page.startsWith('playlist:')
     ? data.playlists.find(p => p.id === page.slice(9))
@@ -143,6 +175,122 @@ export default function Library() {
           </label>
         </div>
 
+        {(tab === 'all' || tab === 'playlists') &&
+          myShared &&
+          myShared.pendingInvites.length > 0 && (
+            <section className="library-playlists" aria-label="Convites de colaboração">
+              <div className="section-heading">
+                <h2>Convites para playlists colaborativas</h2>
+              </div>
+              <div className="shared-invites-list">
+                {myShared.pendingInvites.map(inv => (
+                  <div className="notice collab-invite-banner" key={inv.id}>
+                    <Users size={16} />
+                    <div>
+                      <strong>{inv.name}</strong>
+                      <small style={{ display: 'block' }}>
+                        Convite de @{inv.ownerHandle} · {inv.trackCount} faixa(s)
+                      </small>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, marginLeft: 'auto', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        className="button secondary"
+                        onClick={() => useApp.getState().setPage(`shared-playlist:${inv.id}`)}
+                      >
+                        Abrir
+                      </button>
+                      <button
+                        type="button"
+                        className="button secondary"
+                        disabled={inviteBusy === inv.id}
+                        onClick={async () => {
+                          if (!window.glass?.hubRespondPlaylistInvite) return;
+                          setInviteBusy(inv.id);
+                          try {
+                            await window.glass.hubRespondPlaylistInvite({
+                              brokerUrl,
+                              shareId: inv.id,
+                              accept: false,
+                            });
+                            await refreshShared();
+                            useApp.getState().message('Convite recusado.');
+                          } catch (e) {
+                            useApp.getState().message(cleanError(e));
+                          } finally {
+                            setInviteBusy('');
+                          }
+                        }}
+                      >
+                        <X size={14} />
+                        Recusar
+                      </button>
+                      <button
+                        type="button"
+                        className="button primary"
+                        disabled={inviteBusy === inv.id}
+                        onClick={async () => {
+                          if (!window.glass?.hubRespondPlaylistInvite) return;
+                          setInviteBusy(inv.id);
+                          try {
+                            await window.glass.hubRespondPlaylistInvite({
+                              brokerUrl,
+                              shareId: inv.id,
+                              accept: true,
+                            });
+                            await refreshShared();
+                            useApp.getState().setPage(`shared-playlist:${inv.id}`);
+                            useApp.getState().message('Convite aceito! Playlist colaborativa aberta.');
+                          } catch (e) {
+                            useApp.getState().message(cleanError(e));
+                          } finally {
+                            setInviteBusy('');
+                          }
+                        }}
+                      >
+                        <Check size={14} />
+                        Aceitar
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+        {(tab === 'all' || tab === 'playlists') &&
+          myShared &&
+          myShared.collaborating.length > 0 && (
+            <section className="library-playlists" aria-label="Playlists colaborativas">
+              <div className="section-heading">
+                <h2>Playlists colaborativas</h2>
+              </div>
+              <div className="playlist-grid">
+                {myShared.collaborating.map(cp => (
+                  <article className="library-playlist-card shared-playlist-card" key={cp.id}>
+                    <button
+                      className="playlist-card-open"
+                      onClick={() => useApp.getState().setPage(`shared-playlist:${cp.id}`)}
+                    >
+                      <div className="shared-playlist-thumb">
+                        {cp.artwork ? <img src={cp.artwork} alt="" /> : <ListMusic size={22} />}
+                      </div>
+                      <span>
+                        <strong>{cp.name}</strong>
+                        <small>
+                          Por @{cp.ownerHandle} · {cp.trackCount} faixas
+                        </small>
+                      </span>
+                      <span className="entity-badge entity-badge-collab" title="Colaborativa">
+                        <Users size={11} />
+                      </span>
+                    </button>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+
         {(tab === 'all' || tab === 'playlists') && filteredPlaylists.length > 0 && (
           <section className="library-playlists" aria-label="Playlists">
             {tab === 'all' && (
@@ -166,6 +314,14 @@ export default function Library() {
                   <GlassContextMenu
                     label={`Opções de ${p.name}`}
                     items={[
+                      {
+                        label: 'Compartilhar / Colaborar',
+                        icon: <Users size={15} />,
+                        action: () =>
+                          useApp
+                            .getState()
+                            .setDialog({ type: 'sharePlaylist', playlistId: p.id }),
+                      },
                       {
                         label: 'Renomear',
                         icon: <Pencil size={15} />,
@@ -325,7 +481,33 @@ export default function Library() {
           </div>
         )}
         <div>
-          {playlist && <span className="collection-type-label">Playlist</span>}
+          {playlist && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              <span className="collection-type-label">Playlist</span>
+              {playlist.shareId && (
+                <span className="entity-badge entity-badge-privacy">
+                  {playlist.visibility === 'public' ? (
+                    <Globe size={11} />
+                  ) : playlist.visibility === 'unlisted' ? (
+                    <Link2 size={11} />
+                  ) : (
+                    <Lock size={11} />
+                  )}
+                  {playlist.visibility === 'public'
+                    ? 'Pública'
+                    : playlist.visibility === 'unlisted'
+                      ? 'Com link'
+                      : 'Privada'}
+                </span>
+              )}
+              {playlist.collaborative && (
+                <span className="entity-badge entity-badge-collab">
+                  <Users size={11} />
+                  Colaborativa
+                </span>
+              )}
+            </div>
+          )}
           <h1>{title}</h1>
           <p>
             {tracks.length} faixas
@@ -336,43 +518,12 @@ export default function Library() {
 
       <div className="library-toolbar">
         <div>
-          <button
-            className="playlist-play"
-            disabled={!tracks.length}
-            aria-label={
-              playlist
-                ? activeHere && playing
-                  ? 'Pausar playlist'
-                  : 'Reproduzir playlist'
-                : activeHere && playing
-                  ? 'Pausar coleção'
-                  : 'Reproduzir coleção'
-            }
-            onClick={() => {
-              if (activeHere) transport.toggle();
-              else if (tracks[0]) useApp.getState().play(tracks[0], tracks);
-            }}
-          >
-            {activeHere && playing ? (
-              <Pause size={16} fill="currentColor" />
-            ) : (
-              <Play size={16} fill="currentColor" />
-            )}
-            <span>{activeHere && playing ? 'Pausar' : 'Reproduzir'}</span>
-          </button>
-
-          <button
-            type="button"
-            className="button secondary playlist-shuffle-play"
-            disabled={!tracks.length}
-            aria-label={
-              playlist ? 'Reproduzir playlist no aleatório' : 'Reproduzir coleção no aleatório'
-            }
-            onClick={() => shufflePlay(tracks)}
-          >
-            <Shuffle size={15} />
-            <span>Aleatório</span>
-          </button>
+          <CollectionPlaybackActions
+            tracks={tracks}
+            activeHere={activeHere}
+            playing={playing}
+            isPlaylist={!!playlist}
+          />
 
           {playlist &&
             tracks.some(t => ['youtube', 'link'].includes(t.source) && !t.offline) && (
@@ -387,6 +538,28 @@ export default function Library() {
 
           {playlist && (
             <>
+              <button
+                className="button secondary"
+                onClick={() =>
+                  useApp
+                    .getState()
+                    .setDialog({ type: 'sharePlaylist', playlistId: playlist.id })
+                }
+              >
+                <Share2 size={14} />
+                Compartilhar
+              </button>
+              {playlist.shareId && (
+                <button
+                  className="button secondary"
+                  onClick={() =>
+                    useApp.getState().setPage(`shared-playlist:${playlist.shareId}`)
+                  }
+                >
+                  <ExternalLink size={14} />
+                  Abrir compartilhada
+                </button>
+              )}
               <IconButton
                 label="Renomear playlist"
                 onClick={() =>
@@ -447,7 +620,7 @@ export default function Library() {
         </label>
       </div>
 
-      <TrackList tracks={tracks} playlistId={playlist?.id} />
+      <TrackList tracks={tracks} playlistId={playlist?.id} showHeaderShuffle={false} />
     </div>
   );
 }

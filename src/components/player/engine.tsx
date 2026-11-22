@@ -8,7 +8,13 @@ import {
   TrackNotificationController,
 } from '../../lib/playback';
 import { nativeResource } from '../../lib/native';
-import { AudioGraph, transitionSeconds } from '../../lib/audioGraph';
+import {
+  AudioGraph,
+  PLAYBACK_FADE_MS,
+  PLAYBACK_FADE_SECONDS,
+  PlaybackFadeController,
+  transitionSeconds,
+} from '../../lib/audioGraph';
 import { coverURL } from '../glass/Cover';
 
 type Driver = {
@@ -72,6 +78,7 @@ export function PlayerEngine() {
     iframe = useRef<HTMLIFrameElement>(null);
   const activeDeck = useRef(0),
     graph = useRef<AudioGraph | undefined>(undefined),
+    fade = useRef(new PlaybackFadeController(PLAYBACK_FADE_MS)),
     retire = useRef<ReturnType<typeof setTimeout> | undefined>(undefined),
     outgoingDeck = useRef<HTMLAudioElement | undefined>(undefined),
     staged = useRef<{ id: string; url: string; duration: number } | undefined>(undefined),
@@ -134,6 +141,8 @@ export function PlayerEngine() {
     const generation = ++activeGeneration.current,
       all = elements();
     clearTimeout(retire.current);
+    fade.current.cancel();
+    let scFadeTimer: ReturnType<typeof setInterval> | undefined;
 
     const isAuto = useApp.getState().autoAdvance;
     const former = all[activeDeck.current],
@@ -235,6 +244,7 @@ export function PlayerEngine() {
       }
       if (!started) {
         started = true;
+        fade.current.consumePendingFadeIn();
         const p = useApp.getState().data.preferences,
           g = graph.current;
         if (g) {
@@ -265,6 +275,11 @@ export function PlayerEngine() {
             if (p.transition !== 'off') g.level(el, 1, 0.06);
           }
         } else stopOutgoing();
+      } else if (fade.current.consumePendingFadeIn() && useApp.getState().data.preferences.volume > 0) {
+        graph.current?.level(el, 0);
+        graph.current?.level(el, 1, PLAYBACK_FADE_SECONDS);
+      } else if (!fade.current.isFadingOut()) {
+        graph.current?.level(el, 1, 0.06);
       }
       update({ playing: true, playbackIntent: true, status: 'Reproduzindo', error: '' });
       if ('mediaSession' in navigator) {
@@ -336,9 +351,14 @@ export function PlayerEngine() {
         });
       }
     };
+    const onWaiting = () => {
+      if (!cancelled && useApp.getState().playbackIntent && !fade.current.isFadingOut()) {
+        update({ status: 'Carregando' });
+      }
+    };
     const onSeeked = () => {
       fadingOut = false;
-      if (!el.paused) graph.current?.level(el, 1, 0.06);
+      if (!el.paused && !fade.current.isFadingOut()) graph.current?.level(el, 1, 0.06);
     };
     const onTime = () => {
       const duration = Number.isFinite(el.duration) ? el.duration : track?.duration || 0;
@@ -360,7 +380,14 @@ export function PlayerEngine() {
       }
       const p = useApp.getState().data.preferences,
         remaining = duration - el.currentTime;
-      if (duration > 0 && el.currentTime > 0 && !el.paused && !advanced && remaining > 0) {
+      if (
+        duration > 0 &&
+        el.currentTime > 0 &&
+        !el.paused &&
+        !advanced &&
+        !fade.current.isFadingOut() &&
+        remaining > 0
+      ) {
         const seconds = Math.min(
           transitionSeconds(p.transitionSeconds),
           Math.max(0.5, duration * 0.45),
@@ -384,6 +411,13 @@ export function PlayerEngine() {
       }
     };
     const onEnded = () => {
+      if (fade.current.isFadingOut() && !useApp.getState().playbackIntent) {
+        fade.current.cancel();
+        el.pause();
+        update({ playing: false, playbackIntent: false, status: 'Pausado' });
+        return;
+      }
+      fade.current.cancel();
       if (!advanced) {
         advanced = true;
         update({ playing: false, playbackIntent: false });
@@ -444,6 +478,110 @@ export function PlayerEngine() {
           : 'Não foi possível abrir o arquivo de áudio.',
       );
     };
+    const attachAudioDriver = (onStartFail: (error: unknown) => void) => {
+      const startRawPlayback = () => {
+        if (!shouldStartPreparedPlayback(cancelled, useApp.getState().playbackIntent)) {
+          pausedDuringPreparation = true;
+          return;
+        }
+        pausedDuringPreparation = false;
+        if (!el.hasAttribute('src')) return;
+        setupGraph();
+        void el.play().catch(error => {
+          fade.current.cancel();
+          onStartFail(error);
+        });
+      };
+
+      const play = () => {
+        if (!shouldStartPreparedPlayback(cancelled, useApp.getState().playbackIntent)) {
+          pausedDuringPreparation = true;
+          return;
+        }
+        if (!started) {
+          startRawPlayback();
+          return;
+        }
+        const silent = useApp.getState().data.preferences.volume <= 0;
+        setupGraph();
+        const { resumedFromMidFade } = fade.current.resume({
+          wasPaused: el.paused,
+          currentLevel: graph.current?.getLevel(el) ?? 1,
+          silent,
+          rampTo: (v, sec) => graph.current?.level(el, v, sec),
+          startPlayback: startRawPlayback,
+        });
+        if (resumedFromMidFade) {
+          pausedDuringPreparation = false;
+          update({ playing: true, playbackIntent: true, status: 'Reproduzindo', error: '' });
+          if ('mediaSession' in navigator) {
+            try {
+              navigator.mediaSession.playbackState = 'playing';
+            } catch {}
+          }
+          const activeMeta = resolvedTrack || track;
+          if (activeMeta) {
+            void window.glass
+              .updateMediaMetadata?.({
+                id: activeMeta.id,
+                title: activeMeta.title,
+                artist: activeMeta.artist,
+                album: activeMeta.album,
+                playing: true,
+              })
+              .catch(() => {});
+          }
+        }
+      };
+
+      const pause = () => {
+        pausedDuringPreparation = true;
+        if (outgoing && !outgoing.paused) {
+          graph.current?.level(outgoing, 0, Math.min(0.25, PLAYBACK_FADE_SECONDS));
+        }
+        if (!started || el.paused || el.readyState < 2) {
+          fade.current.cancel();
+          all.forEach(deck => deck.pause());
+          return;
+        }
+        fade.current.pause({
+          isPlaying: true,
+          currentLevel: graph.current?.getLevel(el) ?? 1,
+          silent: useApp.getState().data.preferences.volume <= 0,
+          rampTo: (v, sec) => graph.current?.level(el, v, sec),
+          commitPause: () => {
+            all.forEach(deck => deck.pause());
+          },
+        });
+      };
+
+      el.volume = 1;
+      setupGraph().level(el, 0);
+      driver = {
+        play,
+        pause,
+        seek: n => {
+          if (Number.isFinite(el.duration)) {
+            fadingOut = false;
+            el.currentTime = Math.max(0, Math.min(n, el.duration));
+            if (!el.paused && !fade.current.isFadingOut()) {
+              graph.current?.level(el, 1, 0.06);
+            }
+          }
+        },
+        volume: n => {
+          if (graph.current)
+            void graph.current
+              .configure({ ...useApp.getState().data.preferences, volume: n })
+              .catch(() => {});
+        },
+        rate: r => {
+          el.playbackRate = r;
+        },
+      };
+      return play;
+    };
+
     const message = (e: MessageEvent) => {
       if (
         e.origin !== frameOrigin ||
@@ -477,34 +615,9 @@ export function PlayerEngine() {
         // Rescue restricted SoundCloud tracks via native audio stream!
         if (track && consent && !cancelled) {
           frame.src = 'about:blank';
-          const playFallback = () => {
-            if (!shouldStartPreparedPlayback(cancelled, useApp.getState().playbackIntent)) {
-              pausedDuringPreparation = true;
-              return;
-            }
-            pausedDuringPreparation = false;
-            if (!el.hasAttribute('src')) return;
-            setupGraph();
-            void el.play().catch(() => fail(String(d.message || 'Faixa indisponível.')));
-          };
-          el.volume = 1;
-          setupGraph().level(el, 0);
-          driver = {
-            play: playFallback,
-            pause: () => {
-              pausedDuringPreparation = true;
-              all.forEach(deck => deck.pause());
-            },
-            seek: n => {
-              if (Number.isFinite(el.duration)) el.currentTime = Math.max(0, Math.min(n, el.duration));
-            },
-            volume: n => {
-              if (graph.current)
-                void graph.current
-                  .configure({ ...useApp.getState().data.preferences, volume: n })
-                  .catch(() => {});
-            },
-          };
+          const playFallback = attachAudioDriver(() =>
+            fail(String(d.message || 'Faixa indisponível.')),
+          );
           void window.glass
             .audioSource('', crypto.randomUUID(), {
               title: track.title,
@@ -525,6 +638,7 @@ export function PlayerEngine() {
     };
 
     el.addEventListener('playing', onPlay);
+    el.addEventListener('waiting', onWaiting);
     el.addEventListener('pause', onPause);
     el.addEventListener('seeked', onSeeked);
     el.addEventListener('timeupdate', onTime);
@@ -538,45 +652,13 @@ export function PlayerEngine() {
         track.source === 'local' ||
         (['youtube', 'link'].includes(track.source) && playbackAllowed)
       ) {
-        const play = () => {
-          if (!shouldStartPreparedPlayback(cancelled, useApp.getState().playbackIntent)) {
-            pausedDuringPreparation = true;
-            return;
+        const play = attachAudioDriver(error => {
+          if (handlePlaybackStartError(error)) {
+            useApp.getState().message('Clique em reproduzir para iniciar o áudio.');
+          } else if ((error as { name?: unknown } | null)?.name !== 'AbortError') {
+            fail('Falha ao reproduzir o áudio.');
           }
-          pausedDuringPreparation = false;
-          if (!el.hasAttribute('src')) return;
-          setupGraph();
-          void el.play().catch(e => {
-            if (handlePlaybackStartError(e)) {
-              useApp.getState().message('Clique em reproduzir para iniciar o áudio.');
-            } else if (e.name !== 'AbortError') fail('Falha ao reproduzir o áudio.');
-          });
-        };
-        el.volume = 1;
-        setupGraph().level(el, 0);
-        driver = {
-          play,
-          pause: () => {
-            pausedDuringPreparation = true;
-            all.forEach(deck => deck.pause());
-          },
-          seek: n => {
-            if (Number.isFinite(el.duration)) {
-              fadingOut = false;
-              el.currentTime = Math.max(0, Math.min(n, el.duration));
-              graph.current?.level(el, 1, 0.06);
-            }
-          },
-          volume: n => {
-            if (graph.current)
-              void graph.current
-                .configure({ ...useApp.getState().data.preferences, volume: n })
-                .catch(() => {});
-          },
-          rate: r => {
-            el.playbackRate = r;
-          },
-        };
+        });
 
         const wasPreStaged =
           el.dataset.stagedId === track.id && el.hasAttribute('src') && !el.error;
@@ -648,17 +730,77 @@ export function PlayerEngine() {
                   frameOrigin,
                 );
             };
+            let scLevel = 1;
+            let scFadingOut = false;
+            const rampScLevel = (target: number, durationMs: number, onDone?: () => void) => {
+              if (scFadeTimer !== undefined) {
+                clearInterval(scFadeTimer);
+                scFadeTimer = undefined;
+              }
+              const startLevel = scLevel;
+              const startAt = performance.now();
+              const step = () => {
+                if (cancelled) {
+                  clearInterval(scFadeTimer);
+                  scFadeTimer = undefined;
+                  return;
+                }
+                const progress = durationMs > 0 ? Math.min(1, (performance.now() - startAt) / durationMs) : 1;
+                scLevel = startLevel + (target - startLevel) * progress;
+                const userVol = useApp.getState().data.preferences.volume;
+                send('volume', Math.round(userVol * scLevel));
+                if (progress >= 1) {
+                  clearInterval(scFadeTimer);
+                  scFadeTimer = undefined;
+                  onDone?.();
+                }
+              };
+              step();
+              if (durationMs > 0) scFadeTimer = setInterval(step, 50);
+            };
             driver = {
               play: () => {
                 pausedDuringPreparation = false;
+                const userVol = useApp.getState().data.preferences.volume;
+                if (!started || userVol <= 0) {
+                  scFadingOut = false;
+                  scLevel = 1;
+                  send('volume', userVol);
+                  send('play');
+                  return;
+                }
+                if (scFadingOut) {
+                  scFadingOut = false;
+                  rampScLevel(1, PLAYBACK_FADE_MS * (1 - scLevel));
+                  update({ playing: true, playbackIntent: true, status: 'Reproduzindo', error: '' });
+                  return;
+                }
+                scLevel = 0;
+                send('volume', 0);
                 send('play');
+                rampScLevel(1, PLAYBACK_FADE_MS);
               },
               pause: () => {
                 pausedDuringPreparation = true;
-                send('pause');
+                const userVol = useApp.getState().data.preferences.volume;
+                if (!started || !useApp.getState().playing || userVol <= 0) {
+                  if (scFadeTimer !== undefined) {
+                    clearInterval(scFadeTimer);
+                    scFadeTimer = undefined;
+                  }
+                  scFadingOut = false;
+                  scLevel = 1;
+                  send('pause');
+                  return;
+                }
+                scFadingOut = true;
+                rampScLevel(0, PLAYBACK_FADE_MS * Math.max(0.1, scLevel), () => {
+                  scFadingOut = false;
+                  send('pause');
+                });
               },
               seek: n => send('seek', n),
-              volume: n => send('volume', n),
+              volume: n => send('volume', Math.round(n * scLevel)),
             };
             frame.src = `${url}?${new URLSearchParams({
               parent: location.origin,
@@ -676,8 +818,14 @@ export function PlayerEngine() {
 
     return () => {
       cancelled = true;
+      fade.current.cancel();
+      if (scFadeTimer !== undefined) {
+        clearInterval(scFadeTimer);
+        scFadeTimer = undefined;
+      }
       preparation?.release();
       el.removeEventListener('playing', onPlay);
+      el.removeEventListener('waiting', onWaiting);
       el.removeEventListener('pause', onPause);
       el.removeEventListener('seeked', onSeeked);
       el.removeEventListener('timeupdate', onTime);
@@ -781,6 +929,7 @@ export function PlayerEngine() {
   useEffect(
     () => () => {
       clearTimeout(retire.current);
+      fade.current.cancel();
       notifier.current?.dispose();
       elements().forEach(el => el?.pause());
       void graph.current?.close();
@@ -790,9 +939,40 @@ export function PlayerEngine() {
   );
 
   useEffect(() => {
+    const onVisibility = () => {
+      const state = useApp.getState();
+      if (
+        document.visibilityState === 'visible' &&
+        state.playing &&
+        state.playbackIntent &&
+        graph.current?.context.state === 'suspended'
+      ) {
+        void graph.current.resume().catch(() => {});
+      }
+    };
+    const onDeviceChange = () => {
+      const state = useApp.getState();
+      if (!graph.current) return;
+      void graph.current.configure(state.data.preferences).catch(() => {});
+      if (
+        state.playing &&
+        state.playbackIntent &&
+        graph.current.context.state === 'suspended'
+      ) {
+        void graph.current.resume().catch(() => {});
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    navigator.mediaDevices?.addEventListener('devicechange', onDeviceChange);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      navigator.mediaDevices?.removeEventListener('devicechange', onDeviceChange);
+    };
+  }, []);
+
+  useEffect(() => {
     const off = window.glass.onMedia(command => {
       if (command === 'playPause') transport.toggle();
-      if (command === 'pauseVideo') transport.pause();
       if (command === 'next') useApp.getState().next();
       if (command === 'previous') useApp.getState().previous();
     });

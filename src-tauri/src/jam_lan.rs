@@ -18,9 +18,104 @@ const LAN_MAGIC: &[u8] = b"LIQUID_HUB_JAM_DISCOVER_V2";
 const MAX_PARTICIPANTS: usize = 8;
 const INVITE_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const DEFAULT_INVITE_TTL_MS: i64 = 2 * 60 * 60 * 1000;
+const JOIN_REQUEST_TTL_MS: i64 = 5 * 60 * 1000;
+const APPROVED_CLAIM_TTL_MS: i64 = 90 * 1000;
+const RESOLVED_STATUS_TTL_MS: i64 = 120 * 1000;
+const MAX_PENDING_JOIN_REQUESTS: usize = 32;
+const REQUEST_JOIN_IP_LIMIT_PER_MIN: usize = 6;
 const TOMBSTONE_RETENTION_MS: i64 = 24 * 60 * 60 * 1000;
 const MEMBER_GRACE_MS: i64 = 35_000;
 const MAX_SSE_CLIENTS: usize = 24;
+
+#[derive(Clone)]
+struct Permissions {
+    allow_queue_add: bool,
+    allow_vote_skip: bool,
+    allow_chat: bool,
+    allow_recommendations: bool,
+}
+
+impl Default for Permissions {
+    fn default() -> Self {
+        Self {
+            allow_queue_add: true,
+            allow_vote_skip: true,
+            allow_chat: true,
+            allow_recommendations: true,
+        }
+    }
+}
+
+impl Permissions {
+    fn to_json(&self) -> Value {
+        json!({
+            "allowQueueAdd": self.allow_queue_add,
+            "allowVoteSkip": self.allow_vote_skip,
+            "allowChat": self.allow_chat,
+            "allowRecommendations": self.allow_recommendations
+        })
+    }
+
+    fn apply_patch(&mut self, v: &Value) {
+        if let Some(obj) = v.as_object() {
+            if let Some(b) = obj.get("allowQueueAdd").and_then(Value::as_bool) {
+                self.allow_queue_add = b;
+            }
+            if let Some(b) = obj.get("allowVoteSkip").and_then(Value::as_bool) {
+                self.allow_vote_skip = b;
+            }
+            if let Some(b) = obj.get("allowChat").and_then(Value::as_bool) {
+                self.allow_chat = b;
+            }
+            if let Some(b) = obj.get("allowRecommendations").and_then(Value::as_bool) {
+                self.allow_recommendations = b;
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JoinRequestStatus {
+    Pending,
+    Approved,
+    Rejected,
+    Blocked,
+    Expired,
+}
+
+impl JoinRequestStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::Rejected => "rejected",
+            Self::Blocked => "blocked",
+            Self::Expired => "expired",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct JoinRequest {
+    id: String,
+    request_token: String,
+    name: String,
+    avatar: Option<String>,
+    client_id: Option<String>,
+    requested_at: i64,
+    expires_at: i64,
+    status: JoinRequestStatus,
+    reason: Option<String>,
+    error_code: Option<&'static str>,
+    approved_session: Option<Value>,
+}
+
+#[derive(Clone)]
+struct BlockedParticipant {
+    key: String,
+    name: String,
+    blocked_at: i64,
+}
 
 #[derive(Clone)]
 struct Member {
@@ -53,13 +148,23 @@ struct Room {
     host_avatar: Option<String>,
     locked: bool,
     require_auth: bool,
+    require_approval: bool,
+    permissions: Permissions,
     max_participants: usize,
     invite_expires_at: i64,
     created_at: i64,
     members: HashMap<String, Member>,
     recent_members: HashMap<String, RecentMember>,
     kicked_keys: HashSet<String>,
+    blocked_keys: HashSet<String>,
+    blocked_list: Vec<BlockedParticipant>,
+    join_requests: HashMap<String, JoinRequest>,
     playback: Value,
+    skip_votes: HashSet<String>,
+    skip_triggered_at: i64,
+    jam_queue: Vec<Value>,
+    recommendations: Vec<Value>,
+    messages: Vec<Value>,
     touched: i64,
 }
 
@@ -123,12 +228,22 @@ impl LanErr {
 struct SseClient {
     room_id: String,
     token: String,
+    host: bool,
     tx: SyncSender<String>,
 }
 
 #[derive(Debug)]
+struct SseBroadcast {
+    room_id: String,
+    event: &'static str,
+    guest_payload: Value,
+    host_payload: Value,
+    host_only: bool,
+}
+
+#[derive(Debug)]
 struct DispatchEvents {
-    broadcasts: Vec<(String, &'static str, Value)>,
+    broadcasts: Vec<SseBroadcast>,
     kicks: Vec<(String, String, Value)>,
     close_room_id: Option<String>,
 }
@@ -140,6 +255,38 @@ impl DispatchEvents {
             kicks: Vec::new(),
             close_room_id: None,
         }
+    }
+
+    fn push_room_state(
+        &mut self,
+        room: &Room,
+        event: &'static str,
+        now: i64,
+        host_only: bool,
+    ) {
+        let host_payload = Coordinator::view(room, now, &Value::Null, true);
+        let guest_payload = if host_only {
+            Value::Null
+        } else {
+            Coordinator::view(room, now, &Value::Null, false)
+        };
+        self.broadcasts.push(SseBroadcast {
+            room_id: room.room_id.clone(),
+            event,
+            guest_payload,
+            host_payload,
+            host_only,
+        });
+    }
+
+    fn push_uniform(&mut self, room_id: String, event: &'static str, payload: Value) {
+        self.broadcasts.push(SseBroadcast {
+            room_id,
+            event,
+            guest_payload: payload.clone(),
+            host_payload: payload,
+            host_only: false,
+        });
     }
 }
 
@@ -250,6 +397,71 @@ fn valid_token_str(tok: &str) -> bool {
         && tok
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+}
+
+fn safe_request_id(v: &Value) -> Option<String> {
+    let rid = s(v, "requestId");
+    if (6..=64).contains(&rid.len())
+        && rid
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+    {
+        Some(rid.to_string())
+    } else {
+        None
+    }
+}
+
+fn safe_block_key(v: &Value) -> Option<String> {
+    let key = s(v, "blockKey");
+    let Some((_, rest)) = key.split_once(':') else {
+        return None;
+    };
+    let prefix = &key[..key.len() - rest.len()];
+    if ["uid:", "cid:", "id:", "tok:"].contains(&prefix)
+        && (2..=120).contains(&rest.len())
+        && rest
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b))
+    {
+        Some(key.to_string())
+    } else {
+        None
+    }
+}
+
+fn is_blocked_requester(room: &Room, client_id: Option<&str>) -> bool {
+    client_id.is_some_and(|cid| room.blocked_keys.contains(&format!("cid:{cid}")))
+}
+
+fn add_block_keys(
+    room: &mut Room,
+    id: &str,
+    name: &str,
+    tok: &str,
+    client_id: Option<&str>,
+    now: i64,
+    revoke_token: bool,
+) {
+    if revoke_token {
+        room.kicked_keys.insert(format!("tok:{tok}"));
+    }
+    if let Some(cid) = client_id {
+        room.kicked_keys.insert(format!("cid:{cid}"));
+        room.blocked_keys.insert(format!("cid:{cid}"));
+    }
+    room.blocked_keys.insert(format!("id:{id}"));
+    let primary_key = if let Some(cid) = client_id {
+        format!("cid:{cid}")
+    } else {
+        format!("id:{id}")
+    };
+    room.blocked_list.retain(|b| b.key != primary_key);
+    room.blocked_list.push(BlockedParticipant {
+        key: primary_key,
+        name: name.to_string(),
+        blocked_at: now,
+    });
 }
 
 fn track(v: &Value) -> Result<Value> {
@@ -459,7 +671,50 @@ impl Coordinator {
         }
     }
 
-    fn view(room: &Room, now: i64, p: &Value) -> Value {
+    fn prune_join_requests(room: &mut Room, now: i64) -> bool {
+        let mut changed = false;
+        for req in room.join_requests.values_mut() {
+            if req.status == JoinRequestStatus::Pending && req.expires_at <= now {
+                req.status = JoinRequestStatus::Expired;
+                req.reason =
+                    Some("Solicitação expirada. Peça entrada novamente ao anfitrião.".into());
+                req.error_code = Some("INVITE_EXPIRED");
+                req.expires_at = now + RESOLVED_STATUS_TTL_MS;
+                changed = true;
+            }
+        }
+        room.join_requests
+            .retain(|_, r| r.status == JoinRequestStatus::Pending || r.expires_at > now);
+        changed
+    }
+
+    fn pending_requests_json(room: &Room, now: i64) -> Vec<Value> {
+        let mut list: Vec<Value> = room
+            .join_requests
+            .values()
+            .filter(|r| r.status == JoinRequestStatus::Pending && r.expires_at > now)
+            .map(|r| {
+                let mut obj = json!({
+                    "id": r.id,
+                    "name": r.name,
+                    "requestedAt": r.requested_at,
+                    "expiresAt": r.expires_at,
+                    "status": r.status.as_str()
+                });
+                if let Some(ref av) = r.avatar {
+                    obj["avatar"] = json!(av);
+                }
+                if let Some(ref cid) = r.client_id {
+                    obj["clientId"] = json!(cid);
+                }
+                obj
+            })
+            .collect();
+        list.sort_by_key(|v| v["requestedAt"].as_i64().unwrap_or(0));
+        list
+    }
+
+    fn view(room: &Room, now: i64, p: &Value, for_host: bool) -> Value {
         let members: Vec<Value> = room
             .members
             .values()
@@ -477,6 +732,9 @@ impl Coordinator {
                 obj
             })
             .collect();
+        let pending = Self::pending_requests_json(room, now);
+        let online_count = room.members.values().filter(|m| m.online).count().max(1);
+        let skip_threshold = ((online_count + 1) / 2).max(1);
         let unchanged = s(p, "action") == "poll"
             && p["sinceSequence"]
                 .as_u64()
@@ -488,13 +746,46 @@ impl Coordinator {
             "status": Self::room_status(room, now),
             "locked": room.locked,
             "requireAuth": room.require_auth,
+            "requireApproval": room.require_approval,
+            "permissions": room.permissions.to_json(),
             "maxParticipants": room.max_participants,
             "inviteExpiresAt": room.invite_expires_at,
             "createdAt": room.created_at,
             "members": members,
+            "pendingRequestCount": pending.len(),
             "playback": room.playback,
+            "skipVotes": room.skip_votes.iter().cloned().collect::<Vec<_>>(),
+            "skipThreshold": skip_threshold,
             "serverTime": now
         });
+        let host_avatar = room
+            .host_avatar
+            .as_ref()
+            .or_else(|| room.members.values().find(|m| m.host).and_then(|m| m.avatar.as_ref()));
+        if let Some(av) = host_avatar {
+            val["hostAvatar"] = json!(av);
+        }
+        if room.skip_triggered_at > 0 {
+            val["skipTriggeredAt"] = json!(room.skip_triggered_at);
+        }
+        if !room.jam_queue.is_empty() {
+            val["jamQueue"] = json!(room.jam_queue);
+        }
+        if !room.recommendations.is_empty() {
+            val["recommendations"] = json!(room.recommendations);
+        }
+        if !room.messages.is_empty() {
+            val["messages"] = json!(room.messages);
+        }
+        if for_host {
+            val["joinRequests"] = Value::Array(pending);
+            val["blockedList"] = Value::Array(
+                room.blocked_list
+                    .iter()
+                    .map(|b| json!({"key": b.key, "name": b.name, "blockedAt": b.blocked_at}))
+                    .collect(),
+            );
+        }
         if unchanged {
             val["unchanged"] = json!(true);
         }
@@ -502,6 +793,17 @@ impl Coordinator {
             val["echoClientTime"] = json!(ct);
         }
         val
+    }
+
+    fn build_member_session(room: &Room, mbr: &Member, now: i64, p: &Value) -> Value {
+        let mut value = Self::view(room, now, p, mbr.host);
+        value["token"] = json!(mbr.token);
+        value["memberId"] = json!(mbr.id);
+        value["host"] = json!(mbr.host);
+        if let Some(ref cid) = mbr.client_id {
+            value["clientId"] = json!(cid);
+        }
+        value
     }
 
     fn preview(room: &Room, now: i64) -> Value {
@@ -536,6 +838,7 @@ impl Coordinator {
             "status": status,
             "canJoin": status == "active",
             "requireAuth": room.require_auth,
+            "requireApproval": room.require_approval,
             "currentTrack": current_track,
             "playing": room.playback["playing"] == true,
             "inviteExpiresAt": room.invite_expires_at,
@@ -620,7 +923,7 @@ impl Coordinator {
         for code in expired_rooms {
             if let Some(room) = self.rooms.remove(&code) {
                 self.record_tombstone(&room, &code, "expired", now);
-                events.broadcasts.push((
+                events.push_uniform(
                     room.room_id.clone(),
                     "closed",
                     json!({
@@ -629,7 +932,7 @@ impl Coordinator {
                         "errorCode": "ROOM_ENDED",
                         "serverTime": now
                     }),
-                ));
+                );
                 events.close_room_id = Some(room.room_id);
             }
         }
@@ -638,15 +941,18 @@ impl Coordinator {
         self.tombstones.retain(|_, t| t.expires_at > now);
 
         for room in self.rooms.values_mut() {
+            let jr_changed = Self::prune_join_requests(room, now);
             let timed_out: Vec<String> = room
                 .members
                 .iter()
                 .filter(|(_, m)| !m.host && now - m.seen > MEMBER_GRACE_MS)
                 .map(|(k, _)| k.clone())
                 .collect();
-            if !timed_out.is_empty() {
+            let had_timed_out = !timed_out.is_empty();
+            if had_timed_out {
                 for tok in timed_out {
                     if let Some(m) = room.members.remove(&tok) {
+                        room.skip_votes.remove(&m.id);
                         if room.recent_members.len() >= 32 {
                             if let Some(oldest) = room.recent_members.keys().next().cloned() {
                                 room.recent_members.remove(&oldest);
@@ -666,9 +972,9 @@ impl Coordinator {
                         );
                     }
                 }
-                events
-                    .broadcasts
-                    .push((room.room_id.clone(), "state", Self::view(room, now, &Value::Null)));
+                events.push_room_state(room, "state", now, false);
+            } else if jr_changed {
+                events.push_room_state(room, "state", now, true);
             }
         }
         events
@@ -871,6 +1177,9 @@ impl Coordinator {
             };
             let auth = member.token.clone();
             let mid = member.id.clone();
+            let mut permissions = Permissions::default();
+            permissions.apply_patch(&p["permissions"]);
+            let require_approval = p["requireApproval"] == true;
             let room = Room {
                 room_id: format!("jam_{}", uuid::Uuid::new_v4().simple()),
                 code: code.clone(),
@@ -878,22 +1187,27 @@ impl Coordinator {
                 host_avatar: avatar,
                 locked: false,
                 require_auth: p["requireAuth"] == true,
+                require_approval,
+                permissions,
                 max_participants: MAX_PARTICIPANTS,
                 invite_expires_at: now + invite_ttl,
                 created_at: now,
                 members: HashMap::from([(auth.clone(), member)]),
                 recent_members: HashMap::new(),
                 kicked_keys: HashSet::new(),
+                blocked_keys: HashSet::new(),
+                blocked_list: Vec::new(),
+                join_requests: HashMap::new(),
                 playback: json!({"track":null,"playing":false,"position":0,"updatedAt":now,"sequence":0}),
+                skip_votes: HashSet::new(),
+                skip_triggered_at: 0,
+                jam_queue: Vec::new(),
+                recommendations: Vec::new(),
+                messages: Vec::new(),
                 touched: now,
             };
-            let mut value = Self::view(&room, now, p);
-            value["token"] = json!(auth);
-            value["memberId"] = json!(mid);
-            value["host"] = json!(true);
-            if let Some(cid) = client_id {
-                value["clientId"] = json!(cid);
-            }
+            let value = Self::build_member_session(&room, &room.members[&auth], now, p);
+            let _ = mid;
             self.rooms.insert(code, room);
             return Ok((value, events));
         }
@@ -928,6 +1242,235 @@ impl Coordinator {
             ));
         }
 
+        if action == "requestJoin" {
+            self.check_replay(p, now)?;
+            let client_id = safe_client_id(p);
+            {
+                let room = &self.rooms[&code];
+                if room.invite_expires_at <= now {
+                    return Err(LanErr::with_preview(
+                        410,
+                        "Este convite expirou. Peça um novo link ao anfitrião.",
+                        "INVITE_EXPIRED",
+                        Self::preview(room, now),
+                    ));
+                }
+                if is_blocked_requester(room, client_id.as_deref()) {
+                    return Err(LanErr::with_preview(
+                        403,
+                        "Você foi bloqueado pelo anfitrião desta JAM.",
+                        "BLOCKED",
+                        Self::preview(room, now),
+                    ));
+                }
+                if room.locked {
+                    return Err(LanErr::with_preview(
+                        403,
+                        "Esta JAM está trancada pelo anfitrião.",
+                        "ROOM_LOCKED",
+                        Self::preview(room, now),
+                    ));
+                }
+                if room.members.len() >= room.max_participants {
+                    return Err(LanErr::with_preview(
+                        409,
+                        "Esta JAM atingiu o limite de participantes.",
+                        "ROOM_FULL",
+                        Self::preview(room, now),
+                    ));
+                }
+            }
+
+            let req_rate_key = format!("req:{code}:{ip}");
+            if self.rates.len() >= 1024 && !self.rates.contains_key(&req_rate_key) {
+                return Err(LanErr::new(503, "Serviço ocupado.", Some("UNAVAILABLE")));
+            }
+            let req_rate = self.rates.entry(req_rate_key).or_insert((now + 60_000, 0));
+            req_rate.1 += 1;
+            if req_rate.1 > REQUEST_JOIN_IP_LIMIT_PER_MIN {
+                return Err(LanErr::new(
+                    429,
+                    "Muitas solicitações de entrada. Aguarde um minuto.",
+                    Some("RATE_LIMITED"),
+                ));
+            }
+
+            let room = self.rooms.get_mut(&code).unwrap();
+            if client_id.as_ref().is_some_and(|cid| {
+                room.members
+                    .values()
+                    .any(|m| m.client_id.as_deref() == Some(cid.as_str()))
+            }) {
+                return Err(LanErr::new(
+                    409,
+                    "Você já está participando desta JAM.",
+                    Some("REQUEST_DUPLICATE"),
+                ));
+            }
+            let _ = Self::prune_join_requests(room, now);
+            if client_id.as_ref().is_some_and(|cid| {
+                room.join_requests.values().any(|r| {
+                    r.status == JoinRequestStatus::Pending
+                        && r.expires_at > now
+                        && r.client_id.as_deref() == Some(cid.as_str())
+                })
+            }) {
+                let preview = Self::preview(room, now);
+                return Err(LanErr::with_preview(
+                    409,
+                    "Você já enviou uma solicitação pendente para esta JAM.",
+                    "REQUEST_DUPLICATE",
+                    preview,
+                ));
+            }
+            if Self::pending_requests_json(room, now).len() >= MAX_PENDING_JOIN_REQUESTS {
+                return Err(LanErr::new(
+                    429,
+                    "Muitas solicitações pendentes no momento. Aguarde o anfitrião.",
+                    Some("RATE_LIMITED"),
+                ));
+            }
+
+            let req_id = format!("jrq_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+            let req_tok = token();
+            let expires_at = now + JOIN_REQUEST_TTL_MS;
+            let req = JoinRequest {
+                id: req_id.clone(),
+                request_token: req_tok.clone(),
+                name: name(p),
+                avatar: safe_avatar(p),
+                client_id,
+                requested_at: now,
+                expires_at,
+                status: JoinRequestStatus::Pending,
+                reason: None,
+                error_code: None,
+                approved_session: None,
+            };
+            room.join_requests.insert(req_id.clone(), req);
+            let preview = Self::preview(room, now);
+            events.push_room_state(room, "state", now, true);
+            return Ok((
+                json!({
+                    "status": "pending",
+                    "requestId": req_id,
+                    "requestToken": req_tok,
+                    "expiresAt": expires_at,
+                    "preview": preview,
+                    "serverTime": now
+                }),
+                events,
+            ));
+        }
+
+        if action == "checkJoinRequest" {
+            let req_id = safe_request_id(p)
+                .ok_or_else(|| LanErr::new(400, "Solicitação inválida.", None))?;
+            let req_tok = s(p, "requestToken");
+            if !valid_token_str(req_tok) {
+                return Err(LanErr::new(
+                    401,
+                    "Token da solicitação inválido.",
+                    Some("SESSION_EXPIRED"),
+                ));
+            }
+            self.check_replay(p, now)?;
+            let room = self.rooms.get_mut(&code).unwrap();
+            let expired_some = Self::prune_join_requests(room, now);
+            let valid_match = room
+                .join_requests
+                .get(&req_id)
+                .is_some_and(|r| r.request_token == req_tok);
+            if !valid_match {
+                if expired_some {
+                    events.push_room_state(room, "state", now, true);
+                }
+                return Ok((
+                    json!({
+                        "status": "expired",
+                        "requestId": req_id,
+                        "reason": "Solicitação expirada ou cancelada.",
+                        "errorCode": "INVITE_EXPIRED",
+                        "serverTime": now
+                    }),
+                    events,
+                ));
+            }
+            let ready_to_claim = room
+                .join_requests
+                .get(&req_id)
+                .is_some_and(|r| r.status == JoinRequestStatus::Approved && r.approved_session.is_some());
+            if ready_to_claim {
+                let removed = room.join_requests.remove(&req_id).unwrap();
+                let claimed = removed.approved_session.unwrap();
+                let target_member_id = claimed["memberId"].as_str().unwrap_or("");
+                let session_out = room
+                    .members
+                    .values()
+                    .find(|m| m.id == target_member_id)
+                    .map(|m| Self::build_member_session(room, m, now, p))
+                    .unwrap_or(claimed);
+                events.push_room_state(room, "state", now, true);
+                return Ok((
+                    json!({
+                        "status": "approved",
+                        "requestId": req_id,
+                        "session": session_out,
+                        "serverTime": now
+                    }),
+                    events,
+                ));
+            }
+            let r = &room.join_requests[&req_id];
+            let mut out = json!({
+                "status": r.status.as_str(),
+                "requestId": r.id,
+                "expiresAt": r.expires_at,
+                "serverTime": now
+            });
+            if let Some(ref reason) = r.reason {
+                out["reason"] = json!(reason);
+            }
+            if let Some(code_err) = r.error_code {
+                out["errorCode"] = json!(code_err);
+            }
+            if expired_some {
+                events.push_room_state(room, "state", now, true);
+            }
+            return Ok((out, events));
+        }
+
+        if action == "cancelJoinRequest" {
+            let req_id = safe_request_id(p)
+                .ok_or_else(|| LanErr::new(400, "Solicitação inválida.", None))?;
+            let req_tok = s(p, "requestToken");
+            if !valid_token_str(req_tok) {
+                return Err(LanErr::new(
+                    401,
+                    "Token da solicitação inválido.",
+                    Some("SESSION_EXPIRED"),
+                ));
+            }
+            self.check_replay(p, now)?;
+            let room = self.rooms.get_mut(&code).unwrap();
+            if room
+                .join_requests
+                .get(&req_id)
+                .is_some_and(|r| r.request_token == req_tok)
+            {
+                room.join_requests.remove(&req_id);
+                events.push_room_state(room, "state", now, true);
+            }
+            return Ok((
+                json!({
+                    "status": "cancelled",
+                    "requestId": req_id,
+                    "serverTime": now
+                }),
+                events,
+            ));
+        }
+
         if action == "join" || action == "resume" {
             if action == "join" && self.rooms[&code].invite_expires_at <= now {
                 let preview = Self::preview(&self.rooms[&code], now);
@@ -953,6 +1496,13 @@ impl Coordinator {
 
             {
                 let room = &self.rooms[&code];
+                if is_blocked_requester(room, client_id.as_deref()) {
+                    return Err(LanErr::new(
+                        403,
+                        "Você foi bloqueado pelo anfitrião desta JAM.",
+                        Some("BLOCKED"),
+                    ));
+                }
                 if resume_token
                     .as_ref()
                     .is_some_and(|t| room.kicked_keys.contains(&format!("tok:{t}")))
@@ -1003,17 +1553,8 @@ impl Coordinator {
                 if is_host {
                     room.touched = now;
                 }
-                let mbr = &room.members[&tok];
-                let mut value = Self::view(room, now, p);
-                value["token"] = json!(mbr.token);
-                value["memberId"] = json!(mbr.id);
-                value["host"] = json!(mbr.host);
-                if let Some(ref cid) = mbr.client_id {
-                    value["clientId"] = json!(cid);
-                }
-                events
-                    .broadcasts
-                    .push((room.room_id.clone(), "state", Self::view(room, now, &Value::Null)));
+                let value = Self::build_member_session(room, &room.members[&tok], now, p);
+                events.push_room_state(room, "state", now, false);
                 return Ok((value, events));
             }
 
@@ -1063,20 +1604,9 @@ impl Coordinator {
                     seen: now,
                 };
                 let auth = restored.token.clone();
-                let mid = restored.id.clone();
-                let is_host = restored.host;
-                let cid_out = restored.client_id.clone();
                 room.members.insert(auth.clone(), restored);
-                let mut value = Self::view(room, now, p);
-                value["token"] = json!(auth);
-                value["memberId"] = json!(mid);
-                value["host"] = json!(is_host);
-                if let Some(cid) = cid_out {
-                    value["clientId"] = json!(cid);
-                }
-                events
-                    .broadcasts
-                    .push((room.room_id.clone(), "state", Self::view(room, now, &Value::Null)));
+                let value = Self::build_member_session(room, &room.members[&auth], now, p);
+                events.push_room_state(room, "state", now, false);
                 return Ok((value, events));
             }
 
@@ -1085,6 +1615,16 @@ impl Coordinator {
                     401,
                     "Sua sessão expirou. Entre novamente.",
                     Some("SESSION_EXPIRED"),
+                ));
+            }
+
+            if self.rooms[&code].require_approval {
+                let preview = Self::preview(&self.rooms[&code], now);
+                return Err(LanErr::with_preview(
+                    403,
+                    "Esta JAM exige aprovação do anfitrião. Envie uma solicitação de entrada.",
+                    "APPROVAL_REQUIRED",
+                    preview,
                 ));
             }
 
@@ -1111,7 +1651,7 @@ impl Coordinator {
             let member = Member {
                 id: uuid::Uuid::new_v4().simple().to_string(),
                 token: token(),
-                client_id: client_id.clone(),
+                client_id,
                 name: name(p),
                 avatar: safe_avatar(p),
                 host: false,
@@ -1120,23 +1660,14 @@ impl Coordinator {
                 seen: now,
             };
             let auth = member.token.clone();
-            let mid = member.id.clone();
             room.members.insert(auth.clone(), member);
-            let mut value = Self::view(room, now, p);
-            value["token"] = json!(auth);
-            value["memberId"] = json!(mid);
-            value["host"] = json!(false);
-            if let Some(cid) = client_id {
-                value["clientId"] = json!(cid);
-            }
-            events
-                .broadcasts
-                .push((room.room_id.clone(), "state", Self::view(room, now, &Value::Null)));
+            let value = Self::build_member_session(room, &room.members[&auth], now, p);
+            events.push_room_state(room, "state", now, false);
             return Ok((value, events));
         }
 
         let auth = s(p, "token");
-        let is_host = {
+        let (is_host, member_id, member_name, member_avatar) = {
             let room = self.rooms.get_mut(&code).unwrap();
             if !valid_token_str(auth) {
                 return Err(LanErr::new(401, "Sessão da JAM inválida.", Some("SESSION_EXPIRED")));
@@ -1160,7 +1691,12 @@ impl Coordinator {
             if member.host {
                 room.touched = now;
             }
-            member.host
+            (
+                member.host,
+                member.id.clone(),
+                member.name.clone(),
+                member.avatar.clone(),
+            )
         };
 
         if action == "leave" {
@@ -1169,7 +1705,7 @@ impl Coordinator {
                 if let Some(room) = self.rooms.remove(&code) {
                     let rid = room.room_id.clone();
                     self.record_tombstone(&room, &code, "ended", now);
-                    events.broadcasts.push((
+                    events.push_uniform(
                         rid.clone(),
                         "closed",
                         json!({
@@ -1178,14 +1714,14 @@ impl Coordinator {
                             "errorCode": "ROOM_ENDED",
                             "serverTime": now
                         }),
-                    ));
+                    );
                     events.close_room_id = Some(rid);
                 }
             } else if let Some(room) = self.rooms.get_mut(&code) {
-                room.members.remove(auth);
-                events
-                    .broadcasts
-                    .push((room.room_id.clone(), "state", Self::view(room, now, &Value::Null)));
+                if let Some(removed) = room.members.remove(auth) {
+                    room.skip_votes.remove(&removed.id);
+                }
+                events.push_room_state(room, "state", now, false);
             }
             return Ok((json!({"closed": is_host, "serverTime": now}), events));
         }
@@ -1205,10 +1741,8 @@ impl Coordinator {
             room.code = new_code.clone();
             room.invite_expires_at = now + DEFAULT_INVITE_TTL_MS;
             self.tombstones.remove(&new_code);
-            let out = Self::view(&room, now, p);
-            events
-                .broadcasts
-                .push((room.room_id.clone(), "state", Self::view(&room, now, &Value::Null)));
+            let out = Self::view(&room, now, p, true);
+            events.push_room_state(&room, "state", now, false);
             self.rooms.insert(new_code, room);
             return Ok((out, events));
         }
@@ -1235,10 +1769,175 @@ impl Coordinator {
             if let Some(locked) = p["locked"].as_bool() {
                 room.locked = locked;
             }
-            let out = Self::view(room, now, p);
-            events
-                .broadcasts
-                .push((room.room_id.clone(), "state", Self::view(room, now, &Value::Null)));
+            if let Some(ra) = p["requireAuth"].as_bool() {
+                room.require_auth = ra;
+            }
+            if let Some(rap) = p["requireApproval"].as_bool() {
+                room.require_approval = rap;
+            }
+            if p.get("permissions").is_some() {
+                room.permissions.apply_patch(&p["permissions"]);
+            }
+            let out = Self::view(room, now, p, true);
+            events.push_room_state(room, "state", now, false);
+            return Ok((out, events));
+        }
+
+        if action == "approveJoin" {
+            if !is_host {
+                return Err(LanErr::new(
+                    403,
+                    "Somente o anfitrião pode aprovar participantes.",
+                    Some("FORBIDDEN"),
+                ));
+            }
+            let req_id = safe_request_id(p)
+                .ok_or_else(|| LanErr::new(400, "Solicitação inválida.", None))?;
+            self.check_replay(p, now)?;
+            let room = self.rooms.get_mut(&code).unwrap();
+            let _ = Self::prune_join_requests(room, now);
+            let (status, expires_at, req_name, req_avatar, req_cid) = match room.join_requests.get(&req_id) {
+                Some(r) => (
+                    r.status,
+                    r.expires_at,
+                    r.name.clone(),
+                    r.avatar.clone(),
+                    r.client_id.clone(),
+                ),
+                None => {
+                    return Err(LanErr::new(404, "Solicitação de entrada não encontrada.", None));
+                }
+            };
+            if status != JoinRequestStatus::Pending {
+                return Err(LanErr::new(
+                    409,
+                    "Esta solicitação já foi processada.",
+                    Some("REQUEST_DUPLICATE"),
+                ));
+            }
+            if expires_at <= now {
+                if let Some(r) = room.join_requests.get_mut(&req_id) {
+                    r.status = JoinRequestStatus::Expired;
+                    r.expires_at = now + RESOLVED_STATUS_TTL_MS;
+                }
+                return Err(LanErr::new(
+                    410,
+                    "Esta solicitação expirou.",
+                    Some("INVITE_EXPIRED"),
+                ));
+            }
+            if is_blocked_requester(room, req_cid.as_deref()) {
+                if let Some(r) = room.join_requests.get_mut(&req_id) {
+                    r.status = JoinRequestStatus::Blocked;
+                    r.error_code = Some("BLOCKED");
+                    r.expires_at = now + RESOLVED_STATUS_TTL_MS;
+                }
+                return Err(LanErr::new(
+                    403,
+                    "Este usuário está bloqueado nesta JAM.",
+                    Some("BLOCKED"),
+                ));
+            }
+            if req_cid.as_ref().is_some_and(|cid| {
+                room.members
+                    .values()
+                    .any(|m| m.client_id.as_deref() == Some(cid.as_str()))
+            }) {
+                room.join_requests.remove(&req_id);
+                return Err(LanErr::new(
+                    409,
+                    "Este usuário já entrou na JAM.",
+                    Some("REQUEST_DUPLICATE"),
+                ));
+            }
+            if room.members.len() >= room.max_participants {
+                return Err(LanErr::new(
+                    409,
+                    format!("Esta JAM já tem {} pessoas.", room.max_participants),
+                    Some("ROOM_FULL"),
+                ));
+            }
+            let new_member = Member {
+                id: uuid::Uuid::new_v4().simple().to_string(),
+                token: token(),
+                client_id: req_cid,
+                name: req_name,
+                avatar: req_avatar,
+                host: false,
+                online: true,
+                joined_at: now,
+                seen: now,
+            };
+            let new_tok = new_member.token.clone();
+            room.members.insert(new_tok.clone(), new_member);
+            let session_out = Self::build_member_session(room, &room.members[&new_tok], now, &Value::Null);
+            if let Some(r) = room.join_requests.get_mut(&req_id) {
+                r.status = JoinRequestStatus::Approved;
+                r.expires_at = now + APPROVED_CLAIM_TTL_MS;
+                r.approved_session = Some(session_out);
+            }
+            let out = Self::view(room, now, p, true);
+            events.push_room_state(room, "state", now, false);
+            return Ok((out, events));
+        }
+
+        if action == "rejectJoin" {
+            if !is_host {
+                return Err(LanErr::new(
+                    403,
+                    "Somente o anfitrião pode recusar participantes.",
+                    Some("FORBIDDEN"),
+                ));
+            }
+            let req_id = safe_request_id(p)
+                .ok_or_else(|| LanErr::new(400, "Solicitação inválida.", None))?;
+            self.check_replay(p, now)?;
+            let room = self.rooms.get_mut(&code).unwrap();
+            let _ = Self::prune_join_requests(room, now);
+            let should_block = p["block"] == true;
+            let (status, req_name, req_tok, req_cid) = match room.join_requests.get(&req_id) {
+                Some(r) => (
+                    r.status,
+                    r.name.clone(),
+                    r.request_token.clone(),
+                    r.client_id.clone(),
+                ),
+                None => {
+                    return Err(LanErr::new(404, "Solicitação de entrada não encontrada.", None));
+                }
+            };
+            if status != JoinRequestStatus::Pending {
+                return Err(LanErr::new(
+                    409,
+                    "Esta solicitação já foi processada.",
+                    Some("REQUEST_DUPLICATE"),
+                ));
+            }
+            if let Some(r) = room.join_requests.get_mut(&req_id) {
+                if should_block {
+                    r.status = JoinRequestStatus::Blocked;
+                    r.error_code = Some("BLOCKED");
+                    r.reason = Some("Sua entrada foi bloqueada pelo anfitrião.".into());
+                } else {
+                    r.status = JoinRequestStatus::Rejected;
+                    r.error_code = Some("REQUEST_REJECTED");
+                    r.reason = Some("O anfitrião recusou sua solicitação de entrada.".into());
+                }
+                r.expires_at = now + RESOLVED_STATUS_TTL_MS;
+            }
+            if should_block {
+                add_block_keys(
+                    room,
+                    &req_id,
+                    &req_name,
+                    &req_tok,
+                    req_cid.as_deref(),
+                    now,
+                    false,
+                );
+            }
+            let out = Self::view(room, now, p, true);
+            events.push_room_state(room, "state", now, true);
             return Ok((out, events));
         }
 
@@ -1267,6 +1966,7 @@ impl Coordinator {
             }
             let kicked = room.members.remove(&target_token).unwrap();
             room.recent_members.remove(&target_token);
+            room.skip_votes.remove(&kicked.id);
             room.kicked_keys.insert(format!("tok:{}", kicked.token));
             if let Some(cid) = kicked.client_id {
                 room.kicked_keys.insert(format!("cid:{cid}"));
@@ -1281,10 +1981,104 @@ impl Coordinator {
                     "serverTime": now
                 }),
             ));
-            let out = Self::view(room, now, p);
-            events
-                .broadcasts
-                .push((room.room_id.clone(), "state", Self::view(room, now, &Value::Null)));
+            let out = Self::view(room, now, p, true);
+            events.push_room_state(room, "state", now, false);
+            return Ok((out, events));
+        }
+
+        if action == "blockMember" {
+            if !is_host {
+                return Err(LanErr::new(
+                    403,
+                    "Somente o anfitrião pode bloquear participantes.",
+                    Some("FORBIDDEN"),
+                ));
+            }
+            let target_id = s(p, "memberId");
+            if target_id.is_empty() {
+                return Err(LanErr::new(400, "Participante inválido.", None));
+            }
+            self.check_replay(p, now)?;
+            let room = self.rooms.get_mut(&code).unwrap();
+            let active_tok = room
+                .members
+                .iter()
+                .find(|(_, m)| m.id == target_id)
+                .map(|(k, _)| k.clone());
+            let recent_tok = if active_tok.is_none() {
+                room.recent_members
+                    .iter()
+                    .find(|(_, m)| m.id == target_id)
+                    .map(|(k, _)| k.clone())
+            } else {
+                None
+            };
+            if let Some(tok) = active_tok {
+                if room.members[&tok].host {
+                    return Err(LanErr::new(400, "Não é possível bloquear o anfitrião.", None));
+                }
+                let removed = room.members.remove(&tok).unwrap();
+                room.recent_members.remove(&tok);
+                room.skip_votes.remove(&removed.id);
+                add_block_keys(
+                    room,
+                    &removed.id,
+                    &removed.name,
+                    &removed.token,
+                    removed.client_id.as_deref(),
+                    now,
+                    true,
+                );
+                events.kicks.push((
+                    room.room_id.clone(),
+                    removed.token,
+                    json!({
+                        "kicked": true,
+                        "reason": "Você foi bloqueado nesta JAM pelo anfitrião.",
+                        "errorCode": "BLOCKED",
+                        "serverTime": now
+                    }),
+                ));
+            } else if let Some(tok) = recent_tok {
+                if room.recent_members[&tok].host {
+                    return Err(LanErr::new(400, "Não é possível bloquear o anfitrião.", None));
+                }
+                let removed = room.recent_members.remove(&tok).unwrap();
+                room.skip_votes.remove(&removed.id);
+                add_block_keys(
+                    room,
+                    &removed.id,
+                    &removed.name,
+                    &removed.token,
+                    removed.client_id.as_deref(),
+                    now,
+                    true,
+                );
+            } else {
+                return Err(LanErr::new(404, "Participante não encontrado.", None));
+            }
+            let out = Self::view(room, now, p, true);
+            events.push_room_state(room, "state", now, false);
+            return Ok((out, events));
+        }
+
+        if action == "unblockMember" {
+            if !is_host {
+                return Err(LanErr::new(
+                    403,
+                    "Somente o anfitrião pode desbloquear participantes.",
+                    Some("FORBIDDEN"),
+                ));
+            }
+            let block_key = safe_block_key(p)
+                .ok_or_else(|| LanErr::new(400, "Identificador de bloqueio inválido.", None))?;
+            self.check_replay(p, now)?;
+            let room = self.rooms.get_mut(&code).unwrap();
+            room.blocked_list.retain(|b| b.key != block_key);
+            room.blocked_keys.remove(&block_key);
+            room.kicked_keys.remove(&block_key);
+            let out = Self::view(room, now, p, true);
+            events.push_room_state(room, "state", now, true);
             return Ok((out, events));
         }
 
@@ -1309,6 +2103,12 @@ impl Coordinator {
             let position = pos.min(song["duration"].as_f64().filter(|d| *d > 0.0).unwrap_or(86400.0));
             let playing = !song.is_null() && play["playing"] == true;
             let room = self.rooms.get_mut(&code).unwrap();
+            let prev_id = room.playback["track"]["id"].as_str().map(str::to_string);
+            let next_id = song["id"].as_str().map(str::to_string);
+            if prev_id != next_id {
+                room.skip_votes.clear();
+                room.skip_triggered_at = 0;
+            }
             room.playback = json!({
                 "track": song,
                 "playing": playing,
@@ -1316,18 +2116,212 @@ impl Coordinator {
                 "updatedAt": now,
                 "sequence": room.playback["sequence"].as_u64().unwrap_or(0) + 1
             });
-            let out = Self::view(room, now, p);
-            events
-                .broadcasts
-                .push((room.room_id.clone(), "playback", Self::view(room, now, &Value::Null)));
+            let out = Self::view(room, now, p, true);
+            events.push_room_state(room, "playback", now, false);
             return Ok((out, events));
         }
+
+        if action == "voteSkip" {
+            if !is_host && !self.rooms[&code].permissions.allow_vote_skip {
+                return Err(LanErr::new(
+                    403,
+                    "O anfitrião desativou a votação para pular músicas.",
+                    Some("FORBIDDEN"),
+                ));
+            }
+            self.check_replay(p, now)?;
+            let room = self.rooms.get_mut(&code).unwrap();
+            if room.skip_votes.contains(&member_id) {
+                room.skip_votes.remove(&member_id);
+            } else {
+                room.skip_votes.insert(member_id);
+            }
+            let online_count = room.members.values().filter(|m| m.online).count().max(1);
+            let threshold = ((online_count + 1) / 2).max(1);
+            if room.skip_votes.len() >= threshold {
+                room.skip_triggered_at = now;
+                room.skip_votes.clear();
+            }
+            let out = Self::view(room, now, p, is_host);
+            events.push_room_state(room, "state", now, false);
+            return Ok((out, events));
+        }
+
+        if action == "queueAdd" {
+            if !is_host && !self.rooms[&code].permissions.allow_queue_add {
+                return Err(LanErr::new(
+                    403,
+                    "O anfitrião desativou a adição de músicas à fila pelos participantes.",
+                    Some("FORBIDDEN"),
+                ));
+            }
+            let t = track(&p["track"]).map_err(|e| LanErr::new(400, e, None))?;
+            if !t.is_object() {
+                return Err(LanErr::new(
+                    400,
+                    "Selecione uma música online válida para a fila.",
+                    None,
+                ));
+            }
+            self.check_replay(p, now)?;
+            let room = self.rooms.get_mut(&code).unwrap();
+            if room.jam_queue.len() >= 30 {
+                return Err(LanErr::new(
+                    400,
+                    "A fila da JAM atingiu o limite de 30 músicas.",
+                    None,
+                ));
+            }
+            room.jam_queue.push(json!({
+                "id": format!("jq_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]),
+                "track": t,
+                "addedById": member_id,
+                "addedByName": member_name,
+                "addedAt": now
+            }));
+            let out = Self::view(room, now, p, is_host);
+            events.push_room_state(room, "state", now, false);
+            return Ok((out, events));
+        }
+
+        if action == "queueRemove" {
+            let item_id = s(p, "queueItemId").trim().to_string();
+            if item_id.is_empty() {
+                return Err(LanErr::new(400, "Item da fila inválido.", None));
+            }
+            self.check_replay(p, now)?;
+            let room = self.rooms.get_mut(&code).unwrap();
+            if let Some(pos) = room
+                .jam_queue
+                .iter()
+                .position(|it| it["id"].as_str() == Some(item_id.as_str()))
+            {
+                let added_by = room.jam_queue[pos]["addedById"].as_str().unwrap_or("");
+                if !is_host && added_by != member_id {
+                    return Err(LanErr::new(
+                        403,
+                        "Somente o anfitrião ou quem adicionou pode remover da fila.",
+                        Some("FORBIDDEN"),
+                    ));
+                }
+                room.jam_queue.remove(pos);
+            }
+            let out = Self::view(room, now, p, is_host);
+            events.push_room_state(room, "state", now, false);
+            return Ok((out, events));
+        }
+
+        if action == "recommendPlaylist" {
+            if !is_host && !self.rooms[&code].permissions.allow_recommendations {
+                return Err(LanErr::new(
+                    403,
+                    "O anfitrião desativou o envio de playlists pelos participantes.",
+                    Some("FORBIDDEN"),
+                ));
+            }
+            let clean_name: String = s(p, "playlistName")
+                .chars()
+                .filter(|c| !c.is_control())
+                .collect::<String>()
+                .trim()
+                .chars()
+                .take(60)
+                .collect();
+            if clean_name.is_empty() {
+                return Err(LanErr::new(
+                    400,
+                    "Informe o nome da playlist recomendada.",
+                    None,
+                ));
+            }
+            let mut valid_tracks = Vec::new();
+            if let Some(arr) = p["playlistTracks"].as_array() {
+                for cand in arr.iter().take(20) {
+                    if let Ok(t) = track(cand) {
+                        if t.is_object() {
+                            valid_tracks.push(t);
+                        }
+                    }
+                }
+            }
+            if valid_tracks.is_empty() {
+                return Err(LanErr::new(
+                    400,
+                    "A playlist recomendada precisa ter ao menos uma música online.",
+                    None,
+                ));
+            }
+            self.check_replay(p, now)?;
+            let room = self.rooms.get_mut(&code).unwrap();
+            room.recommendations.insert(
+                0,
+                json!({
+                    "id": format!("jr_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]),
+                    "name": clean_name,
+                    "trackCount": valid_tracks.len(),
+                    "tracks": valid_tracks,
+                    "recommendedById": member_id,
+                    "recommendedByName": member_name,
+                    "recommendedAt": now
+                }),
+            );
+            room.recommendations.truncate(15);
+            let out = Self::view(room, now, p, is_host);
+            events.push_room_state(room, "state", now, false);
+            return Ok((out, events));
+        }
+
+        if action == "chat" {
+            if !is_host && !self.rooms[&code].permissions.allow_chat {
+                return Err(LanErr::new(
+                    403,
+                    "O anfitrião desativou o bate-papo desta JAM.",
+                    Some("FORBIDDEN"),
+                ));
+            }
+            let clean_msg: String = s(p, "message")
+                .chars()
+                .filter(|c| !c.is_control())
+                .collect::<String>()
+                .trim()
+                .chars()
+                .take(300)
+                .collect();
+            if clean_msg.is_empty() {
+                return Err(LanErr::new(
+                    400,
+                    "Digite uma mensagem para enviar no chat.",
+                    None,
+                ));
+            }
+            self.check_replay(p, now)?;
+            let room = self.rooms.get_mut(&code).unwrap();
+            let mut msg_obj = json!({
+                "id": format!("jm_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]),
+                "memberId": member_id,
+                "name": member_name,
+                "text": clean_msg,
+                "sentAt": now
+            });
+            if let Some(ref av) = member_avatar {
+                msg_obj["avatar"] = json!(av);
+            }
+            room.messages.push(msg_obj);
+            if room.messages.len() > 80 {
+                let extra = room.messages.len() - 80;
+                room.messages.drain(0..extra);
+            }
+            let out = Self::view(room, now, p, is_host);
+            events.push_room_state(room, "state", now, false);
+            return Ok((out, events));
+        }
+
         if action != "poll" {
             return Err(LanErr::new(400, "Operação inválida.", None));
         }
         self.check_replay(p, now)?;
         let room = self.rooms.get(&code).unwrap();
-        Ok((Self::view(room, now, p), events))
+        Ok((Self::view(room, now, p, is_host), events))
     }
 
     #[cfg(test)]
@@ -1354,11 +2348,21 @@ fn dispatch_sse_events(subscribers: &Arc<Mutex<Vec<SseClient>>>, events: Dispatc
         }
         subs.retain(|s| !(s.room_id == *rid && s.token == *tok));
     }
-    for (rid, ev_name, payload) in &events.broadcasts {
-        let msg = format!("event: {ev_name}\ndata: {}\n\n", payload);
+    for b in &events.broadcasts {
+        let guest_msg = if b.host_only {
+            None
+        } else {
+            Some(format!("event: {}\ndata: {}\n\n", b.event, b.guest_payload))
+        };
+        let host_msg = format!("event: {}\ndata: {}\n\n", b.event, b.host_payload);
         subs.retain(|sub| {
-            if sub.room_id == *rid {
-                !matches!(sub.tx.try_send(msg.clone()), Err(mpsc::TrySendError::Disconnected(_)))
+            if sub.room_id != b.room_id {
+                return true;
+            }
+            if sub.host {
+                !matches!(sub.tx.try_send(host_msg.clone()), Err(mpsc::TrySendError::Disconnected(_)))
+            } else if let Some(ref gm) = guest_msg {
+                !matches!(sub.tx.try_send(gm.clone()), Err(mpsc::TrySendError::Disconnected(_)))
             } else {
                 true
             }
@@ -1594,8 +2598,20 @@ fn respond(
                     if is_host {
                         room.touched = now;
                     }
-                    let view = Coordinator::view(room, now, &Value::Null);
-                    Some((room.room_id.clone(), view))
+                    let initial_view = Coordinator::view(room, now, &Value::Null, is_host);
+                    let guest_view = Coordinator::view(room, now, &Value::Null, false);
+                    let host_view = if is_host {
+                        initial_view.clone()
+                    } else {
+                        Coordinator::view(room, now, &Value::Null, true)
+                    };
+                    Some((
+                        room.room_id.clone(),
+                        is_host,
+                        initial_view,
+                        guest_view,
+                        host_view,
+                    ))
                 } else {
                     None
                 }
@@ -1603,7 +2619,7 @@ fn respond(
                 None
             }
         };
-        let Some((room_id, initial_view)) = auth_check else {
+        let Some((room_id, is_host, initial_view, guest_view, host_view)) = auth_check else {
             send_http(
                 stream,
                 401,
@@ -1632,6 +2648,7 @@ fn respond(
             subs.push(SseClient {
                 room_id: room_id.clone(),
                 token: tok.clone(),
+                host: is_host,
                 tx,
             });
         }
@@ -1640,7 +2657,13 @@ fn respond(
         dispatch_sse_events(
             subscribers,
             DispatchEvents {
-                broadcasts: vec![(room_id.clone(), "state", initial_view.clone())],
+                broadcasts: vec![SseBroadcast {
+                    room_id: room_id.clone(),
+                    event: "state",
+                    guest_payload: guest_view,
+                    host_payload: host_view,
+                    host_only: false,
+                }],
                 kicks: Vec::new(),
                 close_room_id: None,
             },
@@ -1707,32 +2730,17 @@ fn respond(
                 };
                 if !still_connected {
                     let now_off = db::now();
-                    let broadcast_view = if let Ok(mut c) = coord_ref.lock() {
-                        c.rooms
-                            .values_mut()
-                            .find(|r| r.room_id == room_id)
-                            .and_then(|room| {
-                                if let Some(mbr) = room.members.get_mut(&tok) {
-                                    mbr.online = false;
-                                    mbr.seen = now_off;
-                                    Some(Coordinator::view(room, now_off, &Value::Null))
-                                } else {
-                                    None
-                                }
-                            })
-                    } else {
-                        None
-                    };
-                    if let Some(v) = broadcast_view {
-                        dispatch_sse_events(
-                            &subs_ref,
-                            DispatchEvents {
-                                broadcasts: vec![(room_id, "state", v)],
-                                kicks: Vec::new(),
-                                close_room_id: None,
-                            },
-                        );
+                    let mut offline_events = DispatchEvents::none();
+                    if let Ok(mut c) = coord_ref.lock() {
+                        if let Some(room) = c.rooms.values_mut().find(|r| r.room_id == room_id) {
+                            if let Some(mbr) = room.members.get_mut(&tok) {
+                                mbr.online = false;
+                                mbr.seen = now_off;
+                                offline_events.push_room_state(room, "state", now_off, false);
+                            }
+                        }
                     }
+                    dispatch_sse_events(&subs_ref, offline_events);
                 }
             });
         return;
@@ -2171,5 +3179,184 @@ mod tests {
         assert!(!html.contains("<script>alert(1)</script>"));
         assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
         assert!(html.contains("liquidhub://jam/join/K9M4P2XR?endpoint="));
+    }
+
+    #[test]
+    fn lan_approval_entry_block_permissions_and_rate_limit_work() {
+        let mut server = Coordinator::new();
+        let host = server
+            .handle(
+                &json!({
+                    "action": "create",
+                    "name": "Host",
+                    "roomName": "LAN Segura",
+                    "requireApproval": true,
+                    "clientId": "host_lan_01"
+                }),
+                "127.0.0.1",
+                1000,
+            )
+            .unwrap();
+        let code = host["code"].as_str().unwrap().to_string();
+        assert_eq!(host["requireApproval"], true);
+
+        // Direct join without approval must fail with APPROVAL_REQUIRED
+        let direct_err = server
+            .handle_with_events(
+                &json!({"action":"join","code":code,"name":"Intruso","clientId":"guest_lan_01"}),
+                "127.0.0.2",
+                1005,
+            )
+            .unwrap_err();
+        assert_eq!(direct_err.status, 403);
+        assert_eq!(direct_err.error_code, Some("APPROVAL_REQUIRED"));
+
+        // Request join creates pending request
+        let req_res = server
+            .handle(
+                &json!({"action":"requestJoin","code":code,"name":"Bia","clientId":"guest_lan_01"}),
+                "127.0.0.2",
+                1010,
+            )
+            .unwrap();
+        assert_eq!(req_res["status"], "pending");
+        let req_id = req_res["requestId"].as_str().unwrap().to_string();
+        let req_tok = req_res["requestToken"].as_str().unwrap().to_string();
+
+        // Duplicate request from same clientId blocked with 409 REQUEST_DUPLICATE
+        let dup_err = server
+            .handle_with_events(
+                &json!({"action":"requestJoin","code":code,"name":"Bia","clientId":"guest_lan_01"}),
+                "127.0.0.2",
+                1011,
+            )
+            .unwrap_err();
+        assert_eq!(dup_err.status, 409);
+        assert_eq!(dup_err.error_code, Some("REQUEST_DUPLICATE"));
+
+        // Host sees joinRequests
+        let host_poll = server
+            .handle(
+                &json!({"action":"poll","code":code,"token":host["token"]}),
+                "127.0.0.1",
+                1012,
+            )
+            .unwrap();
+        assert_eq!(host_poll["joinRequests"].as_array().unwrap().len(), 1);
+
+        // Host approves -> requester claims single-use session
+        server
+            .handle(
+                &json!({"action":"approveJoin","code":code,"token":host["token"],"requestId":req_id}),
+                "127.0.0.1",
+                1015,
+            )
+            .unwrap();
+        let claimed = server
+            .handle(
+                &json!({"action":"checkJoinRequest","code":code,"requestId":req_id,"requestToken":req_tok}),
+                "127.0.0.2",
+                1016,
+            )
+            .unwrap();
+        assert_eq!(claimed["status"], "approved");
+        let guest_tok = claimed["session"]["token"].as_str().unwrap().to_string();
+        let guest_id = claimed["session"]["memberId"].as_str().unwrap().to_string();
+        assert!(claimed["session"].get("joinRequests").is_none());
+        assert!(claimed["session"].get("blockedList").is_none());
+
+        // Second check returns expired (single claim consumed)
+        let second_claim = server
+            .handle(
+                &json!({"action":"checkJoinRequest","code":code,"requestId":req_id,"requestToken":req_tok}),
+                "127.0.0.2",
+                1017,
+            )
+            .unwrap();
+        assert_eq!(second_claim["status"], "expired");
+
+        // Disable chat permission and test server enforcement
+        server
+            .handle(
+                &json!({"action":"updateRoom","code":code,"token":host["token"],"permissions":{"allowChat":false}}),
+                "127.0.0.1",
+                1020,
+            )
+            .unwrap();
+        let chat_err = server
+            .handle_with_events(
+                &json!({"action":"chat","code":code,"token":guest_tok,"message":"Oi"}),
+                "127.0.0.2",
+                1021,
+            )
+            .unwrap_err();
+        assert_eq!(chat_err.status, 403);
+        assert_eq!(chat_err.error_code, Some("FORBIDDEN"));
+
+        // Block member revokes token & blocks future requests
+        let blocked_view = server
+            .handle(
+                &json!({"action":"blockMember","code":code,"token":host["token"],"memberId":guest_id}),
+                "127.0.0.1",
+                1025,
+            )
+            .unwrap();
+        let block_key = blocked_view["blockedList"][0]["key"].as_str().unwrap().to_string();
+        let poll_after_block = server
+            .handle_with_events(
+                &json!({"action":"poll","code":code,"token":guest_tok}),
+                "127.0.0.2",
+                1026,
+            )
+            .unwrap_err();
+        assert_eq!(poll_after_block.status, 403);
+
+        let blocked_req = server
+            .handle_with_events(
+                &json!({"action":"requestJoin","code":code,"name":"Bia","clientId":"guest_lan_01"}),
+                "127.0.0.2",
+                1027,
+            )
+            .unwrap_err();
+        assert_eq!(blocked_req.status, 403);
+        assert_eq!(blocked_req.error_code, Some("BLOCKED"));
+
+        // Unblock restores ability to request
+        server
+            .handle(
+                &json!({"action":"unblockMember","code":code,"token":host["token"],"blockKey":block_key}),
+                "127.0.0.1",
+                1030,
+            )
+            .unwrap();
+        let unblocked_req = server
+            .handle(
+                &json!({"action":"requestJoin","code":code,"name":"Bia","clientId":"guest_lan_01"}),
+                "127.0.0.2",
+                1031,
+            )
+            .unwrap();
+        assert_eq!(unblocked_req["status"], "pending");
+
+        // Spam rate limit (>6 requestJoin/min from same IP)
+        for i in 0..6 {
+            let cid = format!("spam_client_{i}");
+            let _ = server
+                .handle(
+                    &json!({"action":"requestJoin","code":code,"name":"Spam","clientId":cid}),
+                    "127.0.0.99",
+                    2000 + i,
+                )
+                .unwrap();
+        }
+        let rate_err = server
+            .handle_with_events(
+                &json!({"action":"requestJoin","code":code,"name":"Spam7","clientId":"spam_client_7"}),
+                "127.0.0.99",
+                2010,
+            )
+            .unwrap_err();
+        assert_eq!(rate_err.status, 429);
+        assert_eq!(rate_err.error_code, Some("RATE_LIMITED"));
     }
 }

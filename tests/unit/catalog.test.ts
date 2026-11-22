@@ -140,7 +140,7 @@ describe('shared catalog, public access with owner-only credentials & cross-plat
     await withServer(
       async (base, api) => {
         const health = await (await fetch(`${base}/health`)).json();
-        expect(health.providers).toEqual({ youtube: false, soundcloud: false });
+        expect(health.providers).toEqual({ youtube: false, soundcloud: false, spotify: false });
         const discovery = await (await fetch(`${base}/v1/discover`)).json();
         expect(discovery.sections).toEqual([]);
         expect(discovery.notices).toHaveLength(2);
@@ -322,6 +322,145 @@ describe('shared catalog, public access with owner-only credentials & cross-plat
       },
       { ...secrets, CATALOG_ENABLE_DEEZER: '1' },
       resolverApi as any,
+    );
+  });
+
+  it('searches Spotify Web API via server-only Client Credentials, enforces limit=10, skips null items, and hides credentials', async () => {
+    const spSecrets = {
+      ...secrets,
+      SPOTIFY_CLIENT_ID: 'owner-sp-id',
+      SPOTIFY_CLIENT_SECRET: 'owner-sp-secret',
+    };
+    const spotifyApi = vi.fn(async (raw: string | URL | Request, _init?: RequestInit) => {
+      const u = new URL(String(raw));
+      if (u.hostname === 'accounts.spotify.com' && u.pathname === '/api/token') {
+        return Response.json({
+          access_token: 'upstream-spotify-secret',
+          token_type: 'Bearer',
+          expires_in: 3600,
+        });
+      }
+      if (u.hostname === 'api.spotify.com' && u.pathname === '/v1/search') {
+        expect(u.searchParams.get('limit')).toBe('10');
+        return Response.json({
+          tracks: {
+            items: [
+              {
+                id: '0DiWol3AO6WpXZgp0goxAV',
+                name: 'One More Time',
+                duration_ms: 320357,
+                artists: [{ name: 'Daft Punk' }],
+                album: {
+                  name: 'Discovery',
+                  images: [{ url: 'https://i.scdn.co/image/ab67616d0000b273discovery' }],
+                },
+                external_ids: { isrc: 'GBDUW0000053' },
+                external_urls: {
+                  spotify: 'https://open.spotify.com/track/0DiWol3AO6WpXZgp0goxAV',
+                },
+              },
+            ],
+            next: 'https://api.spotify.com/v1/search?offset=10',
+          },
+          playlists: {
+            items: [
+              null,
+              {
+                id: '37i9dQZF1DXcBWIGoYBM5M',
+                name: 'Synthwave Mix',
+                owner: { display_name: 'Spotify' },
+                images: [{ url: 'https://i.scdn.co/image/ab67706f00000002mix' }],
+                external_urls: {
+                  spotify: 'https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M',
+                },
+              },
+            ],
+          },
+        });
+      }
+      throw new Error(`Unexpected Spotify test request ${u.href}`);
+    });
+
+    await withServer(
+      async (base, api) => {
+        const health = await (await fetch(`${base}/health`)).json();
+        expect(health.providers.spotify).toBe(true);
+
+        const [first, second] = await Promise.all([
+          fetch(`${base}/v1/search?source=spotify&kind=all&q=daft`).then(r => r.json()),
+          fetch(`${base}/v1/search?source=spotify&kind=all&q=punk`).then(r => r.json()),
+        ]);
+        expect(first.items).toHaveLength(2);
+        expect(second.items).toHaveLength(2);
+        expect(first.items[0]).toMatchObject({
+          source: 'link',
+          catalogSource: 'spotify',
+          kind: 'track',
+          title: 'One More Time',
+          artist: 'Daft Punk',
+          album: 'Discovery',
+          durationMs: 320357,
+        });
+        expect(first.items[1]).toMatchObject({
+          source: 'link',
+          catalogSource: 'spotify',
+          kind: 'playlist',
+          title: 'Synthwave Mix',
+        });
+
+        const tokenCalls = api.mock.calls.filter(([u]) =>
+          String(u).includes('accounts.spotify.com/api/token'),
+        );
+        expect(tokenCalls).toHaveLength(1);
+        expect((tokenCalls[0]![1]?.headers as Record<string, string>).Authorization).toBe(
+          `Basic ${Buffer.from('owner-sp-id:owner-sp-secret').toString('base64')}`,
+        );
+
+        const serialized = JSON.stringify([first, second]);
+        for (const secret of ['owner-sp-id', 'owner-sp-secret', 'upstream-spotify-secret']) {
+          expect(serialized).not.toContain(secret);
+        }
+      },
+      spSecrets,
+      spotifyApi as any,
+    );
+  });
+
+  it('handles Spotify Web API 429 QUOTA_EXCEEDED without leaking secrets', async () => {
+    const spSecrets = {
+      ...secrets,
+      SPOTIFY_CLIENT_ID: 'owner-sp-id',
+      SPOTIFY_CLIENT_SECRET: 'owner-sp-secret',
+    };
+    const quotaApi = vi.fn(async (raw: string | URL | Request) => {
+      const u = new URL(String(raw));
+      if (u.hostname === 'accounts.spotify.com' && u.pathname === '/api/token') {
+        return Response.json({
+          access_token: 'upstream-spotify-secret',
+          token_type: 'Bearer',
+          expires_in: 3600,
+        });
+      }
+      if (u.hostname === 'api.spotify.com' && u.pathname === '/v1/search') {
+        return new Response(JSON.stringify({ error: { status: 429, message: 'QUOTA_EXCEEDED' } }), {
+          status: 429,
+        });
+      }
+      throw new Error(`Unexpected Spotify quota test request ${u.href}`);
+    });
+
+    await withServer(
+      async base => {
+        const res = await fetch(`${base}/v1/search?source=spotify&kind=track&q=quota`);
+        expect(res.status).toBe(429);
+        expect(res.headers.get('retry-after')).toBe('60');
+        const body = await res.json();
+        expect(body.error).toContain('cota da Spotify Web API');
+        expect(JSON.stringify(body)).not.toContain('owner-sp-secret');
+        expect(JSON.stringify(body)).not.toContain('upstream-spotify-secret');
+      },
+      spSecrets,
+      quotaApi as any,
     );
   });
 });

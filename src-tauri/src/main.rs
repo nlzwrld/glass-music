@@ -9,12 +9,14 @@ mod deeplink;
 mod desktop_backdrop;
 mod direct_catalog;
 mod jam;
+mod link_providers;
 mod links;
 mod lyrics;
 mod media;
 mod offline;
 mod platforms;
 mod providers;
+mod ranking;
 mod resolver;
 mod secrets;
 mod updates;
@@ -120,6 +122,7 @@ fn status(st: &State) -> Value {
     json!({
         "youtube": ready,
         "soundcloud": ready,
+        "spotify": st.accounts.spotify_search_ready() || !st.catalog_url.is_empty(),
         "catalogConfigured": ready,
         "catalogMode": mode,
         "encrypted": true,
@@ -156,15 +159,39 @@ fn shortcuts(app: &tauri::AppHandle, enabled: bool) -> bool {
     good
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowLifecycleDecision {
+    MinimizeKeepPlayback,
+    HideToTrayKeepPlayback,
+    ExitApp,
+}
+
+fn decide_close_action(tray_enabled: bool) -> WindowLifecycleDecision {
+    if tray_enabled {
+        WindowLifecycleDecision::HideToTrayKeepPlayback
+    } else {
+        WindowLifecycleDecision::ExitApp
+    }
+}
+
+fn decide_minimize_action() -> WindowLifecycleDecision {
+    WindowLifecycleDecision::MinimizeKeepPlayback
+}
+
+fn decision_pauses_audio(_decision: WindowLifecycleDecision) -> bool {
+    false
+}
+
 fn close(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
-        let _ = app.emit_to("main", "media", "pauseVideo");
         let tray = app.state::<State>().db.lock().unwrap().pref()["tray"] == true;
-        if tray {
-            let _ = w.hide();
-            let _ = app.emit_to("main", "glass-visual-visible", false);
-        } else {
-            app.exit(0);
+        match decide_close_action(tray) {
+            WindowLifecycleDecision::HideToTrayKeepPlayback => {
+                let _ = w.hide();
+                let _ = app.emit_to("main", "glass-visual-visible", false);
+            }
+            WindowLifecycleDecision::ExitApp => app.exit(0),
+            WindowLifecycleDecision::MinimizeKeepPlayback => {}
         }
     }
 }
@@ -201,6 +228,21 @@ fn migrate_legacy_profile_if_needed(target_dir: &PathBuf) {
     }
 }
 
+fn window_action_allowed(label: &str, action: &str) -> bool {
+    if label == "main" {
+        return true;
+    }
+    if label == "lyrics" {
+        return ["bootstrap", "lyrics", "lyricsControl", "closeLyrics", "pinLyrics"]
+            .contains(&action);
+    }
+    if label == "jam" {
+        return ["bootstrap", "jamControl", "closeJam", "pinJam", "search", "external"]
+            .contains(&action);
+    }
+    false
+}
+
 #[tauri::command]
 async fn call(
     action: String,
@@ -209,11 +251,7 @@ async fn call(
     window: tauri::WebviewWindow,
     st: tauri::State<'_, State>,
 ) -> Result<Value> {
-    if window.label() != "main"
-        && !(window.label() == "lyrics"
-            && ["bootstrap", "lyrics", "lyricsControl", "closeLyrics", "pinLyrics"]
-                .contains(&action.as_str()))
-    {
+    if !window_action_allowed(window.label(), action.as_str()) {
         return Err("Janela sem permissão.".into());
     }
     let p = payload.unwrap_or(Value::Null);
@@ -286,6 +324,7 @@ async fn call(
                     direct_catalog::warm_visitor();
                 } else {
                     st.jam_realtime.stop();
+                    let _ = st.db.lock().unwrap().clear_discovery_cache();
                 }
             }
             Ok(p)
@@ -372,6 +411,109 @@ async fn call(
             }
             let secrets_path = st.data.join("credentials.dpapi");
             accounts::hub_update_profile(&st.secrets, &secrets_path, &p).await
+        }
+        "hubGetProfile" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online antes de consultar perfis no Liquid Hub.".into());
+            }
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_get_profile(&st.secrets, &secrets_path, &p).await
+        }
+        "hubSearchUsers" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online antes de pesquisar usuários no Liquid Hub.".into());
+            }
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_search_users(&st.secrets, &secrets_path, &p).await
+        }
+        "hubPublishPlaylist" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online antes de compartilhar playlists no Liquid Hub.".into());
+            }
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_publish_playlist(&st.secrets, &secrets_path, &p).await
+        }
+        "hubMyPlaylists" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online antes de carregar playlists compartilhadas.".into());
+            }
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_my_playlists(&st.secrets, &secrets_path, &p).await
+        }
+        "hubGetSharedPlaylist" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online antes de abrir playlists compartilhadas.".into());
+            }
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_get_shared_playlist(&st.secrets, &secrets_path, &p).await
+        }
+        "hubMutateSharedPlaylist" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online antes de editar playlists compartilhadas.".into());
+            }
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_mutate_shared_playlist(&st.secrets, &secrets_path, &p).await
+        }
+        "hubInviteCollaborator" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online antes de convidar colaboradores.".into());
+            }
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_invite_collaborator(&st.secrets, &secrets_path, &p).await
+        }
+        "hubRespondPlaylistInvite" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online antes de responder ao convite.".into());
+            }
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_respond_playlist_invite(&st.secrets, &secrets_path, &p).await
+        }
+        "hubRemoveCollaborator" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Err("Ative o acesso online antes de gerenciar colaboradores.".into());
+            }
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_remove_collaborator(&st.secrets, &secrets_path, &p).await
+        }
+        "hubPlusStatus" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Ok(json!({
+                    "authenticated": false,
+                    "planId": "free",
+                    "status": "none",
+                    "active": false,
+                    "currentPeriodEnd": null,
+                    "checkoutEnabled": false,
+                    "entitlements": {
+                        "nativeAudioAdFree": true,
+                        "adFreeVisual": false,
+                        "exclusiveThemes": false,
+                        "advancedGlassPresets": false,
+                        "detailedListeningStats": false,
+                        "profileCustomizationPlus": false,
+                        "advancedLibraryTools": false
+                    },
+                    "audioAdsPolicy": {
+                        "audioInterruptionsAllowed": false,
+                        "nativeAdFreeMusic": true,
+                        "visualAdsMutedByDefault": true,
+                        "explicitUnmuteRequired": true
+                    },
+                    "source": "system"
+                }));
+            }
+            let secrets_path = st.data.join("credentials.dpapi");
+            accounts::hub_plus_status(&st.secrets, &secrets_path, &p).await
         }
         "hubLibraryPull" => {
             let pref = st.db.lock().unwrap().pref();
@@ -474,7 +616,7 @@ async fn call(
                 .collect();
             let result = tokio::select! {
                 _ = token.cancelled() => Err("Pesquisa cancelada.".into()),
-                r = providers::search(&p, local, consent, &st.catalog_url, &st.direct) => r
+                r = providers::search(&p, local, consent, &st.catalog_url, &st.direct, &st.accounts) => r
             };
             let mut search = st.search.lock().unwrap();
             search.requests.remove(&id);
@@ -659,6 +801,7 @@ async fn call(
             if p.get("description").is_some() {
                 db.collection_description(id, s(&p, "description"))?;
             }
+            db.collection_share_meta(id, &p)?;
             db.snapshot()
         }
         "recommendations" => {
@@ -1017,13 +1160,116 @@ async fn call(
                         .direct
                         .audio(track["playbackId"].as_str().unwrap_or(s(&track, "sourceId")))
                         .await?;
-                    let pending = offline::download(&st.data, &id, &stream, &token).await?;
+                    let progress_id = id.clone();
+                    let progress_app = app.clone();
+                    let pending = offline::download_with_progress(
+                        &st.data,
+                        &id,
+                        &stream,
+                        &token,
+                        move |dl, tot| {
+                            let pct = if tot > 0 {
+                                ((dl as f64 / tot as f64) * 100.0).min(100.0)
+                            } else {
+                                0.0
+                            };
+                            let _ = progress_app.emit_to(
+                                "main",
+                                "download-progress",
+                                json!({
+                                    "trackId": progress_id,
+                                    "downloadedBytes": dl,
+                                    "totalBytes": tot,
+                                    "percent": pct,
+                                    "status": "downloading"
+                                }),
+                            );
+                        },
+                    )
+                    .await?;
                     Ok((track, pending))
                 } => result,
             };
-            let (track, pending) = resolved?;
+            let (track, pending) = match resolved {
+                Ok(pair) => pair,
+                Err(err) => {
+                    let status = if token.is_cancelled() || err.to_lowercase().contains("cancel") {
+                        "cancelled"
+                    } else {
+                        "error"
+                    };
+                    let _ = app.emit_to(
+                        "main",
+                        "download-progress",
+                        json!({
+                            "trackId": id,
+                            "downloadedBytes": 0,
+                            "totalBytes": 0,
+                            "percent": 0,
+                            "status": status
+                        }),
+                    );
+                    return Err(err);
+                }
+            };
             let db = st.db.lock().unwrap();
-            offline::commit_pending(&db, &st.data, &track, &operation, pending)
+            let snap = offline::commit_pending(&db, &st.data, &track, &operation, pending);
+            if snap.is_ok() {
+                let _ = app.emit_to(
+                    "main",
+                    "download-progress",
+                    json!({
+                        "trackId": id,
+                        "downloadedBytes": 1,
+                        "totalBytes": 1,
+                        "percent": 100,
+                        "status": "completed"
+                    }),
+                );
+            }
+            snap
+        }
+        "cancelDownload" => {
+            let id = p.as_str().ok_or("Faixa inválida.")?;
+            st.offline.cancel(id);
+            let _ = app.emit_to(
+                "main",
+                "download-progress",
+                json!({
+                    "trackId": id,
+                    "downloadedBytes": 0,
+                    "totalBytes": 0,
+                    "percent": 0,
+                    "status": "cancelled"
+                }),
+            );
+            Ok(Value::Null)
+        }
+        "offlineSummary" => {
+            let db = st.db.lock().unwrap();
+            Ok(offline::list_entries(&st.data, &db))
+        }
+        "cacheGet" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Ok(Value::Null);
+            }
+            let key = s(&p, "key");
+            Ok(st.db.lock().unwrap().get_discovery_cache(key).unwrap_or(Value::Null))
+        }
+        "cacheSet" => {
+            let pref = st.db.lock().unwrap().pref();
+            if pref["onlineConsent"] != true || pref["onboardingDone"] != true {
+                return Ok(Value::Null);
+            }
+            let key = s(&p, "key");
+            let sig = s(&p, "signature");
+            let ttl_ms = p["ttlMs"].as_i64().unwrap_or(600_000);
+            st.db
+                .lock()
+                .unwrap()
+                .set_discovery_cache(key, sig, &p["payload"], ttl_ms)?;
+            Ok(Value::Null)
         }
         "removeOffline" => {
             let id = p.as_str().ok_or("Faixa inválida.")?;
@@ -1303,12 +1549,14 @@ async fn call(
                 .build()
                 .map_err(|e| e.to_string())?;
             }
+            let _ = app.emit_to("main", "lyrics-window-open", true);
             Ok(Value::Null)
         }
         "closeLyrics" => {
             if let Some(w) = app.get_webview_window("lyrics") {
                 let _ = w.close();
             }
+            let _ = app.emit_to("main", "lyrics-window-open", false);
             Ok(Value::Null)
         }
         "pinLyrics" => {
@@ -1318,13 +1566,17 @@ async fn call(
             }
             Ok(json!({ "pinned": pinned }))
         }
+        "lyricsWindowOpen" => Ok(json!(app.get_webview_window("lyrics").is_some())),
         "lyricsState" => {
-            if let Some(w) = app.get_webview_window("lyrics") {
+            let open = if let Some(w) = app.get_webview_window("lyrics") {
                 if p.to_string().len() < 4_000_000 {
                     let _ = w.emit("lyrics-state", &p);
                 }
-            }
-            Ok(Value::Null)
+                true
+            } else {
+                false
+            };
+            Ok(json!(open))
         }
         "lyricsControl" => {
             let action = s(&p, "action");
@@ -1339,6 +1591,84 @@ async fn call(
                 return Err("Controle inválido.".into());
             }
             let _ = app.emit_to("main", "lyrics-control", &p);
+            Ok(Value::Null)
+        }
+        "openJam" => {
+            if let Some(w) = app.get_webview_window("jam") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            } else {
+                tauri::WebviewWindowBuilder::new(
+                    &app,
+                    "jam",
+                    tauri::WebviewUrl::App("index.html?view=jam".into()),
+                )
+                .title("JAM · Liquid Hub")
+                .use_https_scheme(true)
+                .inner_size(480.0, 740.0)
+                .min_inner_size(380.0, 520.0)
+                .build()
+                .map_err(|e| e.to_string())?;
+            }
+            let _ = app.emit_to("main", "jam-window-open", true);
+            Ok(Value::Null)
+        }
+        "closeJam" => {
+            if let Some(w) = app.get_webview_window("jam") {
+                let _ = w.close();
+            }
+            let _ = app.emit_to("main", "jam-window-open", false);
+            Ok(Value::Null)
+        }
+        "pinJam" => {
+            let pinned = p["pinned"].as_bool().unwrap_or(false);
+            if let Some(w) = app.get_webview_window("jam") {
+                w.set_always_on_top(pinned).map_err(|e| e.to_string())?;
+            }
+            Ok(json!({ "pinned": pinned }))
+        }
+        "jamWindowOpen" => Ok(json!(app.get_webview_window("jam").is_some())),
+        "jamState" => {
+            let open = if let Some(w) = app.get_webview_window("jam") {
+                if p.to_string().len() < 4_000_000 {
+                    let _ = w.emit("jam-state", &p);
+                }
+                true
+            } else {
+                false
+            };
+            Ok(json!(open))
+        }
+        "jamControl" => {
+            let ctrl = s(&p, "action");
+            if ![
+                "create",
+                "lookup",
+                "requestJoin",
+                "cancelJoinRequest",
+                "approveJoin",
+                "rejectJoin",
+                "blockMember",
+                "unblockMember",
+                "kick",
+                "updateRoom",
+                "rotateInvite",
+                "voteSkip",
+                "queueAdd",
+                "queueRemove",
+                "recommendPlaylist",
+                "savePlaylist",
+                "chat",
+                "leave",
+                "scanLan",
+                "resync",
+                "playTrack",
+            ]
+            .contains(&ctrl)
+            {
+                return Err("Controle de JAM inválido.".into());
+            }
+            let _ = app.emit_to("main", "jam-control", &p);
             Ok(Value::Null)
         }
         "windowShape" => {
@@ -1356,7 +1686,7 @@ async fn call(
         "window" => {
             match p.as_str().unwrap_or("") {
                 "minimize" => {
-                    let _ = app.emit_to("main", "media", "pauseVideo");
+                    let _ = decide_minimize_action();
                     window.minimize().map_err(|e| e.to_string())?;
                     let _ = app.emit_to("main", "glass-visual-visible", false);
                 }
@@ -1401,6 +1731,7 @@ async fn call(
         }
         "clearCache" => {
             st.search.lock().unwrap().cache.clear();
+            let _ = st.db.lock().unwrap().clear_discovery_cache();
             media::clear_covers(&st.data);
             window
                 .clear_all_browsing_data()
@@ -1440,6 +1771,11 @@ async fn call(
             )
             .await
         }
+        "maintenanceStatus" => {
+            let repair = p["repair"].as_bool().unwrap_or(false);
+            updates::verify_and_repair(&st.db.lock().unwrap(), &st.data, repair)
+        }
+        "hubVersionPolicy" => accounts::hub_version_policy(&st.secrets, &p).await,
         "checkUpdates" => {
             let pref = st.db.lock().unwrap().pref();
             let value = updates::status(&app, pref["onlineConsent"] == true, false, || Ok(())).await?;
@@ -1712,6 +2048,17 @@ fn main() {
                         .unwrap_or(true);
                     let _ = window.emit("glass-visual-visible", visible);
                 }
+                tauri::WindowEvent::Destroyed => {
+                    if window.label() == "lyrics" {
+                        let _ = window
+                            .app_handle()
+                            .emit_to("main", "lyrics-window-open", false);
+                    } else if window.label() == "jam" {
+                        let _ = window
+                            .app_handle()
+                            .emit_to("main", "jam-window-open", false);
+                    }
+                }
                 _ => {}
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -1727,7 +2074,22 @@ fn main() {
 
 #[cfg(test)]
 mod main_tests {
-    use super::parse_debug_cdp_port;
+    use super::{
+        decide_close_action, decide_minimize_action, decision_pauses_audio, parse_debug_cdp_port,
+        window_action_allowed, WindowLifecycleDecision,
+    };
+
+    #[test]
+    fn jam_window_action_gate_blocks_privileged_commands() {
+        for allowed in ["bootstrap", "jamControl", "closeJam", "pinJam", "search", "external"] {
+            assert!(window_action_allowed("jam", allowed), "{allowed}");
+        }
+        for denied in ["jam", "secrets", "account", "auth", "db", "download", "window"] {
+            assert!(!window_action_allowed("jam", denied), "{denied}");
+        }
+        assert!(window_action_allowed("main", "jam"));
+        assert!(!window_action_allowed("lyrics", "jamControl"));
+    }
 
     #[test]
     fn parse_debug_cdp_port_accepts_valid_unprivileged_port_only() {
@@ -1737,5 +2099,19 @@ mod main_tests {
         assert_eq!(parse_debug_cdp_port("--remote-debugging-port=9347 --disable-web-security"), None);
         assert_eq!(parse_debug_cdp_port("--disable-web-security"), None);
         assert_eq!(parse_debug_cdp_port(""), None);
+    }
+
+    #[test]
+    fn window_minimize_and_tray_close_preserve_active_playback() {
+        let minimize = decide_minimize_action();
+        let tray_close = decide_close_action(true);
+        let app_exit = decide_close_action(false);
+
+        assert_eq!(minimize, WindowLifecycleDecision::MinimizeKeepPlayback);
+        assert_eq!(tray_close, WindowLifecycleDecision::HideToTrayKeepPlayback);
+        assert_eq!(app_exit, WindowLifecycleDecision::ExitApp);
+
+        assert!(!decision_pauses_audio(minimize));
+        assert!(!decision_pauses_audio(tray_close));
     }
 }

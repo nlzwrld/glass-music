@@ -9,9 +9,14 @@ import {
   type LibraryCommand,
   type IntegrationStatus,
   type CollectionPreview,
+  type DownloadProgressEvent,
   type LyricsResult,
 } from '../../shared/types';
 import { hasValidLyrics, resolveTrackLyrics } from '../lib/lyrics';
+import { pickSmartShuffleIndex } from '../lib/smartShuffle';
+import { clearDiscoveryCache } from '../lib/discovery';
+import { clearRecommendationsCache } from '../lib/recommendations';
+import { inspectMusicLink, parseLiquidHubLink } from '../lib/playlist';
 
 function initialPlaybackStatus(track: Track): string {
   if (!track.offline && isCatalogOnlyTrack(track) && !track.streamProvider && !track.playbackId) {
@@ -27,13 +32,38 @@ export type Page =
   | 'library'
   | 'likes'
   | 'history'
+  | 'downloads'
   | 'local'
   | 'settings'
   | 'collection'
-  | `playlist:${string}`;
+  | `playlist:${string}`
+  | `profile:${string}`
+  | `shared-playlist:${string}`;
+
+export type SettingsCategory =
+  | 'account'
+  | 'appearance'
+  | 'playback'
+  | 'audio'
+  | 'notifications'
+  | 'privacy'
+  | 'storage'
+  | 'plus'
+  | 'about';
+
+export interface DownloadItemState {
+  track: Track;
+  status: 'queued' | 'downloading' | 'paused' | 'failed' | 'completed';
+  downloadedBytes: number;
+  totalBytes: number;
+  percent: number;
+  error?: string;
+  updatedAt: number;
+}
 
 type Dialog =
   | { type: 'playlist'; id?: string; name?: string; description?: string; artwork?: string }
+  | { type: 'sharePlaylist'; playlistId: string }
   | { type: 'jam' }
   | { type: 'add'; track: Track; fromPlaylist?: string }
   | { type: 'link'; playlist?: boolean }
@@ -47,6 +77,7 @@ interface State {
   data: Snapshot;
   integrations?: IntegrationStatus;
   page: Page;
+  settingsTab: SettingsCategory;
   collapsed: boolean;
   filter: string;
   navigation: Page[];
@@ -59,6 +90,7 @@ interface State {
   index: number;
   shufflePlayed: number[];
   shuffleNext: number | null;
+  smartShuffleSteps: number;
   autoAdvance: boolean;
   playing: boolean;
   playbackIntent: boolean;
@@ -77,8 +109,11 @@ interface State {
   preview: CollectionPreview | null;
   previewBusy: boolean;
   downloadingIds: string[];
+  downloadItems: Record<string, DownloadItemState>;
+  downloadsPaused: boolean;
   boot(): Promise<void>;
   setPage(p: Page): void;
+  setSettingsTab(tab: SettingsCategory): void;
   setDialog(d: Dialog): void;
   message(t: string): void;
   mutate(c: LibraryCommand): Promise<void>;
@@ -87,8 +122,16 @@ interface State {
   importLocalFiles(): Promise<void>;
   importLibrary(): Promise<void>;
   openCollection(url: string, fallbackTitle?: string): Promise<void>;
+  applyDownloadProgress(event: DownloadProgressEvent): void;
   downloadTrack(track: Track): Promise<void>;
   downloadPlaylist(tracks: Track[]): Promise<void>;
+  cancelDownload(trackId: string): Promise<void>;
+  pauseDownload(trackId: string): Promise<void>;
+  resumeDownload(trackId: string): Promise<void>;
+  pauseAllDownloads(): Promise<void>;
+  resumeAllDownloads(): Promise<void>;
+  removeOfflineFile(trackId: string): Promise<void>;
+  clearAllOffline(): Promise<void>;
   probeLyrics(track?: Track | null): Promise<boolean>;
   applyResolvedTrack(updated: Track, reloadIfActive?: boolean): void;
   play(t: Track, list?: Track[]): void;
@@ -116,6 +159,7 @@ function computeShuffleStep(
   current: number,
   played: number[],
   allowWrap: boolean,
+  data?: Pick<Snapshot, 'tracks' | 'likes' | 'history' | 'preferences'>,
 ): { played: number[]; next: number | null } {
   const playable = queue
     .map((_, i) => i)
@@ -133,21 +177,40 @@ function computeShuffleStep(
   );
   uniquePlayed.push(current);
 
-  const unplayed = playable.filter(i => !uniquePlayed.includes(i));
-  if (unplayed.length > 0) {
-    const next = unplayed[Math.floor(Math.random() * unplayed.length)] ?? null;
-    return { played: uniquePlayed, next };
+  const mode = data?.preferences?.shuffleMode ?? 'smart';
+  if (mode === 'standard') {
+    const unplayed = playable.filter(i => !uniquePlayed.includes(i));
+    if (unplayed.length > 0) {
+      const next = unplayed[Math.floor(Math.random() * unplayed.length)] ?? null;
+      return { played: uniquePlayed, next };
+    }
+    if (allowWrap) {
+      const freshPool = playable.filter(i => i !== current);
+      const next = freshPool[Math.floor(Math.random() * freshPool.length)] ?? null;
+      return { played: uniquePlayed, next };
+    }
+    return { played: uniquePlayed, next: null };
   }
-  if (allowWrap) {
-    const freshPool = playable.filter(i => i !== current);
-    const next = freshPool[Math.floor(Math.random() * freshPool.length)] ?? null;
-    return { played: uniquePlayed, next };
-  }
-  return { played: uniquePlayed, next: null };
+
+  const recentQueueTracks = uniquePlayed
+    .slice(Math.max(0, uniquePlayed.length - 3), -1)
+    .map(i => queue[i])
+    .filter((t): t is Track => !!t);
+
+  const smart = pickSmartShuffleIndex(queue, current, uniquePlayed, allowWrap, {
+    history: data?.history ?? [],
+    likes: data?.likes ?? [],
+    libraryTracks: data?.tracks ?? [],
+    currentTrack: queue[current],
+    recentQueueTracks,
+  });
+  return { played: uniquePlayed, next: smart.next };
 }
 
 export function upcomingIndex(
-  s: Pick<State, 'queue' | 'index' | 'shufflePlayed' | 'shuffleNext' | 'data'>,
+  s: Pick<State, 'queue' | 'index' | 'shufflePlayed' | 'shuffleNext'> & {
+    data: Pick<Snapshot, 'tracks' | 'likes' | 'history' | 'preferences'>;
+  },
   manual = false,
 ): number {
   if (!s.queue.length || s.index < 0) return -1;
@@ -172,14 +235,27 @@ export function upcomingIndex(
     ) {
       return s.shuffleNext;
     }
-    if (!cycleComplete) {
-      return unplayed[Math.floor(Math.random() * unplayed.length)] ?? -1;
+    if (cycleComplete && !(p.repeat === 'all' || manual)) {
+      return -1;
     }
-    if (p.repeat === 'all' || manual) {
-      const fresh = playable.filter(i => i !== s.index);
-      return fresh[Math.floor(Math.random() * fresh.length)] ?? -1;
+    if ((p.shuffleMode ?? 'smart') === 'standard') {
+      if (!cycleComplete) {
+        return unplayed[Math.floor(Math.random() * unplayed.length)] ?? -1;
+      }
+      if (p.repeat === 'all' || manual) {
+        const fresh = playable.filter(i => i !== s.index);
+        return fresh[Math.floor(Math.random() * fresh.length)] ?? -1;
+      }
+      return -1;
     }
-    return -1;
+    const step = computeShuffleStep(
+      s.queue,
+      s.index,
+      cycleComplete ? [] : s.shufflePlayed,
+      p.repeat === 'all' || manual,
+      s.data,
+    );
+    return step.next ?? -1;
   }
   for (let index = s.index + 1; index < s.queue.length; index++) {
     if (s.queue[index]?.available !== false) return index;
@@ -224,6 +300,7 @@ export const useApp = create<State>((set, get) => ({
   ready: false,
   data: { tracks: [], playlists: [], likes: [], history: [], preferences: defaults },
   page: 'home',
+  settingsTab: 'account',
   collapsed: false,
   filter: '',
   dialog: null,
@@ -235,6 +312,7 @@ export const useApp = create<State>((set, get) => ({
   index: -1,
   shufflePlayed: [],
   shuffleNext: null,
+  smartShuffleSteps: 0,
   autoAdvance: false,
   playing: false,
   playbackIntent: false,
@@ -253,6 +331,8 @@ export const useApp = create<State>((set, get) => ({
   preview: null,
   previewBusy: false,
   downloadingIds: [],
+  downloadItems: {},
+  downloadsPaused: false,
   boot: async () => {
     try {
       const [data, integrations] = await Promise.all([
@@ -279,6 +359,7 @@ export const useApp = create<State>((set, get) => ({
       navigationIndex: navigation.length - 1,
     });
   },
+  setSettingsTab: settingsTab => set({ settingsTab }),
   navigate: direction => {
     const s = get(),
       index = s.navigationIndex + direction;
@@ -342,15 +423,18 @@ export const useApp = create<State>((set, get) => ({
       const preferences = projectPreferences();
       set(curr => ({ ...extra, data: { ...curr.data, preferences } }));
     };
-    const needShuffleRecompute = 'shuffle' in patch || 'repeat' in patch;
+    const needShuffleRecompute =
+      'shuffle' in patch || 'repeat' in patch || 'shuffleMode' in patch;
     const shufflePatch = needShuffleRecompute
       ? (() => {
           if (!next.shuffle) return { shufflePlayed: [] as number[], shuffleNext: null };
+          const nextData = { ...prev.data, preferences: next };
           const step = computeShuffleStep(
             prev.queue,
             prev.index,
-            'shuffle' in patch ? [] : prev.shufflePlayed,
+            'shuffle' in patch || 'shuffleMode' in patch ? [] : prev.shufflePlayed,
             next.repeat === 'all',
+            nextData,
           );
           return { shufflePlayed: step.played, shuffleNext: step.next };
         })()
@@ -369,6 +453,10 @@ export const useApp = create<State>((set, get) => ({
         pendingPreferenceWrites.delete(operation.id);
         syncPreferences(permissionChange ? shufflePatch : {});
         if (permissionChange) {
+          if (!snapshot.onlineConsent || !snapshot.catalogConsent || !snapshot.onboardingDone) {
+            clearDiscoveryCache();
+            clearRecommendationsCache();
+          }
           void get().probeLyrics(get().queue[get().index] || null);
         }
       } catch (e) {
@@ -454,24 +542,55 @@ export const useApp = create<State>((set, get) => ({
       get().message(cleanError(e));
     }
   },
+  applyDownloadProgress: event => {
+    set(curr => {
+      const existing = curr.downloadItems[event.trackId];
+      if (!existing) return {};
+      if (event.status === 'cancelled' && existing.status === 'paused') {
+        return {};
+      }
+      const nextStatus =
+        event.status === 'error'
+          ? 'failed'
+          : event.status === 'cancelled'
+            ? 'paused'
+            : event.status;
+      return {
+        downloadItems: {
+          ...curr.downloadItems,
+          [event.trackId]: {
+            ...existing,
+            downloadedBytes: event.downloadedBytes || existing.downloadedBytes,
+            totalBytes: event.totalBytes || existing.totalBytes,
+            percent: Number.isFinite(event.percent) ? event.percent : existing.percent,
+            status: nextStatus,
+            updatedAt: Date.now(),
+          },
+        },
+      };
+    });
+  },
   downloadTrack: async track => {
     const s = get();
     if (track.offline) {
-      s.message('Removendo download…');
-      try {
-        const data = await window.glass.removeOffline(track.id);
-        set({
-          data: { ...data, preferences: get().data.preferences },
-          queue: get().queue.map(t => (t.id === track.id ? { ...t, offline: false } : t)),
-        });
-        get().message('Download removido.');
-      } catch (e) {
-        get().message(cleanError(e));
-      }
+      await s.removeOfflineFile(track.id);
       return;
     }
     if (s.downloadingIds.includes(track.id)) return;
-    set({ downloadingIds: [...s.downloadingIds, track.id] });
+    set(curr => ({
+      downloadingIds: [...curr.downloadingIds, track.id],
+      downloadItems: {
+        ...curr.downloadItems,
+        [track.id]: {
+          track,
+          status: 'downloading',
+          downloadedBytes: 0,
+          totalBytes: 0,
+          percent: 0,
+          updatedAt: Date.now(),
+        },
+      },
+    }));
     s.message(`Baixando “${track.title}” para ouvir offline…`);
     try {
       const data = await window.glass.downloadOffline(track);
@@ -479,11 +598,47 @@ export const useApp = create<State>((set, get) => ({
         data: { ...data, preferences: curr.data.preferences },
         queue: curr.queue.map(t => (t.id === track.id ? { ...t, offline: true } : t)),
         downloadingIds: curr.downloadingIds.filter(id => id !== track.id),
+        downloadItems: {
+          ...curr.downloadItems,
+          [track.id]: {
+            ...(curr.downloadItems[track.id] || { track, downloadedBytes: 1, totalBytes: 1 }),
+            track: { ...track, offline: true },
+            status: 'completed',
+            percent: 100,
+            error: undefined,
+            updatedAt: Date.now(),
+          },
+        },
       }));
+      if (typeof window !== 'undefined' && typeof window.glass?.integrations === 'function') {
+        void window.glass
+          .integrations()
+          .then(integrations => set({ integrations }))
+          .catch(() => {});
+      }
       get().message(`“${track.title}” disponível offline.`);
     } catch (e) {
-      set(curr => ({ downloadingIds: curr.downloadingIds.filter(id => id !== track.id) }));
-      get().message(cleanError(e));
+      const currItem = get().downloadItems[track.id];
+      const wasPaused = currItem?.status === 'paused';
+      const wasCancelled = !currItem;
+      set(curr => {
+        const nextItems = { ...curr.downloadItems };
+        if (!wasPaused && !wasCancelled && nextItems[track.id]) {
+          nextItems[track.id] = {
+            ...nextItems[track.id]!,
+            status: 'failed',
+            error: cleanError(e),
+            updatedAt: Date.now(),
+          };
+        }
+        return {
+          downloadingIds: curr.downloadingIds.filter(id => id !== track.id),
+          downloadItems: nextItems,
+        };
+      });
+      if (!wasPaused && !wasCancelled) {
+        get().message(cleanError(e));
+      }
     }
   },
   downloadPlaylist: async tracks => {
@@ -494,11 +649,64 @@ export const useApp = create<State>((set, get) => ({
       get().message('Todas as faixas compatíveis desta lista já estão disponíveis offline.');
       return;
     }
+    const pausedNow = get().downloadsPaused;
+    set(curr => {
+      const nextItems = { ...curr.downloadItems };
+      for (const t of eligible) {
+        if (!nextItems[t.id] || ['failed', 'completed', 'paused'].includes(nextItems[t.id]!.status)) {
+          nextItems[t.id] = {
+            track: t,
+            status: pausedNow ? 'paused' : 'queued',
+            downloadedBytes: 0,
+            totalBytes: 0,
+            percent: 0,
+            updatedAt: Date.now(),
+          };
+        }
+      }
+      return { downloadItems: nextItems };
+    });
+    if (pausedNow) {
+      get().message(`${eligible.length} faixa(s) adicionada(s) em pausa na fila de downloads.`);
+      return;
+    }
     get().message(`Baixando ${eligible.length} faixa(s) em segundo plano…`);
     let done = 0;
     for (const t of eligible) {
+      if (get().downloadsPaused) {
+        set(curr => {
+          const nextItems = { ...curr.downloadItems };
+          for (const rem of eligible) {
+            if (nextItems[rem.id]?.status === 'queued') {
+              nextItems[rem.id] = {
+                ...nextItems[rem.id]!,
+                status: 'paused',
+                updatedAt: Date.now(),
+              };
+            }
+          }
+          return { downloadItems: nextItems };
+        });
+        break;
+      }
+      if (!get().downloadItems[t.id]) continue;
       if (get().downloadingIds.includes(t.id)) continue;
-      set(curr => ({ downloadingIds: [...curr.downloadingIds, t.id] }));
+      set(curr => ({
+        downloadingIds: [...curr.downloadingIds, t.id],
+        downloadItems: {
+          ...curr.downloadItems,
+          [t.id]: {
+            ...(curr.downloadItems[t.id] || {
+              track: t,
+              downloadedBytes: 0,
+              totalBytes: 0,
+              percent: 0,
+            }),
+            status: 'downloading',
+            updatedAt: Date.now(),
+          },
+        },
+      }));
       try {
         const data = await window.glass.downloadOffline(t);
         done++;
@@ -506,15 +714,169 @@ export const useApp = create<State>((set, get) => ({
           data: { ...data, preferences: curr.data.preferences },
           queue: curr.queue.map(q => (q.id === t.id ? { ...q, offline: true } : q)),
           downloadingIds: curr.downloadingIds.filter(id => id !== t.id),
+          downloadItems: {
+            ...curr.downloadItems,
+            [t.id]: {
+              ...(curr.downloadItems[t.id] || { track: t, downloadedBytes: 1, totalBytes: 1 }),
+              track: { ...t, offline: true },
+              status: 'completed',
+              percent: 100,
+              error: undefined,
+              updatedAt: Date.now(),
+            },
+          },
         }));
-      } catch {
-        set(curr => ({ downloadingIds: curr.downloadingIds.filter(id => id !== t.id) }));
+      } catch (e) {
+        const currItem = get().downloadItems[t.id];
+        const wasPaused = currItem?.status === 'paused';
+        const wasCancelled = !currItem;
+        set(curr => {
+          const nextItems = { ...curr.downloadItems };
+          if (!wasPaused && !wasCancelled && nextItems[t.id]) {
+            nextItems[t.id] = {
+              ...nextItems[t.id]!,
+              status: 'failed',
+              error: cleanError(e),
+              updatedAt: Date.now(),
+            };
+          }
+          return {
+            downloadingIds: curr.downloadingIds.filter(id => id !== t.id),
+            downloadItems: nextItems,
+          };
+        });
       }
+    }
+    if (done > 0 && typeof window !== 'undefined' && typeof window.glass?.integrations === 'function') {
+      void window.glass
+        .integrations()
+        .then(integrations => set({ integrations }))
+        .catch(() => {});
     }
     get().message(
       done > 0
         ? `${done} faixa(s) salvas para ouvir offline.`
         : 'Não foi possível concluir o download offline.',
+    );
+  },
+  cancelDownload: async trackId => {
+    set(curr => {
+      const nextItems = { ...curr.downloadItems };
+      delete nextItems[trackId];
+      return {
+        downloadItems: nextItems,
+        downloadingIds: curr.downloadingIds.filter(id => id !== trackId),
+      };
+    });
+    try {
+      await window.glass?.cancelDownload?.(trackId);
+    } catch {
+      // Ignore native cancellation race errors
+    }
+  },
+  pauseDownload: async trackId => {
+    set(curr => {
+      const item = curr.downloadItems[trackId];
+      if (!item || item.status === 'completed') return {};
+      return {
+        downloadingIds: curr.downloadingIds.filter(id => id !== trackId),
+        downloadItems: {
+          ...curr.downloadItems,
+          [trackId]: {
+            ...item,
+            status: 'paused',
+            updatedAt: Date.now(),
+          },
+        },
+      };
+    });
+    try {
+      await window.glass?.cancelDownload?.(trackId);
+    } catch {}
+  },
+  resumeDownload: async trackId => {
+    const item = get().downloadItems[trackId];
+    if (!item) return;
+    if (get().downloadsPaused) set({ downloadsPaused: false });
+    await get().downloadTrack(item.track);
+  },
+  pauseAllDownloads: async () => {
+    const activeIds = Object.values(get().downloadItems)
+      .filter(it => it.status === 'downloading' || it.status === 'queued')
+      .map(it => it.track.id);
+    set(curr => {
+      const nextItems = { ...curr.downloadItems };
+      for (const id of activeIds) {
+        if (nextItems[id]) {
+          nextItems[id] = { ...nextItems[id]!, status: 'paused', updatedAt: Date.now() };
+        }
+      }
+      return {
+        downloadsPaused: true,
+        downloadingIds: [],
+        downloadItems: nextItems,
+      };
+    });
+    await Promise.allSettled(activeIds.map(id => window.glass?.cancelDownload?.(id)));
+  },
+  resumeAllDownloads: async () => {
+    set({ downloadsPaused: false });
+    const pausedOrFailed = Object.values(get().downloadItems).filter(
+      it => it.status === 'paused' || it.status === 'failed' || it.status === 'queued',
+    );
+    for (const item of pausedOrFailed) {
+      if (get().downloadsPaused) break;
+      await get().downloadTrack(item.track);
+    }
+  },
+  removeOfflineFile: async trackId => {
+    get().message('Removendo arquivo local…');
+    try {
+      const data = await window.glass.removeOffline(trackId);
+      set(curr => {
+        const nextItems = { ...curr.downloadItems };
+        delete nextItems[trackId];
+        return {
+          data: { ...data, preferences: curr.data.preferences },
+          queue: curr.queue.map(t => (t.id === trackId ? { ...t, offline: false } : t)),
+          downloadItems: nextItems,
+        };
+      });
+      if (typeof window !== 'undefined' && typeof window.glass?.integrations === 'function') {
+        void window.glass
+          .integrations()
+          .then(integrations => set({ integrations }))
+          .catch(() => {});
+      }
+      get().message('Arquivo offline removido. A música permanece na biblioteca.');
+    } catch (e) {
+      get().message(cleanError(e));
+    }
+  },
+  clearAllOffline: async () => {
+    const offlineTracks = get().data.tracks.filter(t => t.offline);
+    if (!offlineTracks.length) return;
+    let removed = 0;
+    for (const t of offlineTracks) {
+      try {
+        const data = await window.glass.removeOffline(t.id);
+        removed++;
+        set(curr => ({
+          data: { ...data, preferences: curr.data.preferences },
+          queue: curr.queue.map(q => (q.id === t.id ? { ...q, offline: false } : q)),
+        }));
+      } catch {}
+    }
+    if (typeof window !== 'undefined' && typeof window.glass?.integrations === 'function') {
+      void window.glass
+        .integrations()
+        .then(integrations => set({ integrations }))
+        .catch(() => {});
+    }
+    get().message(
+      removed > 0
+        ? `${removed} arquivo(s) offline removidos. Suas músicas permanecem na biblioteca.`
+        : 'Não foi possível limpar os arquivos offline.',
     );
   },
   probeLyrics: async (incomingTrack = get().queue[get().index] || null) => {
@@ -607,6 +969,7 @@ export const useApp = create<State>((set, get) => ({
           finalIndex,
           sameQueue ? prev.shufflePlayed : [],
           prev.data.preferences.repeat === 'all',
+          prev.data,
         )
       : { played: [] as number[], next: null };
     set({
@@ -614,6 +977,7 @@ export const useApp = create<State>((set, get) => ({
       index: finalIndex,
       shufflePlayed: step.played,
       shuffleNext: step.next,
+      smartShuffleSteps: 0,
       autoAdvance: false,
       playing: false,
       playbackIntent: true,
@@ -685,6 +1049,7 @@ export const useApp = create<State>((set, get) => ({
           targetIndex,
           s.shufflePlayed,
           s.data.preferences.repeat === 'all',
+          s.data,
         )
       : { played: [] as number[], next: null };
     set({
@@ -757,18 +1122,22 @@ export const useApp = create<State>((set, get) => ({
     }
     const nextTrack = s.queue[index]!;
     const sameTrack = s.queue[s.index]?.id === nextTrack.id;
+    const isSmartActive = p.shuffle && (p.shuffleMode ?? 'smart') === 'smart';
+    const nextSteps = isSmartActive && !nextTrack.recommended ? s.smartShuffleSteps + 1 : s.smartShuffleSteps;
     const step = p.shuffle
       ? computeShuffleStep(
           s.queue,
           index,
           s.shufflePlayed.includes(index) ? [] : s.shufflePlayed,
           p.repeat === 'all',
+          s.data,
         )
       : { played: [] as number[], next: null };
     set({
       index,
       shufflePlayed: step.played,
       shuffleNext: step.next,
+      smartShuffleSteps: nextSteps,
       autoAdvance: !manual,
       playing: !manual && s.playing,
       playbackIntent: true,
@@ -780,6 +1149,67 @@ export const useApp = create<State>((set, get) => ({
       ...(sameTrack ? {} : { lyricsAvailable: false, currentLyrics: null }),
     });
     void get().probeLyrics(nextTrack);
+
+    if (
+      isSmartActive &&
+      p.smartShuffleDiscoveries === true &&
+      p.onlineConsent &&
+      p.onboardingDone &&
+      s.queue.length >= 3 &&
+      !nextTrack.recommended &&
+      nextSteps > 0 &&
+      nextSteps % 4 === 0 &&
+      typeof window !== 'undefined' &&
+      typeof window.glass?.recommendations === 'function'
+    ) {
+      const latestAfterAdvance = get();
+      const discoveryContext: AutoplayContext = {
+        revision: latestAfterAdvance.revision,
+        index: latestAfterAdvance.index,
+        trackId: nextTrack.id,
+      };
+      const playlistSeeds = latestAfterAdvance.queue
+        .filter(t => !t.recommended && t.kind === 'track')
+        .slice(0, 4);
+      const excludeIds = Array.from(
+        new Set([
+          ...latestAfterAdvance.queue.map(t => t.id),
+          ...latestAfterAdvance.data.history.slice(0, 30).map(h => h.id),
+        ]),
+      );
+      if (playlistSeeds.length) {
+        void window.glass
+          .recommendations(playlistSeeds, excludeIds)
+          .then(recs => {
+            const curr = get();
+            if (
+              !sameAutoplaySelection(curr, discoveryContext) ||
+              !curr.data.preferences.shuffle ||
+              (curr.data.preferences.shuffleMode ?? 'smart') !== 'smart' ||
+              !curr.data.preferences.smartShuffleDiscoveries
+            ) {
+              return;
+            }
+            const existing = new Set(curr.queue.map(t => t.id));
+            const candidate = (recs || []).find(
+              t => canPlay(t) && t.available !== false && !existing.has(t.id),
+            );
+            if (!candidate) return;
+            const insertAt = Math.min(curr.queue.length, curr.index + 1);
+            const nextQueue = [...curr.queue];
+            nextQueue.splice(insertAt, 0, { ...candidate, recommended: true });
+            const shiftedPlayed = curr.shufflePlayed.map(idx =>
+              idx >= insertAt ? idx + 1 : idx,
+            );
+            set({
+              queue: nextQueue,
+              shufflePlayed: shiftedPlayed,
+              shuffleNext: insertAt,
+            });
+          })
+          .catch(() => {});
+      }
+    }
   },
   previous: () => {
     const s = get();
@@ -826,6 +1256,7 @@ export const useApp = create<State>((set, get) => ({
           index,
           s.shufflePlayed,
           s.data.preferences.repeat === 'all',
+          s.data,
         )
       : { played: [] as number[], next: null };
     set({
@@ -861,6 +1292,7 @@ export const useApp = create<State>((set, get) => ({
             s.index,
             s.shufflePlayed,
             s.data.preferences.repeat === 'all',
+            s.data,
           )
         : { played: s.shufflePlayed, next: s.shuffleNext };
     set({
@@ -893,6 +1325,7 @@ export const useApp = create<State>((set, get) => ({
         nextIdx,
         adjustedPlayed,
         s.data.preferences.repeat === 'all',
+        s.data,
       );
       finalPlayed = step.played;
       nextShuffle = step.next;
@@ -940,6 +1373,7 @@ export const useApp = create<State>((set, get) => ({
         playbackIntent: false,
         shufflePlayed: [],
         shuffleNext: null,
+        smartShuffleSteps: 0,
         lyricsAvailable: false,
         currentLyrics: null,
         lyricsOpen: false,
@@ -951,6 +1385,7 @@ export const useApp = create<State>((set, get) => ({
       index: 0,
       shufflePlayed: s.data.preferences.shuffle ? [0] : [],
       shuffleNext: null,
+      smartShuffleSteps: 0,
     });
     s.message('Próximas músicas removidas da fila.');
   },
@@ -1062,18 +1497,22 @@ export function cleanError(e: unknown): string {
 }
 
 export function looksLikeMusicLink(raw: string): boolean {
-  const v = raw.trim();
-  if (!v.startsWith('https://') || /\s/.test(v)) return false;
-  try {
-    return new URL(v).hostname.includes('.');
-  } catch {
-    return false;
-  }
+  return parseLiquidHubLink(raw) !== null || inspectMusicLink(raw).valid;
 }
 
 export async function handleDirectLink(raw: string) {
   const url = raw.trim();
   const s = useApp.getState();
+  const hubLink = parseLiquidHubLink(url);
+  if (hubLink) {
+    s.setPage(
+      hubLink.kind === 'profile'
+        ? `profile:${hubLink.handle}`
+        : `shared-playlist:${hubLink.shareId}`,
+    );
+    useApp.setState({ filter: '' });
+    return;
+  }
   if (!s.data.preferences.onlineConsent) {
     s.setPage('settings');
     s.message('Ative o acesso online para reproduzir ou importar links.');

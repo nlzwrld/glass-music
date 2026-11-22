@@ -15,7 +15,7 @@ pub fn s<'a>(v: &'a Value, key: &str) -> &'a str {
     v[key].as_str().unwrap_or("")
 }
 pub fn defaults() -> Value {
-    json!({"uiStyle":"matte","transition":"fade","transitionSeconds":3,"volumeBoost":0,"limiter":true,"outputDevice":"default","jamEndpoint":"","autoUpdate":true,"autoplay":true,"theme":"dark","glass":20,"blur":24,"accent":"#52b79a","autoAccent":false,"reducedMotion":false,"performance":false,"volume":65,"repeat":"off","shuffle":false,"tray":true,"startup":false,"notifications":false,"notificationMode":"off","globalShortcuts":false,"coverCacheMB":128,"eq":[0,0,0,0,0],"onlineConsent":false,"catalogConsent":false,"onboardingDone":false})
+    json!({"uiStyle":"matte","transition":"fade","transitionSeconds":3,"volumeBoost":0,"limiter":true,"outputDevice":"default","jamEndpoint":"","autoUpdate":true,"autoplay":true,"theme":"dark","glass":20,"blur":24,"accent":"#52b79a","autoAccent":false,"reducedMotion":false,"performance":false,"volume":65,"repeat":"off","shuffle":false,"shuffleMode":"smart","smartShuffleDiscoveries":false,"tray":true,"startup":false,"notifications":false,"notificationMode":"off","globalShortcuts":false,"coverCacheMB":128,"eq":[0,0,0,0,0],"onlineConsent":false,"catalogConsent":false,"onboardingDone":false})
 }
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty()
@@ -264,9 +264,12 @@ pub fn validate_prefs(p: &Value) -> Result<()> {
     {
         return Err("Modo de notificação inválido.".into());
     }
+    if p.get("shuffleMode").is_some() && !["standard", "smart"].contains(&s(p, "shuffleMode")) {
+        return Err("Modo de aleatório inválido.".into());
+    }
     if p.get("transition").is_some()&&! ["off","fade","crossfade"].contains(&s(p,"transition")){return Err("Transição inválida.".into());}
     for(key,lo,hi)in [("transitionSeconds",0.5,10.0),("volumeBoost",0.0,12.0)]{if p.get(key).is_some()&&!p[key].as_f64().is_some_and(|n|n.is_finite()&&n>=lo&&n<=hi){return Err("Áudio fora dos limites.".into());}}
-    for key in ["limiter","autoUpdate","autoplay"]{if p.get(key).is_some()&&!p[key].is_boolean(){return Err("Preferência inválida.".into());}}
+    for key in ["limiter","autoUpdate","autoplay","smartShuffleDiscoveries"]{if p.get(key).is_some()&&!p[key].is_boolean(){return Err("Preferência inválida.".into());}}
     if p.get("outputDevice").is_some()&&(!p["outputDevice"].is_string()||s(p,"outputDevice").len()>300){return Err("Dispositivo inválido.".into());}
     if p.get("jamEndpoint").is_some(){crate::jam::validate_endpoint(s(p,"jamEndpoint"))?;}
     for key in ["termsVersion", "privacyVersion"] {
@@ -364,10 +367,21 @@ impl Library {
         updated_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_stream_mappings_updated ON track_stream_mappings(updated_at DESC);
+      CREATE TABLE IF NOT EXISTS discovery_cache(
+        cache_key TEXT PRIMARY KEY,
+        signature TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL); PRAGMA user_version=1;").map_err(|e|e.to_string())?;
         let _ = db.execute(
             "DELETE FROM track_stream_mappings WHERE updated_at < ?",
             params![now() - 30 * 86_400_000],
+        );
+        let _ = db.execute(
+            "DELETE FROM discovery_cache WHERE updated_at < ?",
+            params![now() - 7 * 86_400_000],
         );
         let this = Self { db };
         let expired = this.query(
@@ -609,6 +623,81 @@ impl Library {
         Ok(())
     }
 
+    pub fn get_discovery_cache(&self, key: &str) -> Option<Value> {
+        if !valid_id(key) {
+            return None;
+        }
+        self.db
+            .query_row(
+                "SELECT signature, payload, updated_at, expires_at FROM discovery_cache WHERE cache_key = ?",
+                [key],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .and_then(|(signature, payload_raw, updated_at, expires_at)| {
+                let payload: Value = serde_json::from_str(&payload_raw).ok()?;
+                Some(json!({
+                    "signature": signature,
+                    "payload": payload,
+                    "updatedAt": updated_at,
+                    "expiresAt": expires_at
+                }))
+            })
+    }
+
+    pub fn set_discovery_cache(
+        &self,
+        key: &str,
+        signature: &str,
+        payload: &Value,
+        ttl_ms: i64,
+    ) -> Result<()> {
+        if !valid_id(key) {
+            return Err("Chave de cache inválida.".into());
+        }
+        if signature.len() > 512 {
+            return Err("Assinatura de cache inválida.".into());
+        }
+        if !(10_000..=30 * 86_400_000).contains(&ttl_ms) {
+            return Err("Validade de cache fora dos limites.".into());
+        }
+        let serialized = payload.to_string();
+        if serialized.len() > 2_000_000 {
+            return Err("Payload de cache maior que o permitido.".into());
+        }
+        let ts = now();
+        let expires_at = ts.saturating_add(ttl_ms);
+        self.db
+            .execute(
+                "INSERT INTO discovery_cache(cache_key, signature, payload, updated_at, expires_at)
+                 VALUES(?, ?, ?, ?, ?)
+                 ON CONFLICT(cache_key) DO UPDATE SET
+                   signature = excluded.signature,
+                   payload = excluded.payload,
+                   updated_at = excluded.updated_at,
+                   expires_at = excluded.expires_at",
+                params![key, signature, serialized, ts, expires_at],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn clear_discovery_cache(&self) -> Result<()> {
+        self.db
+            .execute("DELETE FROM discovery_cache", [])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn snapshot(&self) -> Result<Value> {
         let mut tracks = self.query(
             "SELECT CASE WHEN EXISTS(SELECT 1 FROM offline_tracks WHERE track_id=tracks.id) THEN json_set(data,'$.offline',json('true')) ELSE json_remove(data,'$.offline') END FROM tracks ORDER BY refreshed DESC LIMIT 20000",
@@ -655,7 +744,7 @@ impl Library {
                 }
             }
         }
-        let playlists=self.query("SELECT json_object('id',id,'name',name,'createdAt',created,'artwork',(SELECT value FROM settings WHERE key='playlist-artwork:'||playlists.id),'description',(SELECT value FROM settings WHERE key='playlist-desc:'||playlists.id),'trackIds',json(COALESCE((SELECT json_group_array(track_id) FROM (SELECT track_id FROM playlist_tracks WHERE playlist_id=playlists.id ORDER BY position)),'[]'))) FROM playlists ORDER BY created DESC",[])?;
+        let playlists=self.query("SELECT json_object('id',id,'name',name,'createdAt',created,'artwork',(SELECT value FROM settings WHERE key='playlist-artwork:'||playlists.id),'description',(SELECT value FROM settings WHERE key='playlist-desc:'||playlists.id),'shareId',(SELECT value FROM settings WHERE key='playlist-share-id:'||playlists.id),'visibility',(SELECT value FROM settings WHERE key='playlist-visibility:'||playlists.id),'collaborative',CASE (SELECT value FROM settings WHERE key='playlist-collab:'||playlists.id) WHEN '1' THEN json('true') WHEN '0' THEN json('false') ELSE NULL END,'remoteVersion',(SELECT CAST(value AS INTEGER) FROM settings WHERE key='playlist-remote-ver:'||playlists.id),'ownerHandle',(SELECT value FROM settings WHERE key='playlist-owner-handle:'||playlists.id),'trackIds',json(COALESCE((SELECT json_group_array(track_id) FROM (SELECT track_id FROM playlist_tracks WHERE playlist_id=playlists.id ORDER BY position)),'[]'))) FROM playlists ORDER BY created DESC",[])?;
         let likes = self.query("SELECT json_quote(track_id) FROM likes", [])?;
         let history=self.query("SELECT json_object('id',track_id,'playedAt',played) FROM history ORDER BY played DESC,rowid DESC LIMIT 500",[])?;
         Ok(
@@ -670,6 +759,17 @@ impl Library {
             )
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    pub fn check_integrity(&self, checkpoint: bool) -> Result<bool> {
+        let res: String = self
+            .db
+            .query_row("PRAGMA quick_check(1)", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if checkpoint {
+            let _ = self.db.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+        }
+        Ok(res.trim().eq_ignore_ascii_case("ok"))
     }
     pub fn transact<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
         self.db
@@ -738,6 +838,60 @@ impl Library {
             self.db.execute("DELETE FROM settings WHERE key=?",[format!("playlist-desc:{id}")]).map_err(|e|e.to_string())?;
         }else{
             self.db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)",params![format!("playlist-desc:{id}"),clean]).map_err(|e|e.to_string())?;
+        }
+        Ok(())
+    }
+    pub fn collection_share_meta(&self, id: &str, p: &Value) -> Result<()> {
+        if !valid_id(id) {
+            return Ok(());
+        }
+        let set_or_del = |key_prefix: &str, val: Option<String>| -> Result<()> {
+            let key = format!("{key_prefix}:{id}");
+            match val {
+                Some(v) if !v.is_empty() => {
+                    self.db
+                        .execute("INSERT OR REPLACE INTO settings VALUES(?,?)", params![key, v])
+                        .map_err(|e| e.to_string())?;
+                }
+                _ => {
+                    self.db
+                        .execute("DELETE FROM settings WHERE key=?", [key])
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            Ok(())
+        };
+        if let Some(share_val) = p.get("shareId") {
+            let clean = share_val
+                .as_str()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty() && valid_id(v));
+            set_or_del("playlist-share-id", clean)?;
+        }
+        if let Some(vis_val) = p.get("visibility") {
+            let clean = vis_val
+                .as_str()
+                .filter(|v| ["public", "unlisted", "private"].contains(v))
+                .map(str::to_string);
+            set_or_del("playlist-visibility", clean)?;
+        }
+        if let Some(collab_val) = p.get("collaborative").and_then(|v| v.as_bool()) {
+            set_or_del(
+                "playlist-collab",
+                Some(if collab_val { "1" } else { "0" }.to_string()),
+            )?;
+        }
+        if let Some(ver) = p.get("remoteVersion").and_then(|v| v.as_u64()) {
+            if ver > 0 {
+                set_or_del("playlist-remote-ver", Some(ver.to_string()))?;
+            }
+        }
+        if let Some(owner_val) = p.get("ownerHandle") {
+            let clean = owner_val
+                .as_str()
+                .map(|v| v.trim().to_lowercase())
+                .filter(|v| (3..=32).contains(&v.len()));
+            set_or_del("playlist-owner-handle", clean)?;
         }
         Ok(())
     }
@@ -1099,5 +1253,103 @@ mod tests {
 
         db.invalidate_stream_mapping(&key).unwrap();
         assert!(db.get_stream_mapping(&key).is_none());
+    }
+
+    #[test]
+    fn persists_discovery_cache_and_validates_smart_shuffle_prefs() {
+        let db = Library::open(Path::new(":memory:")).unwrap();
+        let mut prefs = defaults();
+        prefs["shuffleMode"] = json!("standard");
+        prefs["smartShuffleDiscoveries"] = json!(true);
+        validate_prefs(&prefs).unwrap();
+        db.set_pref(&prefs).unwrap();
+
+        let mut bad_prefs = prefs.clone();
+        bad_prefs["shuffleMode"] = json!("invalid");
+        assert!(validate_prefs(&bad_prefs).is_err());
+
+        let mut bad_bool = prefs.clone();
+        bad_bool["smartShuffleDiscoveries"] = json!("yes");
+        assert!(validate_prefs(&bad_bool).is_err());
+
+        let payload = json!({ "items": [{ "id": "youtube:dQw4w9WgXcQ" }] });
+        db.set_discovery_cache("personal-recommendations-v1", "sig:a,b", &payload, 600_000)
+            .unwrap();
+        let got = db.get_discovery_cache("personal-recommendations-v1").unwrap();
+        assert_eq!(got["signature"], "sig:a,b");
+        assert_eq!(got["payload"], payload);
+        assert!(got["expiresAt"].as_i64().unwrap() > got["updatedAt"].as_i64().unwrap());
+
+        db.clear_discovery_cache().unwrap();
+        assert!(db.get_discovery_cache("personal-recommendations-v1").is_none());
+    }
+
+    #[test]
+    fn persists_playlist_reorder_across_reopen_and_share_meta() {
+        let dir = std::env::temp_dir().join(format!("liquid-p3b-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("lib.db");
+
+        let mk_track = |vid: &str| {
+            json!({
+                "id": format!("youtube:{vid}"),
+                "source": "youtube",
+                "sourceId": vid,
+                "kind": "track",
+                "title": format!("Track {vid}"),
+                "artist": "Artist",
+                "duration": 180,
+                "url": format!("https://www.youtube.com/watch?v={vid}"),
+                "addedAt": 1
+            })
+        };
+
+        let pid = {
+            let db = Library::open(&db_path).unwrap();
+            let snap = db.command(&json!({"action":"create","name":"Minha Ordem"})).unwrap();
+            let pid = snap["playlists"][0]["id"].as_str().unwrap().to_string();
+            for vid in ["M7lc1UVf-VE", "dQw4w9WgXcQ", "4NRXx6U8ABQ"] {
+                db.command(&json!({"action":"add","id":pid,"track":mk_track(vid)})).unwrap();
+            }
+            db.command(&json!({
+                "action": "reorder",
+                "id": pid,
+                "trackIds": ["youtube:4NRXx6U8ABQ", "youtube:M7lc1UVf-VE", "youtube:dQw4w9WgXcQ"]
+            }))
+            .unwrap();
+            db.collection_share_meta(
+                &pid,
+                &json!({
+                    "shareId": "pl_123456abcdef",
+                    "visibility": "public",
+                    "collaborative": true,
+                    "remoteVersion": 4,
+                    "ownerHandle": "dj-tester"
+                }),
+            )
+            .unwrap();
+            pid
+        };
+
+        // Reopen database cleanly and verify order and share metadata persisted
+        let reopened = Library::open(&db_path).unwrap();
+        let snap2 = reopened.snapshot().unwrap();
+        let pl = snap2["playlists"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == pid)
+            .unwrap();
+        assert_eq!(
+            pl["trackIds"],
+            json!(["youtube:4NRXx6U8ABQ", "youtube:M7lc1UVf-VE", "youtube:dQw4w9WgXcQ"])
+        );
+        assert_eq!(pl["shareId"], "pl_123456abcdef");
+        assert_eq!(pl["visibility"], "public");
+        assert_eq!(pl["collaborative"], true);
+        assert_eq!(pl["remoteVersion"], 4);
+        assert_eq!(pl["ownerHandle"], "dj-tester");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

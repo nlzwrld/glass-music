@@ -1,6 +1,8 @@
 import { useRef } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import { Heart, ChevronDown, GripVertical, ListMusic, MicVocal, X } from 'lucide-react';
 import { useApp, formatTime } from '../../stores/app';
+import { drawerMotion, useReducedUI } from '../../lib/motion';
 import Cover from '../glass/Cover';
 import SVGPlane from '../glass/v3/SVGPlane';
 import { IconButton, OfflineIndicator, SourceBadge } from '../glass/controls';
@@ -15,16 +17,19 @@ export function ExpandedPlayer() {
     lyricsOpen = useApp(s => s.lyricsOpen),
     lyricsAvailable = useApp(s => s.lyricsAvailable),
     isGlass = useApp(s => (s.data.preferences.uiStyle ?? 'matte') === 'glass');
-
-  if (!expanded || !track) return null;
+  const reduced = useReducedUI();
 
   const showLyrics = shouldRenderLyricsButton({ hasActive: true, lyricsAvailable });
 
   return (
-    <section
-      className={`expanded-player ${track.source !== 'local' ? 'with-external' : ''}`}
-      aria-label="Tocando agora"
-    >
+    <AnimatePresence>
+      {expanded && track && (
+        <motion.section
+          key="expanded-player"
+          className={`expanded-player ${track.source !== 'local' ? 'with-external' : ''}`}
+          aria-label="Tocando agora"
+          {...drawerMotion(reduced, 'y')}
+        >
       {isGlass && <SVGPlane variant="deep" />}
       <div className="expanded-header">
         <IconButton
@@ -79,7 +84,9 @@ export function ExpandedPlayer() {
         <Seekbar />
         <PlaybackControls large localSurface />
       </div>
-    </section>
+        </motion.section>
+      )}
+    </AnimatePresence>
   );
 }
 
@@ -88,9 +95,8 @@ export function Queue() {
     queue = useApp(s => s.queue),
     index = useApp(s => s.index),
     isGlass = useApp(s => (s.data.preferences.uiStyle ?? 'matte') === 'glass');
+  const reduced = useReducedUI();
   const dragFrom = useRef<number | null>(null);
-
-  if (!open) return null;
 
   const current = index >= 0 ? queue[index] : undefined;
   const upcoming = queue
@@ -98,7 +104,14 @@ export function Queue() {
     .filter(({ idx }) => idx !== index);
 
   return (
-    <aside className="queue-panel glass" aria-label="Fila">
+    <AnimatePresence>
+      {open && (
+        <motion.aside
+          key="queue-drawer"
+          className="queue-panel glass"
+          aria-label="Fila"
+          {...drawerMotion(reduced, 'x')}
+        >
       {isGlass && <SVGPlane variant="deep" />}
       <header>
         <h2>Fila</h2>
@@ -194,6 +207,8 @@ export function Queue() {
           <p className="empty-small">Fila vazia.</p>
         )}
       </div>
-    </aside>
+        </motion.aside>
+      )}
+    </AnimatePresence>
   );
 }

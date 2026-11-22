@@ -3,7 +3,7 @@ import { ImagePlus, RotateCcw } from 'lucide-react';
 import { useApp, cleanError, setPreferencesFromUI } from '../../stores/app';
 import { Toggle } from './controls';
 import { useOptics } from './v3/OpticalEngine';
-import { opticalDefaults, type OpticalSettings } from './v3/model';
+import { glassVisualPresets, opticalDefaults, type OpticalSettings } from './v3/model';
 import { readBackground } from './v3/ambient';
 
 export default function Appearance() {
@@ -156,6 +156,31 @@ export default function Appearance() {
 
       {isGlass && (
         <>
+          <div className="setting-row">
+            <strong>Estilos Liquid Glass</strong>
+            <div className="pills glass-preset-row" role="group" aria-label="Predefinições Liquid Glass">
+              {(Object.entries(glassVisualPresets) as Array<[keyof typeof glassVisualPresets, (typeof glassVisualPresets)[keyof typeof glassVisualPresets]]>).map(([key, preset]) => {
+                const active =
+                  s.material === preset.appearance.material &&
+                  s.quality === preset.appearance.quality &&
+                  Math.abs(s.blur - preset.appearance.blur) <= 1;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    aria-pressed={active}
+                    className={active ? 'selected' : ''}
+                    onClick={() => {
+                      setSettings(preset.appearance);
+                      pref({ glass: preset.glass });
+                    }}
+                  >
+                    {preset.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
           <div className="background-options" role="group" aria-label="Fundo do aplicativo">
             {(
               [
@@ -314,7 +339,7 @@ export default function Appearance() {
           </div>
 
           <details className="advanced-appearance">
-            <summary>Ajustes do vidro</summary>
+            <summary>Ajustes óticos avançados</summary>
             {range('refraction', 'Refração', 0, 12, 0.1)}
             {range('ior', 'Índice de refração', 1, 2, 0.01)}
             {range('fresnel', 'Fresnel', 0, 1, 0.01)}

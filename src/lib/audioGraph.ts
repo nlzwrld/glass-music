@@ -16,6 +16,124 @@ export async function requestAudioOutput() {
   return picker.selectAudioOutput();
 }
 
+export const PLAYBACK_FADE_MS = 500;
+export const PLAYBACK_FADE_SECONDS = PLAYBACK_FADE_MS / 1000;
+
+export class PlaybackFadeController {
+  private seq = 0;
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private fadingOut = false;
+  private pendingFadeIn = false;
+
+  constructor(private readonly fadeMs = PLAYBACK_FADE_MS) {}
+
+  isFadingOut(): boolean {
+    return this.fadingOut;
+  }
+
+  hasPendingFadeIn(): boolean {
+    return this.pendingFadeIn;
+  }
+
+  consumePendingFadeIn(): boolean {
+    const had = this.pendingFadeIn;
+    this.pendingFadeIn = false;
+    return had;
+  }
+
+  cancel(): void {
+    this.seq++;
+    if (this.timer !== undefined) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+    this.fadingOut = false;
+    this.pendingFadeIn = false;
+  }
+
+  pause(opts: {
+    isPlaying: boolean;
+    currentLevel: number;
+    silent: boolean;
+    rampTo: (value: number, seconds: number) => void;
+    commitPause: () => void;
+    onFadeStart?: () => void;
+  }): void {
+    this.seq++;
+    if (this.timer !== undefined) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+    this.pendingFadeIn = false;
+    if (!opts.isPlaying || opts.silent) {
+      this.fadingOut = false;
+      opts.rampTo(0, 0);
+      opts.commitPause();
+      return;
+    }
+    const clamped = Math.max(
+      0.05,
+      Math.min(1, Number.isFinite(opts.currentLevel) ? opts.currentLevel : 1),
+    );
+    const durationSec = Math.max(0.05, (this.fadeMs / 1000) * clamped);
+    this.fadingOut = true;
+    opts.onFadeStart?.();
+    opts.rampTo(0, durationSec);
+    const mySeq = this.seq;
+    this.timer = setTimeout(() => {
+      if (this.seq !== mySeq) return;
+      this.timer = undefined;
+      this.fadingOut = false;
+      opts.commitPause();
+    }, Math.ceil(durationSec * 1000) + 15);
+  }
+
+  resume(opts: {
+    wasPaused: boolean;
+    currentLevel: number;
+    silent: boolean;
+    rampTo: (value: number, seconds: number) => void;
+    startPlayback: () => void;
+  }): { resumedFromMidFade: boolean } {
+    this.seq++;
+    if (this.timer !== undefined) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+    const wasFadingOut = this.fadingOut;
+    this.fadingOut = false;
+
+    if (opts.silent) {
+      this.pendingFadeIn = false;
+      opts.rampTo(1, 0);
+      if (opts.wasPaused) opts.startPlayback();
+      return { resumedFromMidFade: !opts.wasPaused && wasFadingOut };
+    }
+
+    if (!opts.wasPaused && wasFadingOut) {
+      this.pendingFadeIn = false;
+      const clamped = Math.max(
+        0,
+        Math.min(1, Number.isFinite(opts.currentLevel) ? opts.currentLevel : 0),
+      );
+      const durationSec = Math.max(0.06, (this.fadeMs / 1000) * (1 - clamped));
+      opts.rampTo(1, durationSec);
+      return { resumedFromMidFade: true };
+    }
+
+    if (opts.wasPaused) {
+      this.pendingFadeIn = true;
+      opts.rampTo(0, 0);
+      opts.startPlayback();
+      return { resumedFromMidFade: false };
+    }
+
+    this.pendingFadeIn = false;
+    opts.rampTo(1, 0.06);
+    return { resumedFromMidFade: false };
+  }
+}
+
 export function transitionSeconds(value: number) {
   return Math.min(10, Math.max(0.5, Number.isFinite(value) ? value : 3));
 }
@@ -134,21 +252,38 @@ export class AudioGraph {
     this.decks.set(element, gain);
   }
 
+  getLevel(element: HTMLAudioElement): number {
+    const value = this.decks.get(element)?.gain.value;
+    return typeof value === 'number' && Number.isFinite(value)
+      ? Math.max(0, Math.min(1, value))
+      : 1;
+  }
+
   level(element: HTMLAudioElement, value: number, seconds = 0, equalPower = false) {
     const gain = this.decks.get(element)?.gain;
     if (!gain) return;
+    const target = Math.max(0, Math.min(1, Number.isFinite(value) ? value : 1));
     const time = this.context.currentTime;
-    const current = gain.value;
-    gain.cancelAndHoldAtTime(time);
+    const current = Math.max(0, Math.min(1, Number.isFinite(gain.value) ? gain.value : 0));
+    if (typeof gain.cancelAndHoldAtTime === 'function') {
+      gain.cancelAndHoldAtTime(time);
+    } else {
+      gain.cancelScheduledValues(time);
+      gain.setValueAtTime(current, time);
+    }
     if (seconds > 0) {
-      if (equalPower && ((current <= 0.15 && value >= 0.9) || (current >= 0.85 && value <= 0.1))) {
+      gain.setValueAtTime(current, time);
+      if (
+        equalPower &&
+        ((current <= 0.15 && target >= 0.9) || (current >= 0.85 && target <= 0.1))
+      ) {
         gain.linearRampToValueAtTime(0.707, time + seconds * 0.5);
-        gain.linearRampToValueAtTime(value, time + seconds);
+        gain.linearRampToValueAtTime(target, time + seconds);
       } else {
-        gain.linearRampToValueAtTime(value, time + seconds);
+        gain.linearRampToValueAtTime(target, time + seconds);
       }
     } else {
-      gain.setValueAtTime(value, time);
+      gain.setValueAtTime(target, time);
     }
   }
 

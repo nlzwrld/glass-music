@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108" fill="none">
+  <defs>
+    <radialGradient id="adp-bg" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(26 22) rotate(48) scale(110)">
+      <stop offset="0%" stop-color="#1e4d5f"/>
+      <stop offset="55%" stop-color="#102935"/>
+      <stop offset="100%" stop-color="#08141c"/>
+    </radialGradient>
+    <linearGradient id="adp-drop" x1="40" y1="34" x2="72" y2="78" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#b4f5ef" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#308899" stop-opacity="0.88"/>
+    </linearGradient>
+  </defs>
+  <rect width="108" height="108" fill="url(#adp-bg)"/>
+  <g transform="translate(22 22)">
+    <path d="M14 35V30C14 19.5 22.1 11 32 11C41.9 11 50 19.5 50 30V35" stroke="#e7f9fa" stroke-width="4.4" stroke-linecap="round"/>
+    <rect x="8.5" y="30" width="8.5" height="16.5" rx="4.25" fill="#e7f9fa"/>
+    <rect x="47" y="30" width="8.5" height="16.5" rx="4.25" fill="#e7f9fa"/>
+    <path d="M32 17.5C32 17.5 44.5 31.2 44.5 40.2C44.5 47.4 38.9 53 32 53C25.1 53 19.5 47.4 19.5 40.2C19.5 31.2 32 17.5 32 17.5Z" fill="url(#adp-drop)" stroke="#ffffff" stroke-opacity="0.78" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M27.4 27.6C24.4 32.1 23 36.2 23 39.8C23 44.4 26.2 48 30.2 48.8" stroke="#ffffff" stroke-opacity="0.72" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="M28.2 41.2C29.3 42.7 30.6 43.4 32 43.4C33.4 43.4 34.7 42.7 35.8 41.2" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+  </g>
+</svg>

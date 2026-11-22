@@ -21,15 +21,20 @@ import { gzipSync } from 'node:zlib';
 import { pathToFileURL } from 'node:url';
 import type { Track } from '../shared/types.ts';
 import {
+  DEFAULT_JAM_PERMISSIONS,
   normalizeJamCode,
+  type JamBlockedParticipant,
   type JamChatMessage,
   type JamErrorCode,
   type JamInvitePreview,
+  type JamJoinRequest,
+  type JamJoinRequestStatus,
   type JamMember,
   type JamPlayback,
   type JamPlaylistRecommendation,
   type JamQueueItem,
   type JamRoom,
+  type JamRoomPermissions,
   type JamRoomStatus,
 } from '../shared/jam.ts';
 import {
@@ -58,6 +63,21 @@ interface RecentMember {
   expiredAt: number;
 }
 
+interface InternalJoinRequest {
+  id: string;
+  requestToken: string;
+  name: string;
+  avatar?: string;
+  userId?: string;
+  clientId?: string;
+  requestedAt: number;
+  expiresAt: number;
+  status: JamJoinRequestStatus;
+  reason?: string;
+  errorCode?: JamErrorCode;
+  approvedSession?: Record<string, unknown>;
+}
+
 interface Room {
   roomId: string;
   code: string;
@@ -65,6 +85,8 @@ interface Room {
   hostAvatar?: string;
   locked: boolean;
   requireAuth: boolean;
+  requireApproval: boolean;
+  permissions: JamRoomPermissions;
   maxParticipants: number;
   inviteExpiresAt: number;
   inviteTtlMs: number;
@@ -72,6 +94,9 @@ interface Room {
   members: Map<string, Member>;
   recentMembers: Map<string, RecentMember>;
   kickedKeys: Set<string>;
+  blockedKeys: Set<string>;
+  blockedList: Map<string, JamBlockedParticipant>;
+  joinRequests: Map<string, InternalJoinRequest>;
   playback: JamPlayback;
   skipVotes?: Set<string>;
   skipTriggeredAt?: number;
@@ -144,6 +169,11 @@ export class JamError extends Error {
 const MAX_PARTICIPANTS = 8;
 const INVITE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const DEFAULT_INVITE_TTL_MS = 2 * 60 * 60 * 1000;
+const JOIN_REQUEST_TTL_MS = 5 * 60 * 1000;
+const APPROVED_CLAIM_TTL_MS = 90 * 1000;
+const RESOLVED_STATUS_TTL_MS = 120 * 1000;
+const MAX_PENDING_JOIN_REQUESTS = 32;
+const REQUEST_JOIN_IP_LIMIT_PER_MIN = 6;
 const TOMBSTONE_RETENTION_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_DOWNLOAD_URL = 'https://github.com/nlzwrld/glass-music/releases/latest';
 const JAM_BODY_LIMIT = 16384;
@@ -209,6 +239,12 @@ const ALLOWED_REQUEST_KEYS = new Set([
   'memberId',
   'locked',
   'requireAuth',
+  'requireApproval',
+  'permissions',
+  'requestId',
+  'requestToken',
+  'block',
+  'blockKey',
   'inviteTtlMs',
   'endpoint',
   'playback',
@@ -222,6 +258,146 @@ const ALLOWED_REQUEST_KEYS = new Set([
   'clientTime',
   'sinceSequence',
 ]);
+
+const ALLOWED_PERMISSION_KEYS = new Set([
+  'allowQueueAdd',
+  'allowVoteSkip',
+  'allowChat',
+  'allowRecommendations',
+]);
+
+function sanitizePermissions(
+  raw: unknown,
+  base: JamRoomPermissions = DEFAULT_JAM_PERMISSIONS,
+): JamRoomPermissions {
+  const next: JamRoomPermissions = { ...base };
+  if (raw === undefined) return next;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new JamError('Permissões da JAM inválidas.', 400);
+  }
+  const obj = raw as Record<string, unknown>;
+  assertNoUnknownKeys(obj, ALLOWED_PERMISSION_KEYS, 'Permissões JAM');
+  if (typeof obj.allowQueueAdd === 'boolean') next.allowQueueAdd = obj.allowQueueAdd;
+  if (typeof obj.allowVoteSkip === 'boolean') next.allowVoteSkip = obj.allowVoteSkip;
+  if (typeof obj.allowChat === 'boolean') next.allowChat = obj.allowChat;
+  if (typeof obj.allowRecommendations === 'boolean') {
+    next.allowRecommendations = obj.allowRecommendations;
+  }
+  return next;
+}
+
+const safeRequestId = (value: unknown): string | undefined =>
+  typeof value === 'string' && /^[A-Za-z0-9_-]{6,64}$/.test(value) ? value : undefined;
+
+const safeBlockKey = (value: unknown): string | undefined =>
+  typeof value === 'string' && /^(uid|cid|id|tok):[A-Za-z0-9_.:-]{2,120}$/.test(value)
+    ? value
+    : undefined;
+
+function pruneJoinRequests(room: Room, now: number): boolean {
+  let changed = false;
+  for (const [reqId, req] of room.joinRequests) {
+    if (req.status === 'pending' && req.expiresAt <= now) {
+      req.status = 'expired';
+      req.reason = 'Solicitação expirada. Peça entrada novamente ao anfitrião.';
+      req.errorCode = 'INVITE_EXPIRED';
+      req.expiresAt = now + RESOLVED_STATUS_TTL_MS;
+      changed = true;
+    } else if (req.status !== 'pending' && req.expiresAt <= now) {
+      room.joinRequests.delete(reqId);
+    }
+  }
+  return changed;
+}
+
+function pendingRequestsList(room: Room, now: number): JamJoinRequest[] {
+  const list: JamJoinRequest[] = [];
+  for (const req of room.joinRequests.values()) {
+    if (req.status === 'pending' && req.expiresAt > now) {
+      list.push({
+        id: req.id,
+        name: req.name,
+        ...(req.avatar ? { avatar: req.avatar } : {}),
+        ...(req.userId ? { userId: req.userId } : {}),
+        ...(req.clientId ? { clientId: req.clientId } : {}),
+        requestedAt: req.requestedAt,
+        expiresAt: req.expiresAt,
+        status: req.status,
+      });
+    }
+  }
+  return list;
+}
+
+function isBlockedRequester(
+  room: Room,
+  userId?: string,
+  clientId?: string,
+): boolean {
+  if (userId && room.blockedKeys.has(`uid:${userId}`)) {
+    return true;
+  }
+  if (clientId && room.blockedKeys.has(`cid:${clientId}`)) {
+    return true;
+  }
+  return false;
+}
+
+function addBlockKeysForMember(
+  room: Room,
+  target: Pick<Member, 'id' | 'name' | 'token' | 'clientId' | 'userId'>,
+  now: number,
+  alwaysRevokeToken = true,
+) {
+  if (alwaysRevokeToken) room.kickedKeys.add(`tok:${target.token}`);
+  if (target.clientId) {
+    room.kickedKeys.add(`cid:${target.clientId}`);
+    room.blockedKeys.add(`cid:${target.clientId}`);
+  }
+  if (target.userId) {
+    room.kickedKeys.add(`uid:${target.userId}`);
+    room.blockedKeys.add(`uid:${target.userId}`);
+  }
+  room.blockedKeys.add(`id:${target.id}`);
+  const primaryKey = target.userId
+    ? `uid:${target.userId}`
+    : target.clientId
+      ? `cid:${target.clientId}`
+      : `id:${target.id}`;
+  room.blockedList.set(primaryKey, {
+    key: primaryKey,
+    name: target.name,
+    blockedAt: now,
+  });
+}
+
+function enforceInteractivePermission(room: Room, member: Member, action: string) {
+  if (member.host) return;
+  if (action === 'queueAdd' && !room.permissions.allowQueueAdd) {
+    throw new JamError(
+      'O anfitrião desativou a adição de músicas à fila pelos participantes.',
+      403,
+      'FORBIDDEN',
+    );
+  }
+  if (action === 'voteSkip' && !room.permissions.allowVoteSkip) {
+    throw new JamError(
+      'O anfitrião desativou a votação para pular músicas.',
+      403,
+      'FORBIDDEN',
+    );
+  }
+  if (action === 'chat' && !room.permissions.allowChat) {
+    throw new JamError('O anfitrião desativou o bate-papo desta JAM.', 403, 'FORBIDDEN');
+  }
+  if (action === 'recommendPlaylist' && !room.permissions.allowRecommendations) {
+    throw new JamError(
+      'O anfitrião desativou o envio de playlists pelos participantes.',
+      403,
+      'FORBIDDEN',
+    );
+  }
+}
 
 function roomInteractiveView(room: Room) {
   const onlineCount = Math.max(
@@ -247,6 +423,7 @@ function applyJamInteractiveAction(
   p: Record<string, unknown>,
   now: number,
 ): boolean {
+  enforceInteractivePermission(room, member, action);
   if (action === 'voteSkip') {
     if (!room.skipVotes) room.skipVotes = new Set();
     if (room.skipVotes.has(member.id)) {
@@ -858,6 +1035,9 @@ function openSqlite(dbPath: string): SqliteDatabase | null {
         expires_at INTEGER NOT NULL
       );
     `);
+    try {
+      db.exec('ALTER TABLE jam_rooms ADD COLUMN meta_json TEXT');
+    } catch {}
     return db;
   } catch {
     return null;
@@ -895,6 +1075,7 @@ function previewFromRoom(room: Room, now: number): JamInvitePreview {
     canJoin,
     ...(reason ? { reason } : {}),
     requireAuth: room.requireAuth,
+    requireApproval: room.requireApproval,
     currentTrack: room.playback.track
       ? {
           id: room.playback.track.id,
@@ -931,6 +1112,401 @@ function previewFromTombstone(tomb: InviteTombstone, now: number): JamInvitePrev
     createdAt: tomb.createdAt,
     serverTime: now,
   };
+}
+
+function buildRoomView(
+  room: Room,
+  now: number,
+  p?: Record<string, unknown>,
+  forHost = false,
+): JamRoom {
+  const unchanged =
+    p?.action === 'poll' &&
+    typeof p.sinceSequence === 'number' &&
+    p.sinceSequence === room.playback.sequence;
+  const pending = pendingRequestsList(room, now);
+  return {
+    roomId: room.roomId,
+    code: room.code,
+    roomName: room.roomName,
+    ...(room.hostAvatar ? { hostAvatar: room.hostAvatar } : {}),
+    status: roomStatusFrom(room, now),
+    locked: room.locked,
+    requireAuth: room.requireAuth,
+    requireApproval: room.requireApproval,
+    permissions: room.permissions,
+    maxParticipants: room.maxParticipants,
+    inviteExpiresAt: room.inviteExpiresAt,
+    createdAt: room.createdAt,
+    members: [...room.members.values()].map(
+      ({ id: mid, name, host, avatar, online, joinedAt }) => ({
+        id: mid,
+        name,
+        host,
+        ...(avatar ? { avatar } : {}),
+        online: online !== false,
+        ...(joinedAt ? { joinedAt } : {}),
+      }),
+    ),
+    pendingRequestCount: pending.length,
+    ...(forHost
+      ? {
+          joinRequests: pending,
+          blockedList: [...room.blockedList.values()],
+        }
+      : {}),
+    playback: unchanged ? { ...room.playback, track: null } : room.playback,
+    ...roomInteractiveView(room),
+    unchanged: unchanged || undefined,
+    serverTime: now,
+    ...(typeof p?.clientTime === 'number' && Number.isFinite(p.clientTime)
+      ? { echoClientTime: p.clientTime }
+      : {}),
+  };
+}
+
+function buildMemberSession(
+  room: Room,
+  member: Member,
+  now: number,
+  p?: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...buildRoomView(room, now, p, member.host),
+    token: member.token,
+    memberId: member.id,
+    host: member.host,
+    ...(member.clientId ? { clientId: member.clientId } : {}),
+  };
+}
+
+function applyRoomUpdate(
+  room: Room,
+  member: Member,
+  p: Record<string, unknown>,
+  requireAuthGlobal: boolean,
+) {
+  if (!member.host) {
+    throw new JamError('Somente o anfitrião pode alterar as opções da JAM.', 403, 'FORBIDDEN');
+  }
+  if (typeof p.roomName === 'string') {
+    room.roomName = safeRoomName(p.roomName, member.name);
+  }
+  if (typeof p.locked === 'boolean') {
+    room.locked = p.locked;
+  }
+  if (typeof p.requireAuth === 'boolean') {
+    room.requireAuth = requireAuthGlobal || p.requireAuth;
+  }
+  if (typeof p.requireApproval === 'boolean') {
+    room.requireApproval = p.requireApproval;
+  }
+  if (p.permissions !== undefined) {
+    room.permissions = sanitizePermissions(p.permissions, room.permissions);
+  }
+}
+
+function handleRequestJoin(
+  room: Room,
+  p: Record<string, unknown>,
+  now: number,
+  authUserId?: string,
+): InternalJoinRequest {
+  if (room.inviteExpiresAt <= now) {
+    throw new JamError(
+      'Este convite expirou. Peça um novo link ao anfitrião.',
+      410,
+      'INVITE_EXPIRED',
+      previewFromRoom(room, now),
+    );
+  }
+  const clientId = safeClientId(p.clientId);
+  if (isBlockedRequester(room, authUserId, clientId)) {
+    throw new JamError(
+      'Você foi bloqueado pelo anfitrião desta JAM.',
+      403,
+      'BLOCKED',
+      previewFromRoom(room, now),
+    );
+  }
+  if (room.locked) {
+    throw new JamError(
+      'Esta JAM está trancada pelo anfitrião.',
+      403,
+      'ROOM_LOCKED',
+      previewFromRoom(room, now),
+    );
+  }
+  if (room.members.size >= room.maxParticipants) {
+    throw new JamError(
+      `Esta JAM já tem ${room.maxParticipants} pessoas.`,
+      409,
+      'ROOM_FULL',
+      previewFromRoom(room, now),
+    );
+  }
+  const alreadyMember = [...room.members.values()].some(
+    m => (authUserId && m.userId === authUserId) || (clientId && m.clientId === clientId),
+  );
+  if (alreadyMember) {
+    throw new JamError('Você já está participando desta JAM.', 409, 'REQUEST_DUPLICATE');
+  }
+  pruneJoinRequests(room, now);
+  const duplicatePending = [...room.joinRequests.values()].find(
+    req =>
+      req.status === 'pending' &&
+      req.expiresAt > now &&
+      ((authUserId && req.userId === authUserId) || (clientId && req.clientId === clientId)),
+  );
+  if (duplicatePending) {
+    throw new JamError(
+      'Você já enviou uma solicitação pendente para esta JAM.',
+      409,
+      'REQUEST_DUPLICATE',
+      previewFromRoom(room, now),
+    );
+  }
+  const pendingCount = pendingRequestsList(room, now).length;
+  if (pendingCount >= MAX_PENDING_JOIN_REQUESTS) {
+    throw new JamError(
+      'Muitas solicitações pendentes no momento. Aguarde o anfitrião.',
+      429,
+      'RATE_LIMITED',
+    );
+  }
+  const req: InternalJoinRequest = {
+    id: `jrq_${id().slice(0, 12)}`,
+    requestToken: id(),
+    name: safeName(p.name),
+    avatar: sanitizeAvatar(p.avatar),
+    userId: authUserId,
+    clientId,
+    requestedAt: now,
+    expiresAt: now + JOIN_REQUEST_TTL_MS,
+    status: 'pending',
+  };
+  room.joinRequests.set(req.id, req);
+  return req;
+}
+
+function handleCheckJoinRequest(
+  room: Room,
+  p: Record<string, unknown>,
+  now: number,
+): { changed: boolean; body: Record<string, unknown> } {
+  const reqId = safeRequestId(p.requestId);
+  if (!reqId) {
+    throw new JamError('Solicitação inválida.', 400);
+  }
+  if (!validToken(p.requestToken)) {
+    throw new JamError('Token da solicitação inválido.', 401, 'SESSION_EXPIRED');
+  }
+  const expiredSome = pruneJoinRequests(room, now);
+  const req = room.joinRequests.get(reqId);
+  if (!req || req.requestToken !== p.requestToken) {
+    return {
+      changed: expiredSome,
+      body: {
+        status: 'expired',
+        requestId: reqId,
+        reason: 'Solicitação expirada ou cancelada.',
+        errorCode: 'INVITE_EXPIRED',
+        serverTime: now,
+      },
+    };
+  }
+  if (req.status === 'approved' && req.approvedSession) {
+    const claimed = req.approvedSession;
+    const targetMemberId = typeof claimed.memberId === 'string' ? claimed.memberId : '';
+    const memberObj = [...room.members.values()].find(m => m.id === targetMemberId);
+    delete req.approvedSession;
+    room.joinRequests.delete(reqId);
+    const sessionOut = memberObj ? buildMemberSession(room, memberObj, now, p) : claimed;
+    return {
+      changed: true,
+      body: {
+        status: 'approved',
+        requestId: reqId,
+        session: sessionOut,
+        serverTime: now,
+      },
+    };
+  }
+  return {
+    changed: expiredSome,
+    body: {
+      status: req.status,
+      requestId: req.id,
+      ...(req.expiresAt ? { expiresAt: req.expiresAt } : {}),
+      ...(req.reason ? { reason: req.reason } : {}),
+      ...(req.errorCode ? { errorCode: req.errorCode } : {}),
+      serverTime: now,
+    },
+  };
+}
+
+function handleCancelJoinRequest(
+  room: Room,
+  p: Record<string, unknown>,
+  now: number,
+): { changed: boolean; body: Record<string, unknown> } {
+  const reqId = safeRequestId(p.requestId);
+  if (!reqId) throw new JamError('Solicitação inválida.', 400);
+  if (!validToken(p.requestToken)) {
+    throw new JamError('Token da solicitação inválido.', 401, 'SESSION_EXPIRED');
+  }
+  const req = room.joinRequests.get(reqId);
+  if (req && req.requestToken === p.requestToken) {
+    room.joinRequests.delete(reqId);
+    return {
+      changed: true,
+      body: { status: 'cancelled', requestId: reqId, serverTime: now },
+    };
+  }
+  return {
+    changed: false,
+    body: { status: 'cancelled', requestId: reqId, serverTime: now },
+  };
+}
+
+function handleApproveJoin(
+  room: Room,
+  member: Member,
+  p: Record<string, unknown>,
+  now: number,
+): Member {
+  if (!member.host) {
+    throw new JamError('Somente o anfitrião pode aprovar participantes.', 403, 'FORBIDDEN');
+  }
+  const reqId = safeRequestId(p.requestId);
+  if (!reqId) throw new JamError('Solicitação inválida.', 400);
+  pruneJoinRequests(room, now);
+  const req = room.joinRequests.get(reqId);
+  if (!req) {
+    throw new JamError('Solicitação de entrada não encontrada.', 404);
+  }
+  if (req.status !== 'pending') {
+    throw new JamError('Esta solicitação já foi processada.', 409, 'REQUEST_DUPLICATE');
+  }
+  if (req.expiresAt <= now) {
+    req.status = 'expired';
+    req.expiresAt = now + RESOLVED_STATUS_TTL_MS;
+    throw new JamError('Esta solicitação expirou.', 410, 'INVITE_EXPIRED');
+  }
+  if (isBlockedRequester(room, req.userId, req.clientId)) {
+    req.status = 'blocked';
+    req.errorCode = 'BLOCKED';
+    req.expiresAt = now + RESOLVED_STATUS_TTL_MS;
+    throw new JamError('Este usuário está bloqueado nesta JAM.', 403, 'BLOCKED');
+  }
+  const alreadyMember = [...room.members.values()].some(
+    m => (req.userId && m.userId === req.userId) || (req.clientId && m.clientId === req.clientId),
+  );
+  if (alreadyMember) {
+    room.joinRequests.delete(reqId);
+    throw new JamError('Este usuário já entrou na JAM.', 409, 'REQUEST_DUPLICATE');
+  }
+  if (room.members.size >= room.maxParticipants) {
+    throw new JamError(`Esta JAM já tem ${room.maxParticipants} pessoas.`, 409, 'ROOM_FULL');
+  }
+  const newMember: Member = {
+    id: id(),
+    token: id(),
+    clientId: req.clientId,
+    userId: req.userId,
+    name: req.name,
+    avatar: req.avatar,
+    host: false,
+    online: true,
+    joinedAt: now,
+    seen: now,
+  };
+  room.members.set(newMember.token, newMember);
+  req.status = 'approved';
+  req.expiresAt = now + APPROVED_CLAIM_TTL_MS;
+  req.approvedSession = buildMemberSession(room, newMember, now);
+  return newMember;
+}
+
+function handleRejectJoin(
+  room: Room,
+  member: Member,
+  p: Record<string, unknown>,
+  now: number,
+) {
+  if (!member.host) {
+    throw new JamError('Somente o anfitrião pode recusar participantes.', 403, 'FORBIDDEN');
+  }
+  const reqId = safeRequestId(p.requestId);
+  if (!reqId) throw new JamError('Solicitação inválida.', 400);
+  pruneJoinRequests(room, now);
+  const req = room.joinRequests.get(reqId);
+  if (!req) {
+    throw new JamError('Solicitação de entrada não encontrada.', 404);
+  }
+  if (req.status !== 'pending') {
+    throw new JamError('Esta solicitação já foi processada.', 409, 'REQUEST_DUPLICATE');
+  }
+  if (p.block === true) {
+    req.status = 'blocked';
+    req.errorCode = 'BLOCKED';
+    req.reason = 'Sua entrada foi bloqueada pelo anfitrião.';
+    req.expiresAt = now + RESOLVED_STATUS_TTL_MS;
+    addBlockKeysForMember(
+      room,
+      {
+        id: req.id,
+        name: req.name,
+        token: req.requestToken,
+        clientId: req.clientId,
+        userId: req.userId,
+      },
+      now,
+      false,
+    );
+  } else {
+    req.status = 'rejected';
+    req.errorCode = 'REQUEST_REJECTED';
+    req.reason = 'O anfitrião recusou sua solicitação de entrada.';
+    req.expiresAt = now + RESOLVED_STATUS_TTL_MS;
+  }
+}
+
+function handleBlockMember(
+  room: Room,
+  member: Member,
+  p: Record<string, unknown>,
+  now: number,
+): Member | RecentMember {
+  if (!member.host) {
+    throw new JamError('Somente o anfitrião pode bloquear participantes.', 403, 'FORBIDDEN');
+  }
+  const targetId = safeMemberId(p.memberId);
+  if (!targetId) throw new JamError('Participante inválido.', 400);
+  const active = [...room.members.values()].find(m => m.id === targetId);
+  const recent = active ? undefined : [...room.recentMembers.values()].find(m => m.id === targetId);
+  const target = active || recent;
+  if (!target) throw new JamError('Participante não encontrado.', 404);
+  if (target.host) throw new JamError('Não é possível bloquear o anfitrião.', 400);
+  room.members.delete(target.token);
+  room.recentMembers.delete(target.token);
+  addBlockKeysForMember(room, target, now, true);
+  return target;
+}
+
+function handleUnblockMember(
+  room: Room,
+  member: Member,
+  p: Record<string, unknown>,
+) {
+  if (!member.host) {
+    throw new JamError('Somente o anfitrião pode desbloquear participantes.', 403, 'FORBIDDEN');
+  }
+  const blockKey = safeBlockKey(p.blockKey);
+  if (!blockKey) throw new JamError('Identificador de bloqueio inválido.', 400);
+  room.blockedList.delete(blockKey);
+  room.blockedKeys.delete(blockKey);
+  room.kickedKeys.delete(blockKey);
 }
 
 /** Ephemeral + optional SQLite coordinator: no audio relay or listening history persisted. */
@@ -989,6 +1565,7 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
       .filter(Boolean),
   );
   const requireAuthGlobal = env.JAM_REQUIRE_AUTH === '1';
+  const requireApprovalGlobal = env.JAM_REQUIRE_APPROVAL === '1';
   const authPublicKey = importEd25519PublicKeyFromX(env.JAM_AUTH_PUBLIC_KEY);
   const downloadUrl = env.JAM_DOWNLOAD_URL || DEFAULT_DOWNLOAD_URL;
   const db = openSqlite(env.JAM_DB_PATH || ':memory:');
@@ -1049,6 +1626,17 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
           });
         }
         if (members.size === 0) continue;
+        let meta: {
+          requireApproval?: boolean;
+          permissions?: Partial<JamRoomPermissions>;
+          blockedKeys?: string[];
+          blockedList?: [string, JamBlockedParticipant][];
+        } = {};
+        if (typeof r.meta_json === 'string' && r.meta_json) {
+          try {
+            meta = JSON.parse(r.meta_json);
+          } catch {}
+        }
         rooms.set(code, {
           roomId,
           code,
@@ -1056,6 +1644,8 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
           hostAvatar: typeof r.host_avatar === 'string' && r.host_avatar ? r.host_avatar : undefined,
           locked: Boolean(r.locked),
           requireAuth: Boolean(r.require_auth),
+          requireApproval: requireApprovalGlobal || Boolean(meta.requireApproval),
+          permissions: sanitizePermissions(meta.permissions, DEFAULT_JAM_PERMISSIONS),
           maxParticipants: Number(r.max_participants) || MAX_PARTICIPANTS,
           inviteExpiresAt: Number(r.invite_expires_at) || now + defaultInviteTtlMs,
           inviteTtlMs: defaultInviteTtlMs,
@@ -1063,6 +1653,9 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
           members,
           recentMembers: new Map(),
           kickedKeys: new Set(),
+          blockedKeys: new Set(meta.blockedKeys || []),
+          blockedList: new Map(meta.blockedList || []),
+          joinRequests: new Map(),
           playback,
           touched: Number(r.touched) || now,
         });
@@ -1088,11 +1681,17 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
 
   function persistRoom(room: Room) {
     if (!db || dbClosed) return;
+    const metaJson = JSON.stringify({
+      requireApproval: room.requireApproval,
+      permissions: room.permissions,
+      blockedKeys: [...room.blockedKeys],
+      blockedList: [...room.blockedList.entries()],
+    });
     try {
       db.exec('BEGIN');
       db.prepare(
-        `INSERT INTO jam_rooms(room_id, code, room_name, host_avatar, locked, require_auth, max_participants, playback_json, invite_expires_at, created_at, touched)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO jam_rooms(room_id, code, room_name, host_avatar, locked, require_auth, max_participants, playback_json, invite_expires_at, created_at, touched, meta_json)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(room_id) DO UPDATE SET
            code=excluded.code,
            room_name=excluded.room_name,
@@ -1102,7 +1701,8 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
            max_participants=excluded.max_participants,
            playback_json=excluded.playback_json,
            invite_expires_at=excluded.invite_expires_at,
-           touched=excluded.touched`,
+           touched=excluded.touched,
+           meta_json=excluded.meta_json`,
       ).run(
         room.roomId,
         room.code,
@@ -1115,6 +1715,7 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
         room.inviteExpiresAt,
         room.createdAt,
         room.touched,
+        metaJson,
       );
       db.prepare('DELETE FROM jam_members WHERE room_id = ?').run(room.roomId);
       const insertMember = db.prepare(
@@ -1324,6 +1925,56 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
     }
   }
 
+  function broadcastRoomState(
+    room: Room,
+    now: number,
+    eventName: 'state' | 'playback' = 'state',
+    hostOnly = false,
+  ) {
+    const guestJson = hostOnly ? '' : JSON.stringify(buildRoomView(room, now, undefined, false));
+    let hostJson = '';
+    const payloadFor = (tok: string): string | null => {
+      const mbr = room.members.get(tok);
+      if (!mbr) return null;
+      if (mbr.host) {
+        if (!hostJson) hostJson = JSON.stringify(buildRoomView(room, now, undefined, true));
+        return hostJson;
+      }
+      return hostOnly ? null : guestJson;
+    };
+    const sockets = roomSockets.get(room.roomId);
+    if (sockets?.size) {
+      let guestFrame: Buffer | null = null;
+      let hostFrame: Buffer | null = null;
+      for (const managed of [...sockets]) {
+        const mbr = room.members.get(managed.token);
+        if (!mbr) {
+          closeSocket(managed);
+          continue;
+        }
+        if (hostOnly && !mbr.host) continue;
+        if (mbr.host) {
+          if (!hostFrame) hostFrame = encodeWsTextFrame(payloadFor(managed.token)!);
+          sendSocket(managed, hostFrame);
+        } else {
+          if (!guestFrame) guestFrame = encodeWsTextFrame(payloadFor(managed.token)!);
+          sendSocket(managed, guestFrame);
+        }
+      }
+    }
+    const sseSet = roomSse.get(room.roomId);
+    if (sseSet?.size) {
+      for (const sub of [...sseSet]) {
+        if (sub.res.writableEnded || sub.res.destroyed) continue;
+        const raw = payloadFor(sub.token);
+        if (!raw) continue;
+        try {
+          sub.res.write(`event: ${eventName}\ndata: ${raw}\n\n`);
+        } catch {}
+      }
+    }
+  }
+
   function lookupInvite(rawCode: string, now: number): JamInvitePreview {
     const code = normalizeJamCode(rawCode);
     if (!code) {
@@ -1383,6 +2034,9 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
           changed = true;
         }
       }
+      if (pruneJoinRequests(room, now)) {
+        changed = true;
+      }
       if (now - room.touched > ttl) {
         recordTombstone(room, code, 'expired', now);
         rooms.delete(code);
@@ -1396,7 +2050,7 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
         closeRoomSubscribers(room.roomId);
       } else if (changed) {
         persistRoom(room);
-        broadcastRoom(room.roomId, 'state', view(room, now));
+        broadcastRoomState(room, now);
       }
     }
     for (const [code, tomb] of tombstones) {
@@ -1406,7 +2060,13 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
     for (const [nonce, until] of seenNonces) if (until <= now) seenNonces.delete(nonce);
   }
 
-  function consumeRate(bucket: string, limit: number, now: number) {
+  function consumeRate(
+    bucket: string,
+    limit: number,
+    now: number,
+    customMessage = 'Muitas tentativas. Aguarde um minuto.',
+    errorCode?: JamErrorCode,
+  ) {
     let rate = rates.get(bucket);
     if (!rate || rate.until <= now) {
       if (rates.size >= 8192 && !rate) throw new JamError('Serviço ocupado.', 503);
@@ -1414,13 +2074,13 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
       rates.set(bucket, rate);
     }
     if (++rate.count > limit) {
-      throw new JamError('Muitas tentativas. Aguarde um minuto.', 429);
+      throw new JamError(customMessage, 429, errorCode);
     }
   }
 
   function allow(ipAddr: string, action: string, now: number) {
-    const isEntry = ['create', 'join', 'resume'].includes(action);
-    const isLookup = action === 'lookup';
+    const isEntry = ['create', 'join', 'resume', 'requestJoin'].includes(action);
+    const isLookup = ['lookup', 'checkJoinRequest', 'cancelJoinRequest'].includes(action);
     const maxCount = isEntry ? entryLimit : isLookup ? lookupLimit : activeLimit;
     const kind = isEntry ? 'entry' : isLookup ? 'lookup' : 'active';
     consumeRate(`ip:${ipAddr}:${kind}`, maxCount, now);
@@ -1437,9 +2097,20 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
     if (!hasNonce && !hasTs) {
       if (
         strictReplay &&
-        ['create', 'join', 'resume', 'sync', 'leave', 'rotateInvite', 'updateRoom', 'kick'].includes(
-          action,
-        )
+        [
+          'create',
+          'join',
+          'resume',
+          'sync',
+          'leave',
+          'rotateInvite',
+          'updateRoom',
+          'kick',
+          'approveJoin',
+          'rejectJoin',
+          'blockMember',
+          'unblockMember',
+        ].includes(action)
       ) {
         throw new JamError('Nonce e timestamp obrigatórios.', 401);
       }
@@ -1472,49 +2143,12 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
     seenNonces.set(p.nonce, now + replayWindowMs * 2);
   }
 
-  function view(room: Room, now: number, p?: Record<string, unknown>): JamRoom {
-    const unchanged =
-      p?.action === 'poll' &&
-      typeof p.sinceSequence === 'number' &&
-      p.sinceSequence === room.playback.sequence;
-    return {
-      roomId: room.roomId,
-      code: room.code,
-      roomName: room.roomName,
-      status: roomStatusFrom(room, now),
-      locked: room.locked,
-      requireAuth: room.requireAuth,
-      maxParticipants: room.maxParticipants,
-      inviteExpiresAt: room.inviteExpiresAt,
-      createdAt: room.createdAt,
-      members: [...room.members.values()].map(
-        ({ id: mid, name, host, avatar, online, joinedAt }) => ({
-          id: mid,
-          name,
-          host,
-          ...(avatar ? { avatar } : {}),
-          online: online !== false,
-          ...(joinedAt ? { joinedAt } : {}),
-        }),
-      ),
-      playback: unchanged ? { ...room.playback, track: null } : room.playback,
-      ...roomInteractiveView(room),
-      unchanged: unchanged || undefined,
-      serverTime: now,
-      ...(typeof p?.clientTime === 'number' && Number.isFinite(p.clientTime)
-        ? { echoClientTime: p.clientTime }
-        : {}),
-    };
+  function view(room: Room, now: number, p?: Record<string, unknown>, forHost = false): JamRoom {
+    return buildRoomView(room, now, p, forHost);
   }
 
   function session(room: Room, member: Member, now: number, p?: Record<string, unknown>) {
-    return {
-      ...view(room, now, p),
-      token: member.token,
-      memberId: member.id,
-      host: member.host,
-      ...(member.clientId ? { clientId: member.clientId } : {}),
-    };
+    return buildMemberSession(room, member, now, p);
   }
 
   function executeCommand(
@@ -1604,6 +2238,8 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
         hostAvatar: avatar,
         locked: false,
         requireAuth: requireAuthGlobal || p.requireAuth === true,
+        requireApproval: requireApprovalGlobal || p.requireApproval === true,
+        permissions: sanitizePermissions(p.permissions, DEFAULT_JAM_PERMISSIONS),
         maxParticipants: MAX_PARTICIPANTS,
         inviteExpiresAt: now + inviteTtl,
         inviteTtlMs: inviteTtl,
@@ -1611,6 +2247,9 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
         members: new Map([[member.token, member]]),
         recentMembers: new Map(),
         kickedKeys: new Set(),
+        blockedKeys: new Set(),
+        blockedList: new Map(),
+        joinRequests: new Map(),
         playback: { track: null, playing: false, position: 0, updatedAt: now, sequence: 0 },
         touched: now,
       };
@@ -1641,6 +2280,53 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
       throw new JamError('Esta JAM foi encerrada ou expirou.', 410, 'ROOM_ENDED');
     }
 
+    if (action === 'requestJoin') {
+      consumeRate(
+        `req:${room.code}:${ipAddr}`,
+        REQUEST_JOIN_IP_LIMIT_PER_MIN,
+        now,
+        'Muitas solicitações de entrada. Aguarde um minuto.',
+        'RATE_LIMITED',
+      );
+      const needAuth = requireAuthGlobal || room.requireAuth;
+      const auth = verifyBearerJwt(authHeader, authPublicKey, now, needAuth);
+      verifyReplayProtection(p, now, action);
+      const req = handleRequestJoin(room, p, now, auth?.userId);
+      persistRoom(room);
+      broadcastRoomState(room, now, 'state', true);
+      return {
+        status: 202,
+        body: {
+          status: req.status,
+          requestId: req.id,
+          requestToken: req.requestToken,
+          expiresAt: req.expiresAt,
+          preview: previewFromRoom(room, now),
+          serverTime: now,
+        },
+      };
+    }
+
+    if (action === 'checkJoinRequest') {
+      verifyReplayProtection(p, now, action);
+      const { changed, body } = handleCheckJoinRequest(room, p, now);
+      if (changed) {
+        persistRoom(room);
+        broadcastRoomState(room, now, 'state', true);
+      }
+      return { status: 200, body };
+    }
+
+    if (action === 'cancelJoinRequest') {
+      verifyReplayProtection(p, now, action);
+      const { changed, body } = handleCancelJoinRequest(room, p, now);
+      if (changed) {
+        persistRoom(room);
+        broadcastRoomState(room, now, 'state', true);
+      }
+      return { status: 200, body };
+    }
+
     if (action === 'join' || action === 'resume') {
       consumeRate(`room:${room.code}:entry`, roomEntryLimit, now);
       if (action === 'join' && room.inviteExpiresAt <= now) {
@@ -1660,6 +2346,10 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
         : validToken(p.token)
           ? p.token
           : undefined;
+
+      if (isBlockedRequester(room, auth?.userId, clientId)) {
+        throw new JamError('Você foi bloqueado pelo anfitrião desta JAM.', 403, 'BLOCKED');
+      }
 
       if (
         (resumeToken && room.kickedKeys.has(`tok:${resumeToken}`)) ||
@@ -1688,7 +2378,7 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
         if (existing.host) room.touched = now;
         persistRoom(room);
         const resp = session(room, existing, now, p);
-        broadcastRoom(room.roomId, 'state', view(room, now));
+        broadcastRoomState(room, now);
         return { status: 200, body: resp };
       }
 
@@ -1727,12 +2417,21 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
         room.members.set(restored.token, restored);
         persistRoom(room);
         const resp = session(room, restored, now, p);
-        broadcastRoom(room.roomId, 'state', view(room, now));
+        broadcastRoomState(room, now);
         return { status: 200, body: resp };
       }
 
       if (action === 'resume') {
         throw new JamError('Sua sessão expirou. Entre novamente.', 401, 'SESSION_EXPIRED');
+      }
+
+      if (room.requireApproval) {
+        throw new JamError(
+          'Esta JAM exige aprovação do anfitrião. Solicite entrada para participar.',
+          403,
+          'APPROVAL_REQUIRED',
+          previewFromRoom(room, now),
+        );
       }
 
       if (room.locked) {
@@ -1767,7 +2466,7 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
       room.members.set(member.token, member);
       persistRoom(room);
       const resp = session(room, member, now, p);
-      broadcastRoom(room.roomId, 'state', view(room, now));
+      broadcastRoomState(room, now);
       return { status: 200, body: resp };
     }
 
@@ -1803,7 +2502,7 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
         room.members.delete(p.token);
         persistRoom(room);
         closeMemberSubscribers(room.roomId, p.token);
-        broadcastRoom(room.roomId, 'state', view(room, now));
+        broadcastRoomState(room, now);
       }
       return { status: 200, body: { closed: member.host, serverTime: now } };
     }
@@ -1830,8 +2529,8 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
         s.code = newCode;
       }
       persistRoom(room);
-      const nextView = view(room, now, p);
-      broadcastRoom(room.roomId, 'state', nextView);
+      const nextView = view(room, now, p, member.host);
+      broadcastRoomState(room, now);
       return { status: 200, body: nextView };
     }
 
@@ -1840,18 +2539,34 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
         throw new JamError('Somente o anfitrião pode alterar as opções da JAM.', 403, 'FORBIDDEN');
       }
       verifyReplayProtection(p, now, action);
-      if (typeof p.roomName === 'string') {
-        room.roomName = safeRoomName(p.roomName, member.name);
-      }
-      if (typeof p.locked === 'boolean') {
-        room.locked = p.locked;
-      }
-      if (typeof p.requireAuth === 'boolean') {
-        room.requireAuth = requireAuthGlobal || p.requireAuth;
-      }
+      applyRoomUpdate(room, member, p, requireAuthGlobal);
       persistRoom(room);
-      const nextView = view(room, now, p);
-      broadcastRoom(room.roomId, 'state', nextView);
+      const nextView = view(room, now, p, member.host);
+      broadcastRoomState(room, now);
+      return { status: 200, body: nextView };
+    }
+
+    if (action === 'approveJoin') {
+      if (!member.host) {
+        throw new JamError('Somente o anfitrião pode aprovar participantes.', 403, 'FORBIDDEN');
+      }
+      verifyReplayProtection(p, now, action);
+      handleApproveJoin(room, member, p, now);
+      persistRoom(room);
+      const nextView = view(room, now, p, member.host);
+      broadcastRoomState(room, now);
+      return { status: 200, body: nextView };
+    }
+
+    if (action === 'rejectJoin') {
+      if (!member.host) {
+        throw new JamError('Somente o anfitrião pode recusar participantes.', 403, 'FORBIDDEN');
+      }
+      verifyReplayProtection(p, now, action);
+      handleRejectJoin(room, member, p, now);
+      persistRoom(room);
+      const nextView = view(room, now, p, member.host);
+      broadcastRoomState(room, now);
       return { status: 200, body: nextView };
     }
 
@@ -1877,8 +2592,38 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
         errorCode: 'KICKED',
         serverTime: now,
       });
-      const nextView = view(room, now, p);
-      broadcastRoom(room.roomId, 'state', nextView);
+      const nextView = view(room, now, p, member.host);
+      broadcastRoomState(room, now);
+      return { status: 200, body: nextView };
+    }
+
+    if (action === 'blockMember') {
+      if (!member.host) {
+        throw new JamError('Somente o anfitrião pode bloquear participantes.', 403, 'FORBIDDEN');
+      }
+      verifyReplayProtection(p, now, action);
+      const blockedTarget = handleBlockMember(room, member, p, now);
+      persistRoom(room);
+      closeMemberSubscribers(room.roomId, blockedTarget.token, 'kicked', {
+        kicked: true,
+        reason: 'Você foi bloqueado nesta JAM pelo anfitrião.',
+        errorCode: 'BLOCKED',
+        serverTime: now,
+      });
+      const nextView = view(room, now, p, member.host);
+      broadcastRoomState(room, now);
+      return { status: 200, body: nextView };
+    }
+
+    if (action === 'unblockMember') {
+      if (!member.host) {
+        throw new JamError('Somente o anfitrião pode desbloquear participantes.', 403, 'FORBIDDEN');
+      }
+      verifyReplayProtection(p, now, action);
+      handleUnblockMember(room, member, p);
+      persistRoom(room);
+      const nextView = view(room, now, p, member.host);
+      broadcastRoomState(room, now, 'state', true);
       return { status: 200, body: nextView };
     }
 
@@ -1914,8 +2659,8 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
         sequence: room.playback.sequence + 1,
       };
       persistRoom(room);
-      const nextView = view(room, now, p);
-      broadcastRoom(room.roomId, 'playback', nextView);
+      const nextView = view(room, now, p, member.host);
+      broadcastRoomState(room, now, 'playback');
       return { status: 200, body: nextView };
     }
 
@@ -1925,14 +2670,14 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
       verifyReplayProtection(p, now, action);
       applyJamInteractiveAction(room, member, action, p, now);
       persistRoom(room);
-      const nextView = view(room, now, p);
-      broadcastRoom(room.roomId, 'state', nextView);
+      const nextView = view(room, now, p, member.host);
+      broadcastRoomState(room, now);
       return { status: 200, body: nextView };
     }
 
     if (action !== 'poll') throw new JamError('Operação inválida.');
     verifyReplayProtection(p, now, action);
-    return { status: 200, body: view(room, now, p) };
+    return { status: 200, body: view(room, now, p, member.host) };
   }
 
   const wsHeartbeat = setInterval(() => {
@@ -2113,9 +2858,9 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
         }
         set.add(sub);
 
-        const currentView = view(room, now);
+        const currentView = view(room, now, undefined, member.host);
         res.write(`event: state\ndata: ${JSON.stringify(currentView)}\n\n`);
-        broadcastRoom(room.roomId, 'state', currentView);
+        broadcastRoomState(room, now);
 
         let cleaned = false;
         const cleanup = () => {
@@ -2133,7 +2878,7 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
               mbr.online = false;
               mbr.seen = clock();
               persistRoom(liveRoom);
-              broadcastRoom(liveRoom.roomId, 'state', view(liveRoom, clock()));
+              broadcastRoomState(liveRoom, clock());
             }
           }
         };
@@ -2235,7 +2980,7 @@ export function createJam(env: NodeJS.ProcessEnv = process.env, clock = Date.now
         lastSeen: now,
       };
       trackSocket(managed);
-      sendSocket(managed, encodeWsTextFrame(JSON.stringify(view(room, now))));
+      sendSocket(managed, encodeWsTextFrame(JSON.stringify(view(room, now, undefined, member.host))));
 
       let buffer: Buffer = head.length ? Buffer.from(head) : Buffer.alloc(0);
       socket.on('data', (chunk: Buffer) => {
@@ -2359,6 +3104,7 @@ export interface CfJamEnv {
   JAM_WS_MAX_PER_IP?: string;
   JAM_ALLOWED_ORIGINS?: string;
   JAM_REQUIRE_AUTH?: string;
+  JAM_REQUIRE_APPROVAL?: string;
   JAM_AUTH_PUBLIC_KEY?: string;
   JAM_DOWNLOAD_URL?: string;
   BROKER_ED25519_PRIVATE_KEY?: string;
@@ -2440,7 +3186,22 @@ function replayFields(
   const hasNonce = p.nonce !== undefined;
   const hasTimestamp = p.timestamp !== undefined;
   if (!hasNonce && !hasTimestamp) {
-    if (['create', 'join', 'resume', 'sync', 'leave', 'rotateInvite', 'updateRoom', 'kick'].includes(action)) {
+    if (
+      [
+        'create',
+        'join',
+        'resume',
+        'sync',
+        'leave',
+        'rotateInvite',
+        'updateRoom',
+        'kick',
+        'approveJoin',
+        'rejectJoin',
+        'blockMember',
+        'unblockMember',
+      ].includes(action)
+    ) {
       throw new JamError('Nonce e timestamp obrigatórios.', 401);
     }
     return null;
@@ -2494,6 +3255,8 @@ function consumeCfRate(
   key: string,
   limit: number,
   now: number,
+  customMessage = 'Muitas tentativas. Aguarde um minuto.',
+  errorCode?: JamErrorCode,
 ) {
   if (rates.size >= 8192) {
     for (const [bucket, rate] of rates) if (rate.until <= now) rates.delete(bucket);
@@ -2504,7 +3267,7 @@ function consumeCfRate(
     rate = { until: now + 60000, count: 0 };
     rates.set(key, rate);
   }
-  if (++rate.count > limit) throw new JamError('Muitas tentativas. Aguarde um minuto.', 429);
+  if (++rate.count > limit) throw new JamError(customMessage, 429, errorCode);
 }
 
 function cfClientAddress(request: Request) {
@@ -2593,6 +3356,21 @@ function cfError(error: unknown) {
   );
 }
 
+function isBrokerAuthOrSocialPath(pathname: string): boolean {
+  return (
+    pathname === '/.well-known/jwks.json' ||
+    pathname === '/v1/version' ||
+    pathname.startsWith('/v1/auth/') ||
+    pathname.startsWith('/v1/profiles/') ||
+    pathname.startsWith('/v1/users/') ||
+    pathname === '/v1/playlists' ||
+    pathname.startsWith('/v1/playlists/') ||
+    pathname.startsWith('/v1/plus/') ||
+    pathname.startsWith('/u/') ||
+    pathname.startsWith('/p/')
+  );
+}
+
 export class JamRoomDO {
   private readonly ctx: CfDurableObjectState;
   private readonly env: CfJamEnv;
@@ -2644,11 +3422,17 @@ export class JamRoomDO {
       hostAvatar?: string;
       locked?: boolean;
       requireAuth?: boolean;
+      requireApproval?: boolean;
+      permissions?: JamRoomPermissions;
       maxParticipants?: number;
       inviteExpiresAt?: number;
       inviteTtlMs?: number;
       createdAt?: number;
       members: [string, Member][];
+      kickedKeys?: string[];
+      blockedKeys?: string[];
+      blockedList?: [string, JamBlockedParticipant][];
+      joinRequests?: [string, InternalJoinRequest][];
       playback: JamPlayback;
       skipVotes?: string[];
       skipTriggeredAt?: number;
@@ -2666,13 +3450,18 @@ export class JamRoomDO {
         hostAvatar: saved.hostAvatar,
         locked: Boolean(saved.locked),
         requireAuth: Boolean(saved.requireAuth),
+        requireApproval: this.env.JAM_REQUIRE_APPROVAL === '1' || Boolean(saved.requireApproval),
+        permissions: sanitizePermissions(saved.permissions, DEFAULT_JAM_PERMISSIONS),
         maxParticipants: saved.maxParticipants || MAX_PARTICIPANTS,
         inviteExpiresAt: saved.inviteExpiresAt || saved.touched + DEFAULT_INVITE_TTL_MS,
         inviteTtlMs: saved.inviteTtlMs || DEFAULT_INVITE_TTL_MS,
         createdAt: saved.createdAt || saved.touched,
         members: new Map(saved.members),
         recentMembers: new Map(),
-        kickedKeys: new Set(),
+        kickedKeys: new Set(saved.kickedKeys || []),
+        blockedKeys: new Set(saved.blockedKeys || []),
+        blockedList: new Map(saved.blockedList || []),
+        joinRequests: new Map(saved.joinRequests || []),
         playback: saved.playback,
         skipVotes: new Set(saved.skipVotes || []),
         skipTriggeredAt: saved.skipTriggeredAt || 0,
@@ -2717,11 +3506,17 @@ export class JamRoomDO {
       hostAvatar: room.hostAvatar,
       locked: room.locked,
       requireAuth: room.requireAuth,
+      requireApproval: room.requireApproval,
+      permissions: room.permissions,
       maxParticipants: room.maxParticipants,
       inviteExpiresAt: room.inviteExpiresAt,
       inviteTtlMs: room.inviteTtlMs,
       createdAt: room.createdAt,
       members: [...room.members.entries()],
+      kickedKeys: [...room.kickedKeys],
+      blockedKeys: [...room.blockedKeys],
+      blockedList: [...room.blockedList.entries()],
+      joinRequests: [...room.joinRequests.entries()],
       playback: room.playback,
       skipVotes: [...(room.skipVotes || [])],
       skipTriggeredAt: room.skipTriggeredAt || 0,
@@ -2735,7 +3530,20 @@ export class JamRoomDO {
   }
 
   private verifyReplay(p: Record<string, unknown>, now: number, action: string) {
-    const persistent = ['create', 'join', 'resume', 'sync', 'leave', 'rotateInvite', 'updateRoom', 'kick'].includes(action);
+    const persistent = [
+      'create',
+      'join',
+      'resume',
+      'sync',
+      'leave',
+      'rotateInvite',
+      'updateRoom',
+      'kick',
+      'approveJoin',
+      'rejectJoin',
+      'blockMember',
+      'unblockMember',
+    ].includes(action);
     acceptNonce(
       persistent ? this.mutationNonces : this.volatileNonces,
       p,
@@ -2751,8 +3559,8 @@ export class JamRoomDO {
 
   private allowIp(ip: string, action: string, now: number) {
     for (const [bucket, rate] of this.rates) if (rate.until <= now) this.rates.delete(bucket);
-    const entry = ['create', 'join', 'resume'].includes(action);
-    const isLookup = action === 'lookup';
+    const entry = ['create', 'join', 'resume', 'requestJoin'].includes(action);
+    const isLookup = ['lookup', 'checkJoinRequest', 'cancelJoinRequest'].includes(action);
     consumeCfRate(
       this.rates,
       `ip:${ip}:${entry ? 'entry' : isLookup ? 'lookup' : 'active'}`,
@@ -2831,6 +3639,9 @@ export class JamRoomDO {
         changed = true;
       }
     }
+    if (pruneJoinRequests(this.room, now)) {
+      changed = true;
+    }
     if (now - this.room.touched > this.ttl()) {
       const host = [...this.room.members.values()].find(m => m.host);
       const expiredCode = this.room.code;
@@ -2874,45 +3685,36 @@ export class JamRoomDO {
     }
   }
 
-  private roomView(room: Room, now: number, p?: Record<string, unknown>): JamRoom {
-    const sinceSequence =
-      p?.action === 'poll' && typeof p.sinceSequence === 'number' && Number.isFinite(p.sinceSequence)
-        ? p.sinceSequence
-        : undefined;
-    const unchanged = sinceSequence !== undefined && sinceSequence === room.playback.sequence;
-    return {
-      roomId: room.roomId,
-      code: room.code,
-      roomName: room.roomName,
-      status: roomStatusFrom(room, now),
-      locked: room.locked,
-      requireAuth: room.requireAuth,
-      maxParticipants: room.maxParticipants,
-      inviteExpiresAt: room.inviteExpiresAt,
-      createdAt: room.createdAt,
-      members: [...room.members.values()].map(
-        ({ id: mid, name, host, avatar, online, joinedAt }) => ({
-          id: mid,
-          name,
-          host,
-          ...(avatar ? { avatar } : {}),
-          online: online !== false,
-          ...(joinedAt ? { joinedAt } : {}),
-        }),
-      ),
-      playback: unchanged ? { ...room.playback, track: null } : room.playback,
-      ...roomInteractiveView(room),
-      serverTime: now,
-      ...(unchanged ? { unchanged: true } : {}),
-      ...(typeof p?.clientTime === 'number' && Number.isFinite(p.clientTime)
-        ? { echoClientTime: p.clientTime }
-        : {}),
-    };
+  private broadcastRoomState(room: Room, now: number, hostOnly = false) {
+    const guestRaw = hostOnly ? '' : JSON.stringify(buildRoomView(room, now, undefined, false));
+    let hostRaw = '';
+    const sent = new Set<WebSocket>();
+    for (const [tok, mbr] of room.members) {
+      if (hostOnly && !mbr.host) continue;
+      let raw: string;
+      if (mbr.host) {
+        if (!hostRaw) hostRaw = JSON.stringify(buildRoomView(room, now, undefined, true));
+        raw = hostRaw;
+      } else {
+        raw = guestRaw;
+      }
+      for (const ws of this.ctx.getWebSockets(tok)) {
+        if (sent.has(ws)) continue;
+        sent.add(ws);
+        try {
+          ws.send(raw);
+        } catch {}
+      }
+    }
+  }
+
+  private roomView(room: Room, now: number, p?: Record<string, unknown>, forHost = false): JamRoom {
+    return buildRoomView(room, now, p, forHost);
   }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname === '/.well-known/jwks.json' || url.pathname.startsWith('/v1/auth/')) {
+    if (isBrokerAuthOrSocialPath(url.pathname)) {
       const engine = this.getAuthEngine();
       const baseProviders = resolveOAuthProviders(this.env as unknown as NodeJS.ProcessEnv);
       return handleFetchAuthRequest({
@@ -3056,6 +3858,8 @@ export class JamRoomDO {
           hostAvatar: avatar,
           locked: false,
           requireAuth: requireAuthGlobal || p.requireAuth === true,
+          requireApproval: this.env.JAM_REQUIRE_APPROVAL === '1' || p.requireApproval === true,
+          permissions: sanitizePermissions(p.permissions, DEFAULT_JAM_PERMISSIONS),
           maxParticipants: MAX_PARTICIPANTS,
           inviteExpiresAt: now + inviteTtl,
           inviteTtlMs: inviteTtl,
@@ -3063,6 +3867,9 @@ export class JamRoomDO {
           members: new Map([[host.token, host]]),
           recentMembers: new Map(),
           kickedKeys: new Set(),
+          blockedKeys: new Set(),
+          blockedList: new Map(),
+          joinRequests: new Map(),
           playback: { track: null, playing: false, position: 0, updatedAt: now, sequence: 0 },
           touched: now,
         };
@@ -3070,7 +3877,7 @@ export class JamRoomDO {
         await this.persistRoom();
         return new Response(
           JSON.stringify({
-            ...this.roomView(created, now, p),
+            ...this.roomView(created, now, p, true),
             token: host.token,
             memberId: host.id,
             host: true,
@@ -3092,6 +3899,54 @@ export class JamRoomDO {
         throw new JamError('Esta JAM foi encerrada ou expirou.', 410, 'ROOM_ENDED');
       }
       const current = this.room;
+
+      if (action === 'requestJoin') {
+        consumeCfRate(
+          this.rates,
+          `req:${current.code}:${ip}`,
+          REQUEST_JOIN_IP_LIMIT_PER_MIN,
+          now,
+          'Muitas solicitações de entrada. Aguarde um minuto.',
+          'RATE_LIMITED',
+        );
+        const needAuth = requireAuthGlobal || current.requireAuth;
+        const auth = verifyBearerJwt(authHeader, authPublicKey, now, needAuth);
+        this.verifyReplay(p, now, action);
+        const req = handleRequestJoin(current, p, now, auth?.userId);
+        await this.persistRoom();
+        this.broadcastRoomState(current, now, true);
+        return new Response(
+          JSON.stringify({
+            status: req.status,
+            requestId: req.id,
+            requestToken: req.requestToken,
+            expiresAt: req.expiresAt,
+            preview: previewFromRoom(current, now),
+            serverTime: now,
+          }),
+          { status: 202, headers },
+        );
+      }
+
+      if (action === 'checkJoinRequest') {
+        this.verifyReplay(p, now, action);
+        const { changed, body } = handleCheckJoinRequest(current, p, now);
+        if (changed) {
+          await this.persistRoom();
+          this.broadcastRoomState(current, now, true);
+        }
+        return new Response(JSON.stringify(body), { status: 200, headers });
+      }
+
+      if (action === 'cancelJoinRequest') {
+        this.verifyReplay(p, now, action);
+        const { changed, body } = handleCancelJoinRequest(current, p, now);
+        if (changed) {
+          await this.persistRoom();
+          this.broadcastRoomState(current, now, true);
+        }
+        return new Response(JSON.stringify(body), { status: 200, headers });
+      }
 
       if (action === 'join' || action === 'resume') {
         consumeCfRate(
@@ -3117,6 +3972,10 @@ export class JamRoomDO {
             ? p.token
             : undefined;
 
+        if (isBlockedRequester(current, auth?.userId, clientId)) {
+          throw new JamError('Você foi bloqueado pelo anfitrião desta JAM.', 403, 'BLOCKED');
+        }
+
         if (
           (resumeToken && current.kickedKeys.has(`tok:${resumeToken}`)) ||
           (clientId && current.kickedKeys.has(`cid:${clientId}`)) ||
@@ -3139,8 +3998,8 @@ export class JamRoomDO {
           const av = sanitizeAvatar(p.avatar);
           if (av) existing.avatar = av;
           await this.persistRoom();
-          const bodyView = this.roomView(current, now, p);
-          this.broadcast(bodyView);
+          const bodyView = this.roomView(current, now, p, existing.host);
+          this.broadcastRoomState(current, now);
           return new Response(
             JSON.stringify({
               ...bodyView,
@@ -3184,8 +4043,8 @@ export class JamRoomDO {
           };
           current.members.set(restored.token, restored);
           await this.persistRoom();
-          const bodyView = this.roomView(current, now, p);
-          this.broadcast(bodyView);
+          const bodyView = this.roomView(current, now, p, restored.host);
+          this.broadcastRoomState(current, now);
           return new Response(
             JSON.stringify({
               ...bodyView,
@@ -3200,6 +4059,14 @@ export class JamRoomDO {
 
         if (action === 'resume') {
           throw new JamError('Sua sessão expirou. Entre novamente.', 401, 'SESSION_EXPIRED');
+        }
+        if (current.requireApproval) {
+          throw new JamError(
+            'Esta JAM exige aprovação do anfitrião. Solicite entrada para participar.',
+            403,
+            'APPROVAL_REQUIRED',
+            previewFromRoom(current, now),
+          );
         }
         if (current.locked) {
           throw new JamError(
@@ -3232,8 +4099,8 @@ export class JamRoomDO {
         };
         current.members.set(guest.token, guest);
         await this.persistRoom();
-        const bodyView = this.roomView(current, now, p);
-        this.broadcast(bodyView);
+        const bodyView = this.roomView(current, now, p, false);
+        this.broadcastRoomState(current, now);
         return new Response(
           JSON.stringify({
             ...bodyView,
@@ -3281,7 +4148,7 @@ export class JamRoomDO {
         } else {
           current.members.delete(member.token);
           this.closeToken(member.token);
-          this.broadcast(this.roomView(current, now));
+          this.broadcastRoomState(current, now);
         }
         await this.persistRoom();
         return new Response(JSON.stringify({ closed: member.host, serverTime: now }), {
@@ -3295,14 +4162,34 @@ export class JamRoomDO {
           throw new JamError('Somente o anfitrião pode alterar as opções da JAM.', 403, 'FORBIDDEN');
         }
         this.verifyReplay(p, now, action);
-        if (typeof p.roomName === 'string') {
-          current.roomName = safeRoomName(p.roomName, member.name);
-        }
-        if (typeof p.locked === 'boolean') current.locked = p.locked;
-        if (typeof p.requireAuth === 'boolean') current.requireAuth = requireAuthGlobal || p.requireAuth;
+        applyRoomUpdate(current, member, p, requireAuthGlobal);
         await this.persistRoom();
-        const viewBody = this.roomView(current, now, p);
-        this.broadcast(viewBody);
+        const viewBody = this.roomView(current, now, p, member.host);
+        this.broadcastRoomState(current, now);
+        return new Response(JSON.stringify(viewBody), { status: 200, headers });
+      }
+
+      if (action === 'approveJoin') {
+        if (!member.host) {
+          throw new JamError('Somente o anfitrião pode aprovar participantes.', 403, 'FORBIDDEN');
+        }
+        this.verifyReplay(p, now, action);
+        handleApproveJoin(current, member, p, now);
+        await this.persistRoom();
+        const viewBody = this.roomView(current, now, p, member.host);
+        this.broadcastRoomState(current, now);
+        return new Response(JSON.stringify(viewBody), { status: 200, headers });
+      }
+
+      if (action === 'rejectJoin') {
+        if (!member.host) {
+          throw new JamError('Somente o anfitrião pode recusar participantes.', 403, 'FORBIDDEN');
+        }
+        this.verifyReplay(p, now, action);
+        handleRejectJoin(current, member, p, now);
+        await this.persistRoom();
+        const viewBody = this.roomView(current, now, p, member.host);
+        this.broadcastRoomState(current, now);
         return new Response(JSON.stringify(viewBody), { status: 200, headers });
       }
 
@@ -3323,8 +4210,33 @@ export class JamRoomDO {
         if (target.userId) current.kickedKeys.add(`uid:${target.userId}`);
         this.closeToken(target.token, 'Você foi removido desta JAM pelo anfitrião.');
         await this.persistRoom();
-        const viewBody = this.roomView(current, now, p);
-        this.broadcast(viewBody);
+        const viewBody = this.roomView(current, now, p, member.host);
+        this.broadcastRoomState(current, now);
+        return new Response(JSON.stringify(viewBody), { status: 200, headers });
+      }
+
+      if (action === 'blockMember') {
+        if (!member.host) {
+          throw new JamError('Somente o anfitrião pode bloquear participantes.', 403, 'FORBIDDEN');
+        }
+        this.verifyReplay(p, now, action);
+        const target = handleBlockMember(current, member, p, now);
+        this.closeToken(target.token, 'Você foi bloqueado nesta JAM pelo anfitrião.');
+        await this.persistRoom();
+        const viewBody = this.roomView(current, now, p, member.host);
+        this.broadcastRoomState(current, now);
+        return new Response(JSON.stringify(viewBody), { status: 200, headers });
+      }
+
+      if (action === 'unblockMember') {
+        if (!member.host) {
+          throw new JamError('Somente o anfitrião pode desbloquear participantes.', 403, 'FORBIDDEN');
+        }
+        this.verifyReplay(p, now, action);
+        handleUnblockMember(current, member, p);
+        await this.persistRoom();
+        const viewBody = this.roomView(current, now, p, member.host);
+        this.broadcastRoomState(current, now, true);
         return new Response(JSON.stringify(viewBody), { status: 200, headers });
       }
 
@@ -3369,8 +4281,8 @@ export class JamRoomDO {
       }
       const isMutation = action !== 'poll';
       if (isMutation) await this.persistRoom();
-      const viewBody = this.roomView(current, now, p);
-      if (isMutation) this.broadcast(viewBody);
+      const viewBody = this.roomView(current, now, p, member.host);
+      if (isMutation) this.broadcastRoomState(current, now);
       return new Response(JSON.stringify(viewBody), { status: 200, headers });
     } catch (error) {
       const status = error instanceof JamError ? error.status : 500;
@@ -3483,7 +4395,7 @@ export async function handleCloudflareJamFetch(request: Request, env: CfJamEnv):
   const ip = cfClientAddress(request);
   const now = Date.now();
   try {
-    if (url.pathname === '/.well-known/jwks.json' || url.pathname.startsWith('/v1/auth/')) {
+    if (isBrokerAuthOrSocialPath(url.pathname)) {
       consumeCfRate(workerRates, `ip:${ip}:auth`, 120, now);
       const headers = new Headers(request.headers);
       headers.set('X-Liquid-Client-IP', ip);
@@ -3593,8 +4505,8 @@ export async function handleCloudflareJamFetch(request: Request, env: CfJamEnv):
       const cloned = await readCfJson(request);
       assertNoUnknownKeys(cloned, ALLOWED_REQUEST_KEYS, 'Solicitação JAM');
       const action = String(cloned.action || '');
-      const entry = ['create', 'join', 'resume'].includes(action);
-      const isLookup = action === 'lookup';
+      const entry = ['create', 'join', 'resume', 'requestJoin'].includes(action);
+      const isLookup = ['lookup', 'checkJoinRequest', 'cancelJoinRequest'].includes(action);
       consumeCfRate(
         workerRates,
         `ip:${ip}:${entry ? 'entry' : isLookup ? 'lookup' : 'active'}`,

@@ -5,8 +5,8 @@ import {
   Library,
   Heart,
   History,
+  Download,
   Settings,
-  AudioLines,
   Play,
   Plus,
   ListPlus,
@@ -16,16 +16,20 @@ import {
   PanelLeftOpen,
   Radio,
   UserRound,
+  ExternalLink,
 } from 'lucide-react';
 import { motion } from 'motion/react';
+import { MOTION_DURATION, motionTransition } from '../../lib/motion';
 import { useApp, type Page } from '../../stores/app';
 import { useAccounts } from '../../stores/accounts';
 import { useJam } from '../jam/state';
+import { openJamWindow } from '../../lib/jamWindow';
 import { IconButton } from '../glass/controls';
 import { GlassContextMenu, GlassSidebar } from '../glass/materials';
 import { useOptics } from '../glass/v3/OpticalEngine';
 import Cover from '../glass/Cover';
 import PlaylistCover from '../library/PlaylistCover';
+import { LiquidHubLogo } from '../brand/LiquidHubLogo';
 import { warmTrack, cancelWarmTrack } from '../../lib/playback';
 
 const nav = [
@@ -35,6 +39,7 @@ const nav = [
   ['library', 'Biblioteca', Library],
   ['likes', 'Curtidas', Heart],
   ['history', 'Histórico', History],
+  ['downloads', 'Downloads', Download],
   ['settings', 'Configurações', Settings],
 ] as const;
 
@@ -42,6 +47,12 @@ export default function Sidebar() {
   const page = useApp(s => s.page),
     data = useApp(s => s.data),
     setPage = useApp(s => s.setPage),
+    activeDownloadsCount = useApp(
+      s =>
+        Object.values(s.downloadItems).filter(
+          item => item.status === 'downloading' || item.status === 'queued',
+        ).length || s.downloadingIds.length,
+    ),
     jamSession = useJam(s => s.session),
     jamConnected = useJam(s => s.connected),
     jamMembersCount = useJam(s => s.room?.members.length ?? (s.session ? 1 : 0)),
@@ -64,7 +75,7 @@ export default function Sidebar() {
           aria-label="Liquid Hub início"
         >
           <span className="brand-mark">
-            <AudioLines size={16} />
+            <LiquidHubLogo size={22} />
           </span>
           <span>Liquid Hub</span>
         </button>
@@ -93,13 +104,17 @@ export default function Sidebar() {
                 layoutId="navigation-capsule"
                 transition={{
                   type: 'tween',
-                  duration: reduced ? 0 : 0.25,
-                  ease: [0.22, 1, 0.36, 1],
+                  ...motionTransition(reduced, MOTION_DURATION.panel),
                 }}
               />
             )}
             <Icon size={16} />
             <span>{label}</span>
+            {id === 'downloads' && activeDownloadsCount > 0 && (
+              <span className="nav-item-badge" aria-label={`${activeDownloadsCount} download(s) ativo(s)`}>
+                {activeDownloadsCount}
+              </span>
+            )}
           </button>
         ))}
       </nav>
@@ -111,10 +126,7 @@ export default function Sidebar() {
           aria-label={`JAM ao vivo com ${jamMembersCount} ouvinte(s)`}
           title={`Sala ${jamSession.code} · ${jamMembersCount} ouvinte(s)`}
           onClick={() => {
-            setPage('settings');
-            setTimeout(() => {
-              document.getElementById('jam-section')?.scrollIntoView({ behavior: 'smooth' });
-            }, 60);
+            void openJamWindow();
           }}
         >
           <span className="jam-pulse-dot" aria-hidden="true" />
@@ -138,9 +150,15 @@ export default function Sidebar() {
               action: () => useApp.getState().setDialog({ type: 'playlist' }),
             },
             {
-              label: jamSession ? 'Convite da JAM' : 'Nova JAM',
+              label: jamSession ? 'Abrir janela da JAM' : 'Nova JAM',
               icon: <Radio size={15} />,
-              action: () => useApp.getState().setDialog({ type: 'jam' }),
+              action: () => {
+                if (jamSession) {
+                  void openJamWindow();
+                } else {
+                  useApp.getState().setDialog({ type: 'jam' });
+                }
+              },
             },
             {
               label: 'Importar por link',
@@ -221,6 +239,7 @@ export default function Sidebar() {
           className="nav-item sidebar-account-btn"
           onClick={() => {
             if (hub.authenticated) {
+              useApp.getState().setSettingsTab('account');
               setPage('settings');
               setTimeout(() => {
                 document.getElementById('hub-account-section')?.scrollIntoView({ behavior: 'smooth' });
@@ -248,6 +267,15 @@ export default function Sidebar() {
             </>
           )}
         </button>
+        {hub.authenticated && hub.publicHandle && !settings.sidebarCompact && (
+          <IconButton
+            label={`Abrir perfil @${hub.publicHandle}`}
+            className={`sidebar-profile-link ${page === `profile:${hub.publicHandle}` ? 'selected' : ''}`}
+            onClick={() => setPage(`profile:${hub.publicHandle}`)}
+          >
+            <ExternalLink size={14} />
+          </IconButton>
+        )}
       </div>
     </GlassSidebar>
   );

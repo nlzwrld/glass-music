@@ -1,8 +1,10 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import { MotionConfig, motion } from 'motion/react';
-import { Minus, Square, X, AudioLines } from 'lucide-react';
+import { AnimatePresence, MotionConfig, motion } from 'motion/react';
+import { Minus, Square, X } from 'lucide-react';
+import { LiquidHubLogo } from '../components/brand/LiquidHubLogo';
 import { purgeSensitiveWebStorage } from '../../shared/validation';
 import { repairArtwork } from '../lib/artwork';
+import { MOTION_DURATION, MOTION_EASE, pageMotion, toastMotion, useReducedUI } from '../lib/motion';
 import { useApp } from '../stores/app';
 import Sidebar from '../components/sidebar/Sidebar';
 import Player, { ExpandedPlayer, Queue, SidePlayer } from '../components/player/Player';
@@ -12,6 +14,11 @@ import Dialogs from '../components/glass/Dialogs';
 import Cover from '../components/glass/Cover';
 import Home from '../pages/Home';
 import { AutoUpdates } from '../lib/updates';
+import { useAndroidBetaLifecycle } from '../lib/androidBeta';
+import { MandatoryUpdateModal } from '../components/glass/MandatoryUpdateModal';
+import { VisitorVisualAdBanner } from '../components/glass/VisitorVisualAdBanner';
+import { MobileBottomNav } from '../components/mobile/MobileBottomNav';
+import { JamWindowBridge } from '../lib/jamWindow';
 import { LyricsWindowBridge } from '../lib/lyricsWindow';
 import { JamEngine } from '../components/jam/JamEngine';
 import { JamInviteModal } from '../components/jam/JamInviteModal';
@@ -19,6 +26,7 @@ import { AuthModal } from '../components/auth/AuthModal';
 import { useAccounts, autoSyncAccounts } from '../stores/accounts';
 import { useJam } from '../components/jam/state';
 import { parseJamInvite } from '../lib/jam';
+import { parseLiquidHubLink } from '../lib/playlist';
 import { getCurrent, onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import Lyrics from '../components/player/Lyrics';
 import Welcome from '../components/glass/Welcome';
@@ -29,7 +37,10 @@ const Explore = lazy(() => import('../pages/Explore'));
 const Search = lazy(() => import('../pages/Search'));
 const Library = lazy(() => import('../pages/Library'));
 const Collection = lazy(() => import('../pages/Collection'));
+const Downloads = lazy(() => import('../pages/Downloads'));
 const Settings = lazy(() => import('../pages/Settings'));
+const UserProfile = lazy(() => import('../pages/UserProfile'));
+const SharedPlaylist = lazy(() => import('../pages/SharedPlaylist'));
 
 export default function App() {
   const ready = useApp(s => s.ready),
@@ -40,15 +51,20 @@ export default function App() {
     track = useApp(s => s.queue[s.index]),
     expanded = useApp(s => s.expanded),
     hub = useAccounts(s => s.hub),
-    hubHydrated = useAccounts(s => s.hubHydrated);
+    hubHydrated = useAccounts(s => s.hubHydrated),
+    visitorMode = useAccounts(s => s.visitorMode);
+  const { isMobile } = useAndroidBetaLifecycle();
   const lockedByAuth =
-    ready && p.onboardingDone && (!hubHydrated || !hub.authenticated || Boolean(hub.needsTermsAcceptance));
+    ready &&
+    p.onboardingDone &&
+    (!hubHydrated || ((!hub.authenticated || Boolean(hub.needsTermsAcceptance)) && !visitorMode));
   const searchInput = useRef<HTMLInputElement>(null);
   const [systemLight, setSystemLight] = useState(
     matchMedia('(prefers-color-scheme: light)').matches,
   );
   const artworkTracks = useApp(s => s.data.tracks);
   const queuedDeepLink = useRef('');
+  const uiReduced = useReducedUI();
 
   useEffect(() => {
     let disposed = false;
@@ -59,8 +75,24 @@ export default function App() {
       return pInvite.result?.preview?.code || parseJamInvite(pInvite.raw).code;
     };
     const openOrQueue = (url: string) => {
+      if (disposed) return;
+      const hubLink = parseLiquidHubLink(url);
+      if (hubLink) {
+        if (!useApp.getState().ready) {
+          queuedDeepLink.current = url;
+          return;
+        }
+        useApp
+          .getState()
+          .setPage(
+            hubLink.kind === 'profile'
+              ? `profile:${hubLink.handle}`
+              : `shared-playlist:${hubLink.shareId}`,
+          );
+        return;
+      }
       const parsed = parseJamInvite(url);
-      if (!parsed.code || disposed) return;
+      if (!parsed.code) return;
       if (!useApp.getState().ready) {
         queuedDeepLink.current = url;
         return;
@@ -69,8 +101,12 @@ export default function App() {
       void useJam.getState().openInviteModal(url);
     };
     const receive = (urls: string[]) => {
-      const invite = urls.find(url => url.startsWith('liquidhub://') && parseJamInvite(url).code);
-      if (invite) openOrQueue(invite);
+      const target = urls.find(
+        url =>
+          parseLiquidHubLink(url) !== null ||
+          (url.startsWith('liquidhub://') && !!parseJamInvite(url).code),
+      );
+      if (target) openOrQueue(target);
     };
     void (async () => {
       try {
@@ -90,6 +126,17 @@ export default function App() {
     if (!ready || !queuedDeepLink.current) return;
     const queued = queuedDeepLink.current;
     queuedDeepLink.current = '';
+    const hubLink = parseLiquidHubLink(queued);
+    if (hubLink) {
+      useApp
+        .getState()
+        .setPage(
+          hubLink.kind === 'profile'
+            ? `profile:${hubLink.handle}`
+            : `shared-playlist:${hubLink.shareId}`,
+        );
+      return;
+    }
     const parsed = parseJamInvite(queued);
     const pInvite = useJam.getState().pendingInvite;
     const currentCode = pInvite
@@ -103,6 +150,13 @@ export default function App() {
   useEffect(() => {
     purgeSensitiveWebStorage();
     void useApp.getState().boot();
+    const offDownloadProgress =
+      typeof window.glass?.onDownloadProgress === 'function'
+        ? window.glass.onDownloadProgress(ev => useApp.getState().applyDownloadProgress(ev))
+        : undefined;
+    return () => {
+      offDownloadProgress?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -176,15 +230,17 @@ export default function App() {
   if (!window.glass) {
     return (
       <div className="boot-screen">
-        <AudioLines size={28} />
+        <LiquidHubLogo size={38} />
         <h1>Liquid Hub</h1>
         <p>Execute o aplicativo desktop.</p>
       </div>
     );
   }
-  const isMatte = (p.uiStyle ?? 'matte') === 'matte';
   return (
-    <MotionConfig reducedMotion={p.reducedMotion || p.performance || isMatte ? 'always' : 'user'}>
+    <MotionConfig
+      reducedMotion={uiReduced ? 'always' : 'user'}
+      transition={{ duration: uiReduced ? 0 : MOTION_DURATION.base, ease: MOTION_EASE.standard }}
+    >
       <GlassWindow
         className={`${mini ? 'mini' : ''} ${external ? 'has-external' : ''} ${expanded ? 'is-expanded' : ''} ${collapsed ? 'sidebar-collapsed' : ''} ${sideOpen ? 'side-open' : ''}`}
       >
@@ -235,16 +291,12 @@ export default function App() {
                 <div className="main-shell">
                   <GlassSearch inputRef={searchInput} />
                   <AutoUpdates />
+                  <VisitorVisualAdBanner />
                   <main className="main-scroll">
                     <Suspense fallback={<div className="loading-page">Carregando…</div>}>
                       <motion.div
                         key={page}
-                        initial={{ opacity: p.reducedMotion || p.performance || isMatte ? 1 : 0, y: 0 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{
-                          duration: p.reducedMotion || p.performance || isMatte ? 0 : 0.2,
-                          ease: [0.22, 1, 0.36, 1],
-                        }}
+                        {...pageMotion(uiReduced)}
                       >
                         {!ready ? (
                           <div className="loading-page">Carregando…</div>
@@ -256,8 +308,14 @@ export default function App() {
                           <Search />
                         ) : page === 'collection' ? (
                           <Collection />
+                        ) : page === 'downloads' ? (
+                          <Downloads />
                         ) : page === 'settings' ? (
                           <Settings />
+                        ) : page.startsWith('profile:') ? (
+                          <UserProfile key={page} handle={page.slice('profile:'.length)} />
+                        ) : page.startsWith('shared-playlist:') ? (
+                          <SharedPlaylist key={page} shareId={page.slice('shared-playlist:'.length)} />
                         ) : (
                           <Library key={page} />
                         )}
@@ -273,6 +331,7 @@ export default function App() {
                 <p>{track?.artist || ''}</p>
               </div>
               <LyricsWindowBridge />
+              <JamWindowBridge />
               <JamEngine />
               <JamInviteModal />
               <AuthModal />
@@ -280,22 +339,31 @@ export default function App() {
               <Queue />
               <Lyrics />
               <Player />
+              {isMobile && <MobileBottomNav />}
               <Dialogs />
               <GlassLaboratory />
             </>
           )}
+          <MandatoryUpdateModal />
           <Welcome />
-          {toast && (
-            <div className="toast glass" role="status">
-              <span>{toast}</span>
-              <button
-                aria-label="Fechar notificação"
-                onClick={() => useApp.setState({ toast: '' })}
+          <AnimatePresence>
+            {toast && (
+              <motion.div
+                key="app-toast"
+                className="toast glass"
+                role="status"
+                {...toastMotion(uiReduced)}
               >
-                <X size={14} />
-              </button>
-            </div>
-          )}
+                <span>{toast}</span>
+                <button
+                  aria-label="Fechar notificação"
+                  onClick={() => useApp.setState({ toast: '' })}
+                >
+                  <X size={14} />
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </OpticalEngine>
       </GlassWindow>
     </MotionConfig>

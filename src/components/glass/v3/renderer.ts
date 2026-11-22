@@ -1,5 +1,5 @@
 import { VERTEX_SHADER, FRAGMENT_SHADER } from './vendor/shaders';
-import { crystals, type Crystal, type OpticalSettings } from './model';
+import { MAX_WEBGL_SURFACES, crystals, type Crystal, type OpticalSettings } from './model';
 import { surfaceClip } from './clipping';
 
 /** A single context for all persistent surfaces. The source is the live scene
@@ -38,7 +38,9 @@ export class CrystalRenderer {
     gl.uniform1i(this.u('u_bg'),0);gl.uniform2f(this.u('u_canvasSize'),source.width,source.height);gl.uniform1f(this.u('u_dpr'),dpr);
     gl.enable(gl.BLEND);gl.blendFunc(gl.ONE,gl.ONE_MINUS_SRC_ALPHA);
     const origin=root.getBoundingClientRect();
-    const surfaces=Array.from(root.querySelectorAll<HTMLElement>('[data-optic="webgl"],[data-optic="auto"]'));
+    const allSurfaces=Array.from(root.querySelectorAll<HTMLElement>('[data-optic="webgl"],[data-optic="auto"]'));
+    const prioritySelector='.sidebar,.player,.global-search,.expanded-player,.queue-panel,.modal,[data-window-material]';
+    const surfaces=allSurfaces.length<=MAX_WEBGL_SURFACES?allSurfaces:[...allSurfaces.filter(el=>el.matches(prioritySelector)),...allSurfaces.filter(el=>!el.matches(prioritySelector))].slice(0,MAX_WEBGL_SURFACES);
     gl.enable(gl.SCISSOR_TEST);
     for(const el of surfaces){
       if(lab!==!!el.closest('.glass-laboratory'))continue;

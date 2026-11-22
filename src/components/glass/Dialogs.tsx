@@ -1,11 +1,15 @@
 import { Input } from '../ui/input';
 import { useEffect, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import { X, ListMusic, Plus, LoaderCircle, Check, Sparkles } from 'lucide-react';
 import { useApp, cleanError, formatTime } from '../../stores/app';
+import { backdropMotion, modalMotion, useReducedUI } from '../../lib/motion';
 import { invalidatePlayback } from '../../lib/playback';
 import type { StreamCandidate, Track } from '../../../shared/types';
 import { CreateJamDialog } from '../jam/CreateJamDialog';
 import { IconButton, SourceBadge } from './controls';
+import { inspectMusicLink } from '../../lib/playlist';
+import { PlaylistShareModal } from '../library/PlaylistShareModal';
 
 function StreamSourcePicker({
   track,
@@ -138,11 +142,13 @@ export default function Dialogs() {
     [busy, setBusy] = useState(false),
     [error, setError] = useState('');
   const box = useRef<HTMLDivElement>(null);
+  const reduced = useReducedUI();
 
   useEffect(() => {
     setValue(dialog?.type === 'playlist' ? dialog.name || '' : '');
     setError('');
     setBusy(false);
+    if (!dialog) return;
     const prev = document.activeElement as HTMLElement;
     setTimeout(() => box.current?.querySelector<HTMLElement>('input,button')?.focus(), 0);
     return () => prev?.focus();
@@ -154,7 +160,7 @@ export default function Dialogs() {
       if (e.key === 'Escape' && !busy) useApp.getState().setDialog(null);
       if (e.key === 'Tab') {
         const nodes = box.current?.querySelectorAll<HTMLElement>(
-          'button:not([disabled]),input:not([disabled]),a[href]',
+          'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href]',
         );
         if (!nodes?.length) return;
         const first = nodes[0],
@@ -172,7 +178,6 @@ export default function Dialogs() {
     return () => window.removeEventListener('keydown', key);
   }, [dialog, busy]);
 
-  if (!dialog) return null;
   const close = () => {
     if (!busy) useApp.getState().setDialog(null);
   };
@@ -191,14 +196,23 @@ export default function Dialogs() {
   };
 
   return (
-    <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && close()}>
-      <div
-        ref={box}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="dialog-title"
-        className="modal glass"
-      >
+    <AnimatePresence>
+      {dialog && (
+        <motion.div
+          key="dialog-backdrop"
+          className="modal-backdrop"
+          onMouseDown={e => e.target === e.currentTarget && close()}
+          {...backdropMotion(reduced)}
+        >
+          <motion.div
+            key="dialog-panel"
+            ref={box}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dialog-title"
+            className="modal glass"
+            {...modalMotion(reduced)}
+          >
         <IconButton
           label="Fechar diálogo"
           disabled={busy}
@@ -412,13 +426,39 @@ export default function Dialogs() {
                     placeholder={
                       dialog.playlist
                         ? 'https://open.spotify.com/playlist/…'
-                        : 'https://open.spotify.com/track/…'
+                        : 'https://open.spotify.com/track/… ou spotify:track:…'
                     }
-                    type="url"
+                    type="text"
+                    inputMode="url"
                     maxLength={2048}
                     required
                   />
                 </label>
+                {value.trim() &&
+                  (() => {
+                    const inspection = inspectMusicLink(value, Boolean(dialog.playlist));
+                    const kindLabel: Record<string, string> = {
+                      track: 'Faixa',
+                      album: 'Álbum',
+                      playlist: 'Playlist',
+                      artist: 'Artista',
+                    };
+                    if (inspection.provider && inspection.kind) {
+                      return (
+                        <div className="link-import-preview" role="status">
+                          <SourceBadge source={inspection.provider.id} />
+                          <span>{kindLabel[inspection.kind] || inspection.kind} detectada</span>
+                        </div>
+                      );
+                    }
+                    if (inspection.reason) {
+                      return <p className="fine-print">{inspection.reason}</p>;
+                    }
+                    return null;
+                  })()}
+                <p className="link-platforms-hint">
+                  Compatível com Spotify, YT Music, YouTube, SoundCloud, Deezer, Apple Music, Bandcamp e Tidal.
+                </p>
                 <div className="modal-actions">
                   {!dialog.playlist && (
                     <button
@@ -456,6 +496,10 @@ export default function Dialogs() {
 
         {dialog.type === 'jam' && <CreateJamDialog onClose={close} />}
 
+        {dialog.type === 'sharePlaylist' && (
+          <PlaylistShareModal playlistId={dialog.playlistId} onClose={close} />
+        )}
+
         {dialog.type === 'streamSource' && (
           <StreamSourcePicker
             track={dialog.track}
@@ -488,7 +532,9 @@ export default function Dialogs() {
             {error}
           </p>
         )}
-      </div>
-    </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }

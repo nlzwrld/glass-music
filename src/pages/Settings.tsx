@@ -1,12 +1,98 @@
 import { useEffect, useState } from 'react';
+import {
+  Bell,
+  Disc3,
+  HardDrive,
+  Info,
+  Palette,
+  Search,
+  Shield,
+  Sliders,
+  Sparkles,
+  UserRound,
+} from 'lucide-react';
 import Appearance from '../components/glass/Appearance';
-import { useApp, cleanError, setPreferencesFromUI } from '../stores/app';
-import { resolveNotificationMode, type NotificationMode } from '../../shared/types';
 import AccountConnections from '../components/library/AccountConnections';
+import { LiquidPlusSection } from '../components/library/LiquidPlusSection';
+import { LiquidHubLogo } from '../components/brand/LiquidHubLogo';
 import { Toggle } from '../components/glass/controls';
 import { audioOutputDevices, requestAudioOutput } from '../lib/audioGraph';
-import { JamSettings } from '../components/jam/JamSettings';
 import { useUpdateNotice } from '../lib/updates';
+import {
+  useApp,
+  cleanError,
+  setPreferencesFromUI,
+  type SettingsCategory,
+} from '../stores/app';
+import {
+  resolveNotificationMode,
+  type NotificationMode,
+  type ShuffleMode,
+} from '../../shared/types';
+
+interface CategoryMeta {
+  id: SettingsCategory;
+  label: string;
+  keywords: string;
+  Icon: typeof UserRound;
+}
+
+const SETTINGS_CATEGORIES: readonly CategoryMeta[] = [
+  {
+    id: 'account',
+    label: 'Conta',
+    keywords: 'conta perfil nickname handle bio links login oauth google discord github',
+    Icon: UserRound,
+  },
+  {
+    id: 'appearance',
+    label: 'Aparência',
+    keywords: 'aparencia tema escuro claro liquid glass vidro fosco cor escala animacoes',
+    Icon: Palette,
+  },
+  {
+    id: 'playback',
+    label: 'Reprodução',
+    keywords: 'reproducao transicao fade crossfade autoplay aleatorio smart shuffle descobertas',
+    Icon: Disc3,
+  },
+  {
+    id: 'audio',
+    label: 'Áudio',
+    keywords: 'audio volume booster limiter equalizador eq graves voz saida dispositivo som',
+    Icon: Sliders,
+  },
+  {
+    id: 'notifications',
+    label: 'Notificações e Sistema',
+    keywords: 'notificacoes sistema bandeja tray teclas multimidia windows startup',
+    Icon: Bell,
+  },
+  {
+    id: 'privacy',
+    label: 'Privacidade',
+    keywords: 'privacidade acesso online catalogo termos cofre dpapi seguranca',
+    Icon: Shield,
+  },
+  {
+    id: 'storage',
+    label: 'Armazenamento',
+    keywords: 'armazenamento biblioteca exportar importar cache backup downloads',
+    Icon: HardDrive,
+  },
+  {
+    id: 'plus',
+    label: 'Liquid Plus',
+    keywords: 'liquid plus assinatura beneficios planos anuncios visual temas',
+    Icon: Sparkles,
+  },
+  {
+    id: 'about',
+    label: 'Sobre e Marca',
+    keywords: 'sobre versao atualizacao update nova logo identidade marca splash android',
+    Icon: Info,
+  },
+];
 
 function AudioSettings() {
   const p = useApp(s => s.data.preferences),
@@ -27,7 +113,7 @@ function AudioSettings() {
   const preset = (eq: number[]) => prefUI({ eq });
 
   return (
-    <section className="settings-section">
+    <section className="settings-section" aria-label="Áudio">
       <h2>Áudio</h2>
       <label className="setting-row">
         <strong>Volume</strong>
@@ -119,7 +205,7 @@ function AudioSettings() {
             value={p.outputDevice}
             onChange={e => prefUI({ outputDevice: e.target.value })}
           >
-            <option value="default">Padrão do Windows</option>
+            <option value="default">Padrão do sistema</option>
             {devices
               .filter(d => d.deviceId !== 'default' && d.deviceId)
               .map((d, i) => (
@@ -147,205 +233,469 @@ function AudioSettings() {
   );
 }
 
-function OfflineSettings() {
-  const allTracks = useApp(s => s.data.tracks);
-  const tracks = allTracks.filter(t => t.offline);
+function BrandPreviewGallery() {
   return (
-    <section className="settings-section">
-      <h2>Downloads</h2>
-      <p className="fine-print">{tracks.length} faixas salvas neste computador</p>
-      {tracks.map(t => (
-        <div className="setting-row" key={t.id}>
-          <span>
-            <strong>{t.title}</strong>
-            <small>{t.artist}</small>
-          </span>
-          <button
-            className="button secondary"
-            onClick={() =>
-              void window.glass
-                .removeOffline(t.id)
-                .then(data => useApp.setState({ data }))
-                .catch(e => useApp.getState().message(cleanError(e)))
-            }
-          >
-            Remover
-          </button>
+    <section className="settings-section brand-preview-section" aria-label="Nova identidade visual">
+      <h2>Propostas da Nova Logo Liquid Hub</h2>
+      <p className="subtle">
+        Conceito de gota em vidro líquido com fones modernos em alta legibilidade. Prévias preparadas para desktop, Android, splash screen e instalador antes da substituição dos binários finais.
+      </p>
+
+      <div className="brand-preview-grid">
+        <div className="brand-preview-card is-dark">
+          <div className="brand-preview-stage">
+            <img src="/brand/liquid-hub-dark.svg" alt="Logo Liquid Hub variante escura" width={64} height={64} />
+          </div>
+          <strong>Desktop Escura</strong>
+          <small>Ícone principal e barra escura</small>
         </div>
-      ))}
+
+        <div className="brand-preview-card is-light">
+          <div className="brand-preview-stage">
+            <img src="/brand/liquid-hub-light.svg" alt="Logo Liquid Hub variante clara" width={64} height={64} />
+          </div>
+          <strong>Variante Clara</strong>
+          <small>Fundos claros e contraste alto</small>
+        </div>
+
+        <div className="brand-preview-card">
+          <div className="brand-preview-stage">
+            <img src="/brand/liquid-hub-mono.svg" alt="Logo Liquid Hub monocromática" width={64} height={64} />
+          </div>
+          <strong>Monocromática</strong>
+          <small>Bandeja do sistema e notificação</small>
+        </div>
+
+        <div className="brand-preview-card">
+          <div className="brand-preview-stage">
+            <img
+              src="/brand/liquid-hub-android-adaptive.svg"
+              alt="Logo Liquid Hub Android adaptativa"
+              width={64}
+              height={64}
+              style={{ borderRadius: '50%' }}
+            />
+          </div>
+          <strong>Android Adaptativo</strong>
+          <small>Zona segura 108dp</small>
+        </div>
+
+        <div className="brand-preview-card">
+          <div className="brand-preview-stage">
+            <LiquidHubLogo size={54} variant="adaptive" />
+          </div>
+          <strong>Vetor Dinâmico (UI)</strong>
+          <small>Emblema vetorial usado no app</small>
+        </div>
+      </div>
+
+      <div className="brand-splash-preview">
+        <img
+          src="/brand/liquid-hub-splash.svg"
+          alt="Prévia Splash Screen e Instalador Liquid Hub"
+        />
+        <small className="subtle">
+          Prévia horizontal para Splash Screen, tela de boas-vindas e instalador.
+        </small>
+      </div>
     </section>
   );
 }
 
 export default function Settings() {
   const p = useApp(s => s.data.preferences),
+    tracksCount = useApp(s => s.data.tracks.length),
+    playlistsCount = useApp(s => s.data.playlists.length),
+    savedCount = useApp(s => s.data.tracks.filter(t => t.offline).length),
     integration = useApp(s => s.integrations),
+    activeTab = useApp(s => s.settingsTab),
+    setActiveTab = useApp(s => s.setSettingsTab),
     prefUI = setPreferencesFromUI;
   const [busy, setBusy] = useState(false),
-    [message, setMessage] = useState('');
+    [message, setMessage] = useState(''),
+    [filter, setFilter] = useState('');
+
+  const q = filter.trim().toLocaleLowerCase('pt-BR');
+  const matchingTabs = q
+    ? SETTINGS_CATEGORIES.filter(
+        c =>
+          c.label.toLocaleLowerCase('pt-BR').includes(q) ||
+          c.keywords.toLocaleLowerCase('pt-BR').includes(q),
+      )
+    : SETTINGS_CATEGORIES;
+
+  const showCategory = (id: SettingsCategory) =>
+    q ? matchingTabs.some(c => c.id === id) : true;
 
   return (
-    <div className="settings-page">
-      <div className="page-heading">
-        <h1>Configurações</h1>
-        {integration?.version && <span className="version-pill">v{integration.version}</span>}
+    <div className="settings-page settings-shell">
+      <div className="page-heading settings-header-row">
+        <div className="heading-title-group">
+          <h1>Configurações</h1>
+          {integration?.version && <span className="version-pill">v{integration.version}</span>}
+        </div>
+        <label className="library-search settings-filter">
+          <Search size={14} />
+          <input
+            aria-label="Filtrar configurações"
+            placeholder="Filtrar configurações…"
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+          />
+        </label>
       </div>
 
-      <Appearance />
+      <div className="settings-layout">
+        <nav className="settings-tabs" aria-label="Categorias de configurações">
+          {SETTINGS_CATEGORIES.map(({ id, label, Icon }) => {
+            const isSelected = !q && activeTab === id;
+            const isMatched = Boolean(q && matchingTabs.some(m => m.id === id));
+            return (
+              <button
+                key={id}
+                type="button"
+                aria-current={isSelected ? 'page' : undefined}
+                className={`settings-tab-btn ${isSelected ? 'selected' : ''} ${isMatched ? 'matched' : ''}`}
+                onClick={() => {
+                  setFilter('');
+                  setActiveTab(id);
+                  document
+                    .getElementById(`settings-cat-${id}`)
+                    ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }}
+              >
+                <Icon size={16} />
+                <span>{label}</span>
+              </button>
+            );
+          })}
+        </nav>
 
-      <AudioSettings />
+        <div className="settings-content">
+          {q && matchingTabs.length === 0 && (
+            <div className="empty-state">
+              <Search size={20} />
+              <h3>Nenhuma configuração encontrada</h3>
+              <p>Limpe o filtro para visualizar todas as categorias.</p>
+            </div>
+          )}
 
-      <section className="settings-section">
-        <h2>Reprodução</h2>
-        <label className="setting-row">
-          <strong>Transição entre músicas</strong>
-          <select
-            aria-label="Transição entre músicas"
-            value={p.transition}
-            onChange={e => prefUI({ transition: e.target.value as typeof p.transition })}
-          >
-            <option value="off">Sem transição</option>
-            <option value="fade">Fade suave</option>
-            <option value="crossfade">Crossfade</option>
-          </select>
-        </label>
-        {p.transition !== 'off' && (
-          <label className="setting-row">
-            <strong>Duração da transição</strong>
-            <span className="setting-range">
-              <input
-                aria-label="Duração da transição"
-                type="range"
-                min={0.5}
-                max={10}
-                step={0.5}
-                value={p.transitionSeconds}
-                style={
-                  {
-                    '--progress': `${((p.transitionSeconds - 0.5) / 9.5) * 100}%`,
-                  } as React.CSSProperties
-                }
-                onChange={e => prefUI({ transitionSeconds: Number(e.target.value) })}
+          {showCategory('account') && <AccountConnections />}
+
+          {showCategory('appearance') && <Appearance />}
+
+          {showCategory('playback') && (
+            <section className="settings-section" aria-label="Reprodução">
+              <h2>Reprodução</h2>
+              <label className="setting-row">
+                <strong>Transição entre músicas</strong>
+                <select
+                  aria-label="Transição entre músicas"
+                  value={p.transition}
+                  onChange={e => prefUI({ transition: e.target.value as typeof p.transition })}
+                >
+                  <option value="off">Sem transição</option>
+                  <option value="fade">Fade suave</option>
+                  <option value="crossfade">Crossfade</option>
+                </select>
+              </label>
+              {p.transition !== 'off' && (
+                <label className="setting-row">
+                  <strong>Duração da transição</strong>
+                  <span className="setting-range">
+                    <input
+                      aria-label="Duração da transição"
+                      type="range"
+                      min={0.5}
+                      max={10}
+                      step={0.5}
+                      value={p.transitionSeconds}
+                      style={
+                        {
+                          '--progress': `${((p.transitionSeconds - 0.5) / 9.5) * 100}%`,
+                        } as React.CSSProperties
+                      }
+                      onChange={e => prefUI({ transitionSeconds: Number(e.target.value) })}
+                    />
+                    <output>{p.transitionSeconds}s</output>
+                  </span>
+                </label>
+              )}
+              <Toggle
+                label="Continuar ouvindo automaticamente"
+                description="Reproduz faixas semelhantes ao terminar a fila"
+                checked={p.autoplay !== false}
+                onChange={autoplay => prefUI({ autoplay })}
               />
-              <output>{p.transitionSeconds}s</output>
-            </span>
-          </label>
-        )}
-        <Toggle
-          label="Continuar ouvindo automaticamente"
-          description="Reproduz faixas semelhantes ao terminar a fila"
-          checked={p.autoplay !== false}
-          onChange={autoplay => prefUI({ autoplay })}
-        />
-      </section>
+              <label className="setting-row">
+                <span>
+                  <strong>Modo do aleatório</strong>
+                  <small>Inteligente considera histórico recente, curtidas e diversidade musical</small>
+                </span>
+                <select
+                  aria-label="Modo do aleatório"
+                  value={p.shuffleMode ?? 'smart'}
+                  onChange={e => prefUI({ shuffleMode: e.target.value as ShuffleMode })}
+                >
+                  <option value="smart">Aleatório Inteligente</option>
+                  <option value="standard">Aleatório Tradicional</option>
+                </select>
+              </label>
+              <Toggle
+                label="Descobertas ocasionais no aleatório inteligente"
+                description="Intercala descobertas contextuais sem alterar suas playlists"
+                checked={!!p.smartShuffleDiscoveries}
+                onChange={smartShuffleDiscoveries => prefUI({ smartShuffleDiscoveries })}
+              />
+            </section>
+          )}
 
-      <OfflineSettings />
+          {showCategory('audio') && <AudioSettings />}
 
-      <section className="settings-section">
-        <JamSettings />
-      </section>
+          {showCategory('notifications') && (
+            <section className="settings-section" aria-label="Notificações e Sistema">
+              <h2>Notificações e Sistema</h2>
+              <label className="setting-row">
+                <span>
+                  <strong>Notificações ao trocar de faixa</strong>
+                  <small>Controles de mídia do sistema continuam ativos em tempo real</small>
+                </span>
+                <select
+                  aria-label="Notificações ao trocar de faixa"
+                  value={resolveNotificationMode(p)}
+                  onChange={e => {
+                    const mode = e.target.value as NotificationMode;
+                    prefUI({
+                      notificationMode: mode,
+                      notifications: mode !== 'off',
+                    });
+                  }}
+                >
+                  <option value="off">Desativado (Silencioso)</option>
+                  <option value="background">Apenas em segundo plano (Sem spam)</option>
+                  <option value="always">Sempre</option>
+                </select>
+              </label>
+              <Toggle
+                label="Teclas multimídia"
+                checked={p.globalShortcuts}
+                onChange={globalShortcuts => prefUI({ globalShortcuts })}
+              />
+              <Toggle
+                label="Fechar janela para a bandeja"
+                description="Minimizar ou recolher para a bandeja mantém a reprodução e a JAM ativas"
+                checked={p.tray}
+                onChange={v => prefUI({ tray: v })}
+              />
+              <Toggle
+                label="Iniciar com o Windows"
+                checked={p.startup}
+                onChange={v => prefUI({ startup: v })}
+              />
+            </section>
+          )}
 
-      <section className="settings-section" id="integrations">
-        <h2>Integrações</h2>
-        <Toggle
-          label="Acesso online"
-          checked={p.onlineConsent && p.catalogConsent}
-          onChange={v => prefUI({ onlineConsent: v, catalogConsent: v })}
-        />
-        <div className="settings-actions-row">
-          <button className="text-button" onClick={() => prefUI({ onboardingDone: false })}>
-            Termos e privacidade
-          </button>
+          {showCategory('privacy') && (
+            <section className="settings-section" id="settings-cat-privacy" aria-label="Privacidade">
+              <h2>Privacidade e Acesso Online</h2>
+              <Toggle
+                label="Acesso online"
+                description="Permite pesquisas remotas, descobertas, letras, perfis e sessões JAM"
+                checked={p.onlineConsent}
+                onChange={v => prefUI({ onlineConsent: v, catalogConsent: v })}
+              />
+              <div className="setting-row">
+                <span>
+                  <strong>Cofre de credenciais</strong>
+                  <small>Tokens sensíveis protegidos nativamente no dispositivo; nunca expostos em respostas públicas</small>
+                </span>
+                <span className="entity-badge entity-badge-user">Ativo</span>
+              </div>
+              <div className="settings-actions-row">
+                <button className="text-button" onClick={() => prefUI({ onboardingDone: false })}>
+                  Revisar Termos e Política de Privacidade
+                </button>
+              </div>
+            </section>
+          )}
+
+          {showCategory('storage') && (
+            <section className="settings-section" aria-label="Armazenamento">
+              <h2>Armazenamento e Biblioteca</h2>
+              <div className="setting-row">
+                <span>
+                  <strong>Resumo da biblioteca local</strong>
+                  <small>
+                    {playlistsCount} playlist(s) · {tracksCount} faixa(s) catalogada(s) · {savedCount} salva(s) para uso sem internet
+                  </small>
+                </span>
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={() => useApp.getState().setPage('downloads')}
+                >
+                  Abrir página de Downloads
+                </button>
+              </div>
+              <div className="settings-actions-row">
+                <button className="button secondary" onClick={() => void window.glass.exportLibrary()}>
+                  Exportar biblioteca
+                </button>
+                <button className="button secondary" onClick={() => void useApp.getState().importLibrary()}>
+                  Importar biblioteca
+                </button>
+                <button
+                  className="button secondary"
+                  onClick={() =>
+                    void window.glass
+                      .clearCache()
+                      .then(() => useApp.getState().message('Cache temporário limpo.'))
+                      .catch(e => useApp.getState().message(cleanError(e)))
+                  }
+                >
+                  Limpar cache de capas e buscas
+                </button>
+              </div>
+            </section>
+          )}
+
+          {showCategory('plus') && <LiquidPlusSection />}
+
+          {showCategory('about') && (
+            <>
+              <section className="settings-section" aria-label="Sobre o aplicativo">
+                <h2>Sobre o Liquid Hub</h2>
+                <div className="setting-row">
+                  <span>
+                    <strong>Versão instalada</strong>
+                    <small>Liquid Hub v{integration?.version || '2.2.0'}</small>
+                  </span>
+                  <button
+                    className="button secondary"
+                    disabled={busy}
+                    onClick={() => {
+                      setBusy(true);
+                      void Promise.all([
+                        window.glass.updateStatus(false),
+                        useUpdateNotice.getState().checkVersionPolicy(),
+                      ])
+                        .then(([v]) => {
+                          setMessage(v.message);
+                          if (v.available && v.version) {
+                            useUpdateNotice.getState().setAvailable(v.version);
+                          }
+                        })
+                        .catch(e => setMessage(cleanError(e)))
+                        .finally(() => setBusy(false));
+                    }}
+                  >
+                    {busy ? 'Verificando…' : 'Verificar atualizações'}
+                  </button>
+                </div>
+                <Toggle
+                  label="Atualizar automaticamente"
+                  checked={p.autoUpdate}
+                  onChange={autoUpdate => prefUI({ autoUpdate })}
+                />
+                {message && (
+                  <p role="status" className="fine-print">
+                    {message}
+                  </p>
+                )}
+              </section>
+
+              <InstallationMaintenanceSection />
+
+              <BrandPreviewGallery />
+            </>
+          )}
         </div>
-      </section>
-
-      <AccountConnections />
-
-      <section className="settings-section">
-        <h2>Sistema</h2>
-        <Toggle
-          label="Iniciar com o Windows"
-          checked={p.startup}
-          onChange={v => prefUI({ startup: v })}
-        />
-        <Toggle
-          label="Fechar para a bandeja"
-          checked={p.tray}
-          onChange={v => prefUI({ tray: v })}
-        />
-        <Toggle
-          label="Teclas multimídia"
-          checked={p.globalShortcuts}
-          onChange={v => prefUI({ globalShortcuts: v })}
-        />
-        <label className="setting-row">
-          <span>
-            <strong>Notificações ao trocar de faixa</strong>
-            <small>Controles de mídia do sistema continuam ativos em tempo real</small>
-          </span>
-          <select
-            aria-label="Notificações ao trocar de faixa"
-            value={resolveNotificationMode(p)}
-            onChange={e => {
-              const mode = e.target.value as NotificationMode;
-              prefUI({
-                notificationMode: mode,
-                notifications: mode !== 'off',
-              });
-            }}
-          >
-            <option value="off">Desativado (Silencioso)</option>
-            <option value="background">Apenas em segundo plano (Sem spam)</option>
-            <option value="always">Sempre</option>
-          </select>
-        </label>
-        <Toggle
-          label="Atualizar automaticamente"
-          checked={p.autoUpdate}
-          onChange={autoUpdate => prefUI({ autoUpdate })}
-        />
-        <div className="settings-actions-row">
-          <button
-            className="button secondary"
-            disabled={busy}
-            onClick={() => {
-              setBusy(true);
-              void window.glass
-                .updateStatus(false)
-                .then(v => {
-                  setMessage(v.message);
-                  if (v.available && v.version) useUpdateNotice.getState().setAvailable(v.version);
-                })
-                .catch(e => setMessage(cleanError(e)))
-                .finally(() => setBusy(false));
-            }}
-          >
-            {busy ? 'Verificando…' : 'Verificar atualizações'}
-          </button>
-          <button className="button secondary" onClick={() => void window.glass.exportLibrary()}>
-            Exportar biblioteca
-          </button>
-          <button className="button secondary" onClick={() => void useApp.getState().importLibrary()}>
-            Importar biblioteca
-          </button>
-          <button
-            className="button secondary"
-            onClick={() =>
-              void window.glass
-                .clearCache()
-                .then(() => useApp.getState().message('Cache limpo.'))
-                .catch(e => useApp.getState().message(cleanError(e)))
-            }
-          >
-            Limpar cache
-          </button>
-        </div>
-        {message && (
-          <p role="status" className="fine-print">
-            {message}
-          </p>
-        )}
-      </section>
+      </div>
     </div>
+  );
+}
+
+function InstallationMaintenanceSection() {
+  const [maintBusy, setMaintBusy] = useState(false);
+  const [report, setReport] = useState<{
+    ok: boolean;
+    repaired: boolean;
+    dbIntegrityOk: boolean;
+    vaultReadable: boolean;
+    orphanedTempFiles: number;
+    removedOrphanedTempFiles: number;
+    backupsCount: number;
+    message: string;
+  } | null>(null);
+
+  const runMaintenance = async (repair: boolean) => {
+    if (!window.glass.maintenanceStatus || maintBusy) return;
+    setMaintBusy(true);
+    try {
+      const res = await window.glass.maintenanceStatus(repair);
+      setReport(res);
+      useApp.getState().message(res.message);
+    } catch (e) {
+      useApp.getState().message(cleanError(e));
+    } finally {
+      setMaintBusy(false);
+    }
+  };
+
+  return (
+    <section
+      className="settings-section"
+      aria-label="Manutenção, integridade e reparo da instalação"
+    >
+      <h2>Manutenção e Integridade da Instalação</h2>
+      <p className="fine-print" style={{ marginTop: 0 }}>
+        Verifica a integridade do banco SQLite local, do cofre criptografado, remove arquivos
+        temporários órfãos e gera um ponto de restauração seguro sem afetar suas playlists.
+      </p>
+      <div className="settings-actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          className="button secondary"
+          disabled={maintBusy}
+          onClick={() => void runMaintenance(false)}
+        >
+          {maintBusy ? 'Verificando…' : 'Verificar integridade'}
+        </button>
+        <button
+          type="button"
+          className="button primary"
+          disabled={maintBusy}
+          onClick={() => void runMaintenance(true)}
+        >
+          {maintBusy ? 'Reparando…' : 'Reparar instalação e criar backup'}
+        </button>
+      </div>
+      {report && (
+        <div
+          role="status"
+          style={{
+            marginTop: 12,
+            padding: 12,
+            borderRadius: 10,
+            background: 'rgba(255, 255, 255, 0.04)',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            fontSize: 12.5,
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>{report.message}</div>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', opacity: 0.82 }}>
+            <span>Banco SQLite: {report.dbIntegrityOk ? 'Íntegro' : 'Requer reparo'}</span>
+            <span>Cofre local: {report.vaultReadable ? 'Legível' : 'Erro'}</span>
+            <span>Backups locais: {report.backupsCount}</span>
+            <span>
+              Temporários órfãos:{' '}
+              {report.repaired
+                ? `${report.removedOrphanedTempFiles} removidos`
+                : report.orphanedTempFiles}
+            </span>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }

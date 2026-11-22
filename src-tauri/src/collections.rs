@@ -206,95 +206,26 @@ pub async fn read(mut response: reqwest::Response) -> Result<Value> {
 }
 
 pub fn playlist_url(raw: &str) -> Result<(String, String, String)> {
-    if !crate::links::public_url(raw) {
-        return Err("Use um link público HTTPS de playlist ou álbum.".into());
-    }
-    let u = url::Url::parse(raw).unwrap();
-    let host = u.host_str().unwrap_or("");
-    let parts: Vec<_> = u
-        .path_segments()
-        .into_iter()
-        .flatten()
-        .filter(|p| !p.is_empty())
-        .collect();
-    if ["www.youtube.com", "youtube.com", "music.youtube.com", "youtu.be"].contains(&host) {
-        let id = u
-            .query_pairs()
-            .find(|(k, _)| k == "list")
-            .map(|(_, v)| v.into_owned())
-            .ok_or("Use um link de playlist com list=.")?;
-        if id.len() < 5
-            || id.len() > 150
-            || !id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-        {
-            return Err("Playlist YouTube inválida.".into());
+    let parsed = crate::link_providers::parse_collection_link(raw)?;
+    let provider_key = match parsed.provider {
+        crate::link_providers::LinkProviderId::YouTube => "youtube".to_string(),
+        crate::link_providers::LinkProviderId::YouTubeMusic => "ytmusic".to_string(),
+        crate::link_providers::LinkProviderId::SoundCloud => "soundcloud".to_string(),
+        crate::link_providers::LinkProviderId::Spotify => {
+            format!("spotify:{}", parsed.kind.as_str())
         }
-        return Ok((
-            "youtube".into(),
-            id.clone(),
-            format!("https://www.youtube.com/playlist?list={id}"),
-        ));
-    }
-    if ["soundcloud.com", "www.soundcloud.com"].contains(&host)
-        && parts.len() == 3
-        && parts[1] == "sets"
-    {
-        return Ok((
-            "soundcloud".into(),
-            parts.join("/"),
-            format!("https://soundcloud.com/{}", parts.join("/")),
-        ));
-    }
-    if host == "open.spotify.com" {
-        for kind in ["playlist", "album", "artist"] {
-            if let Some(i) = parts.iter().position(|v| *v == kind) {
-                if let Some(id) = parts.get(i + 1) {
-                    if id.len() == 22 && id.bytes().all(|b| b.is_ascii_alphanumeric()) {
-                        return Ok((
-                            format!("spotify:{kind}"),
-                            id.to_string(),
-                            format!("https://open.spotify.com/{kind}/{id}"),
-                        ));
-                    }
-                }
-            }
+        crate::link_providers::LinkProviderId::Deezer => {
+            format!("deezer:{}", parsed.kind.as_str())
         }
-    }
-    if ["deezer.com", "www.deezer.com"].contains(&host) {
-        for kind in ["playlist", "album", "artist"] {
-            if let Some(i) = parts.iter().position(|v| *v == kind) {
-                if let Some(id) = parts.get(i + 1) {
-                    if id.len() <= 25 && !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) {
-                        return Ok((
-                            format!("deezer:{kind}"),
-                            id.to_string(),
-                            format!("https://www.deezer.com/{kind}/{id}"),
-                        ));
-                    }
-                }
-            }
+        crate::link_providers::LinkProviderId::AppleMusic => {
+            format!("apple:{}", parsed.kind.as_str())
         }
-    }
-    if ["music.apple.com", "itunes.apple.com"].contains(&host) {
-        if let Ok((cc, kind, id)) = crate::platforms::parse_apple_url(&u) {
-            if ["album", "artist"].contains(&kind) {
-                return Ok((
-                    format!("apple:{kind}"),
-                    id.clone(),
-                    format!("https://music.apple.com/{cc}/{kind}/{id}"),
-                ));
-            }
+        crate::link_providers::LinkProviderId::Bandcamp => "bandcamp:album".to_string(),
+        crate::link_providers::LinkProviderId::Tidal => {
+            return Err("Importação de coleção completa do Tidal ainda não é suportada por link.".into());
         }
-    }
-    if crate::platforms::is_bandcamp(host) && parts.len() == 2 && parts[0] == "album" {
-        let mut clean = u.clone();
-        clean.set_query(None);
-        clean.set_fragment(None);
-        return Ok(("bandcamp:album".into(), parts[1].to_string(), clean.to_string()));
-    }
-    Err("Use o link completo de uma playlist ou álbum do Spotify, Deezer, Apple Music, Bandcamp, YouTube ou SoundCloud.".into())
+    };
+    Ok((provider_key, parsed.entity_id, parsed.canonical_url))
 }
 
 pub fn is_playlist(raw: &str) -> bool {
@@ -340,7 +271,7 @@ pub async fn fetch(raw: &str, direct: &crate::direct_catalog::DirectCatalog) -> 
     let mut cover;
 
     match provider.as_str() {
-        "youtube" | "soundcloud" => {
+        "youtube" | "ytmusic" | "soundcloud" => {
             let data = direct.collection(&url).await?;
             cover = artwork(&data);
             name = data["title"]
@@ -356,11 +287,16 @@ pub async fn fetch(raw: &str, direct: &crate::direct_catalog::DirectCatalog) -> 
                         .into();
             }
             for row in entries.iter().take(1000) {
-                let t = if provider == "youtube" {
+                let mut t = if provider == "youtube" || provider == "ytmusic" {
                     youtube_track(row)
                 } else {
                     soundcloud_track(row)
                 };
+                if provider == "ytmusic" {
+                    if let Some(ref mut track) = t {
+                        track["catalogSource"] = json!("ytmusic");
+                    }
+                }
                 if let Some(t) = t {
                     tracks.push(t);
                 } else {
@@ -557,6 +493,22 @@ mod tests {
                 .unwrap()
                 .2,
             "https://www.youtube.com/playlist?list=PLabc12345"
+        );
+        assert_eq!(
+            playlist_url("spotify:playlist:37i9dQZF1DXcBWIGoYBM5M").unwrap(),
+            (
+                "spotify:playlist".into(),
+                "37i9dQZF1DXcBWIGoYBM5M".into(),
+                "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M".into()
+            )
+        );
+        assert_eq!(
+            playlist_url("https://music.youtube.com/playlist?list=PLabc12345").unwrap(),
+            (
+                "ytmusic".into(),
+                "PLabc12345".into(),
+                "https://music.youtube.com/playlist?list=PLabc12345".into()
+            )
         );
         for bad in [
             "https://evil.example/playlist/x",

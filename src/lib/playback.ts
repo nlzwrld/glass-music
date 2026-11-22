@@ -2,10 +2,12 @@ import {
   canPlay,
   isCatalogOnlyTrack,
   type NotificationMode,
+  type ShuffleMode,
   type StreamProvider,
   type Track,
 } from '../../shared/types';
 import { setPreferencesFromUI, useApp } from '../stores/app';
+import { orderSmartShuffleTracks } from './smartShuffle';
 
 export const NOW_PLAYING_NOTIFICATION_TAG = 'liquid-hub-now-playing';
 export const TRACK_NOTIFY_DEBOUNCE_MS = 3000;
@@ -165,17 +167,36 @@ export function shuffleTracks<T>(items: readonly T[], rng: () => number = Math.r
 }
 
 /**
- * Shuffles an entire playlist/collection using Fisher-Yates, activates shuffle preference,
- * and starts playback immediately from the randomly selected first track.
+ * Shuffles an entire playlist/collection using Smart Shuffle (relevance + diversity)
+ * or classic Fisher-Yates, activates shuffle preference, and starts playback immediately.
  */
-export function shufflePlay(tracks: readonly Track[], rng: () => number = Math.random): Track | null {
+export function shufflePlay(
+  tracks: readonly Track[],
+  rng: () => number = Math.random,
+  options?: { mode?: ShuffleMode },
+): Track | null {
   const playable = tracks.filter(t => canPlay(t) && t.available !== false);
   if (!playable.length) return null;
-  const shuffled = shuffleTracks(playable, rng);
-  const first = shuffled[0]!;
   const app = useApp.getState();
-  if (!app.data.preferences.shuffle) {
-    setPreferencesFromUI({ shuffle: true });
+  const mode: ShuffleMode = options?.mode ?? app.data.preferences.shuffleMode ?? 'smart';
+  const shuffled =
+    mode === 'standard'
+      ? shuffleTracks(playable, rng)
+      : orderSmartShuffleTracks(
+          playable,
+          {
+            history: app.data.history,
+            likes: app.data.likes,
+            libraryTracks: app.data.tracks,
+          },
+          rng,
+        );
+  const first = shuffled[0]!;
+  if (!app.data.preferences.shuffle || (options?.mode && app.data.preferences.shuffleMode !== mode)) {
+    setPreferencesFromUI({
+      shuffle: true,
+      ...(options?.mode ? { shuffleMode: mode } : {}),
+    });
   }
   app.play(first, shuffled);
   return first;

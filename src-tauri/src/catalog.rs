@@ -43,13 +43,21 @@ fn validate_items(value: &Value, source: &str) -> Result<()> {
     if items.len() > 60 { return Err("Lista do catálogo muito grande.".into()); }
     for item in items {
         db::validate_track(item)?;
-        if s(item, "source") != source { return Err("Fonte inválida no catálogo.".into()); }
+        if ["spotify", "deezer"].contains(&source) {
+            if s(item, "source") != "link" || s(item, "catalogSource") != source {
+                return Err("Fonte inválida no catálogo.".into());
+            }
+        } else if s(item, "source") != source {
+            return Err("Fonte inválida no catálogo.".into());
+        }
     }
     Ok(())
 }
 
 pub async fn search(base: &str, source: &str, request: &Value) -> Result<Value> {
-    if s(request, "kind") == "album" { return Ok(json!({"items":[]})); }
+    if s(request, "kind") == "album" && ["youtube", "soundcloud"].contains(&source) {
+        return Ok(json!({"items":[]}));
+    }
     let value = fetch(base, "/v1/search", &[("source", source), ("q", s(request, "query")), ("kind", s(request, "kind")), ("cursor", s(&request["cursor"], source))]).await?;
     validate_items(&value["items"], source)?;
     if !value["next"].is_null() && (!value["next"].is_string() || s(&value, "next").len() > 100) { return Err("Página inválida do catálogo.".into()); }

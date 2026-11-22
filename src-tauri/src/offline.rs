@@ -64,6 +64,52 @@ pub fn stats(data: &Path, db: &Library) -> (usize, u64) {
     (count, total_bytes)
 }
 
+pub fn list_entries(data: &Path, db: &Library) -> Value {
+    let Ok(mut statement) = db.db.prepare(
+        "SELECT track_id, path, size, duration, created FROM offline_tracks ORDER BY created DESC",
+    ) else {
+        return serde_json::json!({ "tracks": [], "totalTracks": 0, "totalBytes": 0 });
+    };
+    let Ok(rows) = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, f64>(3)?,
+            row.get::<_, i64>(4)?,
+        ))
+    }) else {
+        return serde_json::json!({ "tracks": [], "totalTracks": 0, "totalBytes": 0 });
+    };
+    let mut tracks = Vec::new();
+    let mut total_bytes = 0u64;
+    for (track_id, path, db_size, duration, created) in rows.flatten() {
+        if !owned_path(data, &path) {
+            continue;
+        }
+        let (verified, actual_size) = match std::fs::metadata(&path) {
+            Ok(meta) if meta.is_file() && meta.len() >= 512 => (true, meta.len()),
+            _ => (false, db_size.max(0) as u64),
+        };
+        if verified {
+            total_bytes = total_bytes.saturating_add(actual_size);
+        }
+        tracks.push(serde_json::json!({
+            "trackId": track_id,
+            "size": actual_size,
+            "duration": duration,
+            "createdAt": created,
+            "verified": verified
+        }));
+    }
+    let verified_count = tracks.iter().filter(|t| t["verified"] == true).count();
+    serde_json::json!({
+        "tracks": tracks,
+        "totalTracks": verified_count,
+        "totalBytes": total_bytes
+    })
+}
+
 struct OperationState {
     generation: u64,
     token: CancellationToken,
@@ -369,12 +415,16 @@ fn valid_audio_signature(ext: &str, bytes: &[u8]) -> bool {
     }
 }
 
-pub async fn download(
+pub async fn download_with_progress<F>(
     data: &Path,
     id: &str,
     stream: &Value,
     token: &CancellationToken,
-) -> Result<PendingDownload> {
+    mut on_progress: F,
+) -> Result<PendingDownload>
+where
+    F: FnMut(u64, u64),
+{
     if !crate::audio::valid_cdn(s(stream, "url"))
         || s(stream, "vcodec") != "none"
         || s(stream, "acodec") == "none"
@@ -414,6 +464,7 @@ pub async fn download(
                 .write_all(&first)
                 .map_err(|_| "Sem espaço para salvar o áudio.")?;
             let mut bytes = first.len() as u64;
+            on_progress(bytes, total.max(bytes));
             while partial && bytes < total {
                 let start = bytes;
                 let end = (start + CHUNK - 1).min(total - 1);
@@ -425,6 +476,7 @@ pub async fn download(
                 output
                     .write_all(&data)
                     .map_err(|_| "Sem espaço para salvar o áudio.")?;
+                on_progress(bytes, total.max(bytes));
             }
             if bytes < 512 || (total > 0 && bytes != total) {
                 return Err("O arquivo recebido está incompleto.".into());
@@ -444,6 +496,16 @@ pub async fn download(
     };
     pending.size = result?;
     Ok(pending)
+}
+
+#[allow(dead_code)]
+pub async fn download(
+    data: &Path,
+    id: &str,
+    stream: &Value,
+    token: &CancellationToken,
+) -> Result<PendingDownload> {
+    download_with_progress(data, id, stream, token, |_, _| {}).await
 }
 
 #[cfg(test)]

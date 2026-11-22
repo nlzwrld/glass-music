@@ -1,6 +1,6 @@
 import { trackActions } from './trackActions';
 import { warmTrack, cancelWarmTrack } from '../../lib/playback';
-import { Play, Plus, ArrowUpRight } from 'lucide-react';
+import { Play, Plus, ArrowUpRight, BadgeCheck } from 'lucide-react';
 import { canPlay, type Track } from '../../../shared/types';
 import { useApp } from '../../stores/app';
 import Cover from '../glass/Cover';
@@ -53,6 +53,12 @@ export default function TrackCard({ track, list }: { track: Track; list?: Track[
           <p>{track.artist}</p>
         </div>
         <span className="card-badges">
+          {track.kind === 'artist' && (
+            <span className="entity-badge entity-badge-artist" title="Artista verificado no catálogo">
+              <BadgeCheck size={11} />
+              Artista verificado
+            </span>
+          )}
           <OfflineIndicator offline={savedOffline} downloading={downloading} />
           <SourceBadge
             source={track.source}

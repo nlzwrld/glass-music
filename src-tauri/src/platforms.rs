@@ -8,6 +8,8 @@ use std::time::Duration;
 
 const PAGE: usize = 20;
 const MAX_OFFSET: usize = 180;
+const SPOTIFY_PAGE: usize = 10;
+const SPOTIFY_MAX_OFFSET: usize = 190;
 
 pub fn link_hash(canonical: &str) -> String {
     format!("{:x}", Sha256::digest(canonical.as_bytes()))[..32].to_string()
@@ -28,6 +30,7 @@ pub fn supported_link_host(host: &str) -> bool {
         "open.spotify.com"
             | "deezer.com"
             | "www.deezer.com"
+            | "m.deezer.com"
             | "music.apple.com"
             | "itunes.apple.com"
             | "tidal.com"
@@ -258,6 +261,217 @@ pub async fn discover_deezer() -> Result<Vec<Value>> {
         return Err("Nenhuma música retornada pelo Deezer.".into());
     }
     Ok(items)
+}
+
+fn parse_spotify_offset(raw: &str) -> Result<usize> {
+    if raw.is_empty() {
+        return Ok(0);
+    }
+    if raw.len() > 3 || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("Página de busca do Spotify inválida.".into());
+    }
+    let n: usize = raw.parse().map_err(|_| "Página de busca do Spotify inválida.")?;
+    if n > SPOTIFY_MAX_OFFSET || n % SPOTIFY_PAGE != 0 {
+        return Err("Página de busca do Spotify inválida.".into());
+    }
+    Ok(n)
+}
+
+pub fn spotify_item(row: &Value, kind: &str) -> Option<Value> {
+    if row.is_null() {
+        return None;
+    }
+    if kind == "track" {
+        return crate::collections::spotify_track(row);
+    }
+    let id = row["id"].as_str()?;
+    if id.len() != 22 || !id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let entity = match kind {
+        "album" | "artist" | "playlist" => kind,
+        _ => return None,
+    };
+    let canonical = format!("https://open.spotify.com/{entity}/{id}");
+    let hash = link_hash(&canonical);
+    let art = crate::collections::artwork(row);
+    let mut track = match entity {
+        "album" => {
+            let title = row["name"].as_str()?.trim();
+            if title.is_empty() {
+                return None;
+            }
+            let artist = row["artists"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|a| a["name"].as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "Spotify".into());
+            json!({
+                "id": format!("link:{hash}"),
+                "source": "link",
+                "sourceId": hash,
+                "kind": "album",
+                "title": title,
+                "artist": artist,
+                "album": title,
+                "duration": 0.0,
+                "catalogSource": "spotify",
+                "url": canonical,
+                "addedAt": now()
+            })
+        }
+        "artist" => {
+            let name = row["name"].as_str()?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            json!({
+                "id": format!("link:{hash}"),
+                "source": "link",
+                "sourceId": hash,
+                "kind": "artist",
+                "title": name,
+                "artist": name,
+                "duration": 0.0,
+                "catalogSource": "spotify",
+                "url": canonical,
+                "addedAt": now()
+            })
+        }
+        _ => {
+            let title = row["name"].as_str()?.trim();
+            if title.is_empty() {
+                return None;
+            }
+            let owner = row
+                .pointer("/owner/display_name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .unwrap_or("Spotify");
+            json!({
+                "id": format!("link:{hash}"),
+                "source": "link",
+                "sourceId": hash,
+                "kind": "playlist",
+                "title": title,
+                "artist": owner,
+                "duration": 0.0,
+                "catalogSource": "spotify",
+                "url": canonical,
+                "addedAt": now()
+            })
+        }
+    };
+    if !art.is_empty() && db::artwork_url(&art) {
+        track["artwork"] = json!(art);
+    }
+    db::validate_track(&track).ok()?;
+    Some(track)
+}
+
+pub async fn search_spotify(
+    request: &Value,
+    accounts: &crate::accounts::Accounts,
+) -> Result<Value> {
+    let query = s(request, "query").trim();
+    if query.is_empty() {
+        return Err("Pesquisa inválida.".into());
+    }
+    let requested = s(request, "kind");
+    let offset = parse_spotify_offset(s(&request["cursor"], "spotify"))?;
+    let search_type = match requested {
+        "track" => "track",
+        "album" => "album",
+        "artist" => "artist",
+        "playlist" => "playlist",
+        _ => "track,album,artist,playlist",
+    };
+    let token = accounts.spotify_search_token().await?;
+    let limit_str = SPOTIFY_PAGE.to_string();
+    let offset_str = offset.to_string();
+    let mut response = crate::providers::client()
+        .get("https://api.spotify.com/v1/search")
+        .header("Authorization", format!("Bearer {token}"))
+        .query(&[
+            ("q", query),
+            ("type", search_type),
+            ("limit", limit_str.as_str()),
+            ("offset", offset_str.as_str()),
+            ("market", "BR"),
+        ])
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|_| "Não foi possível conectar ao Spotify.")?;
+
+    let status = response.status();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| "Resposta incompleta do Spotify.")? {
+        if bytes.len() + chunk.len() > 2_000_000 {
+            return Err("Resposta do Spotify maior que o permitido.".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    if !status.is_success() {
+        return Err(match status.as_u16() {
+            401 | 403 => "Reconecte sua conta Spotify ou verifique as credenciais do aplicativo nas Configurações.",
+            404 => "Conteúdo não encontrado no Spotify.",
+            429 => {
+                if serde_json::from_slice::<Value>(&bytes)
+                    .ok()
+                    .and_then(|v| {
+                        v.pointer("/error/reason")
+                            .or_else(|| v.pointer("/reason"))
+                            .and_then(Value::as_str)
+                            .map(|r| r.contains("QUOTA_EXCEEDED"))
+                    })
+                    .unwrap_or(false)
+                {
+                    "Cota da Spotify Web API excedida temporariamente. Aguarde antes de tentar novamente."
+                } else {
+                    "Limite temporário de consultas no Spotify. Aguarde alguns segundos."
+                }
+            }
+            _ => "A busca no Spotify está indisponível neste momento.",
+        }
+        .into());
+    }
+
+    let data: Value =
+        serde_json::from_slice(&bytes).map_err(|_| "Resposta inválida do Spotify.")?;
+    let mut items = Vec::new();
+    let mut has_next = false;
+    for (section_key, kind) in [
+        ("tracks", "track"),
+        ("albums", "album"),
+        ("artists", "artist"),
+        ("playlists", "playlist"),
+    ] {
+        let Some(section) = data.get(section_key) else {
+            continue;
+        };
+        if let Some(rows) = section["items"].as_array() {
+            for row in rows {
+                if let Some(item) = spotify_item(row, kind) {
+                    items.push(item);
+                }
+            }
+        }
+        if section["next"].is_string() && offset + SPOTIFY_PAGE <= SPOTIFY_MAX_OFFSET {
+            has_next = true;
+        }
+    }
+
+    Ok(json!({
+        "items": items,
+        "next": if has_next { json!((offset + SPOTIFY_PAGE).to_string()) } else { Value::Null }
+    }))
 }
 
 fn apple_artwork(raw: &str) -> String {
@@ -934,28 +1148,100 @@ async fn deezer_artist_radio(title: &str, artist: &str) -> Vec<Value> {
         .collect()
 }
 
-pub async fn style_recommendations(
-    seeds: &[Value],
-    exclude_ids: &[String],
-    direct: &crate::direct_catalog::DirectCatalog,
-) -> Result<Vec<Value>> {
-    let Some(primary) = seeds.first() else {
-        return Ok(Vec::new());
-    };
-    let mut excluded_ids: std::collections::HashSet<String> =
-        exclude_ids.iter().cloned().collect();
-    let mut excluded_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for t in seeds {
-        excluded_ids.insert(s(t, "id").to_string());
-        excluded_keys.insert(norm_key(s(t, "title"), s(t, "artist")));
-    }
+fn norm_artist_key(artist: &str) -> String {
+    let clean = artist
+        .trim_end_matches(" - Topic")
+        .trim_end_matches(" - topic");
+    crate::resolver::normalize_ascii_lower(crate::resolver::primary_artist(clean))
+}
 
-    let seed_title = s(primary, "title").to_string();
-    let seed_artist = s(primary, "artist").to_string();
-    let mut yt_seed_id = if s(primary, "source") == "youtube" {
-        s(primary, "sourceId").to_string()
+pub fn select_diverse_seeds(seeds: &[Value], max_seeds: usize) -> Vec<Value> {
+    let mut picked = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut seen_artists = std::collections::HashSet::new();
+    for t in seeds {
+        if picked.len() >= max_seeds {
+            break;
+        }
+        let id = s(t, "id").to_string();
+        let a = norm_artist_key(s(t, "artist"));
+        if (!a.is_empty() && seen_artists.contains(&a)) || (!id.is_empty() && seen_ids.contains(&id))
+        {
+            continue;
+        }
+        if !a.is_empty() {
+            seen_artists.insert(a);
+        }
+        if !id.is_empty() {
+            seen_ids.insert(id);
+        }
+        picked.push(t.clone());
+    }
+    for t in seeds {
+        if picked.len() >= max_seeds {
+            break;
+        }
+        let id = s(t, "id").to_string();
+        if !id.is_empty() && !seen_ids.contains(&id) {
+            seen_ids.insert(id);
+            picked.push(t.clone());
+        }
+    }
+    picked
+}
+
+pub fn interleave_diverse_recommendations(
+    buckets: &[Vec<Value>],
+    excluded_ids: &mut std::collections::HashSet<String>,
+    excluded_keys: &mut std::collections::HashSet<String>,
+    max_items: usize,
+    max_per_artist: usize,
+) -> Vec<Value> {
+    let mut results = Vec::new();
+    let mut artist_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let max_len = buckets.iter().map(|b| b.len()).max().unwrap_or(0);
+    for i in 0..max_len {
+        for bucket in buckets {
+            let Some(candidate) = bucket.get(i) else {
+                continue;
+            };
+            let cid = s(candidate, "id").to_string();
+            let key = norm_key(s(candidate, "title"), s(candidate, "artist"));
+            if cid.is_empty() || excluded_ids.contains(&cid) || excluded_keys.contains(&key) {
+                continue;
+            }
+            let artist_key = norm_artist_key(s(candidate, "artist"));
+            if !artist_key.is_empty() {
+                let count = artist_counts.get(&artist_key).copied().unwrap_or(0);
+                if count >= max_per_artist {
+                    continue;
+                }
+                artist_counts.insert(artist_key, count + 1);
+            }
+            excluded_ids.insert(cid);
+            excluded_keys.insert(key);
+            let mut item = candidate.clone();
+            item["recommended"] = json!(true);
+            results.push(item);
+            if results.len() >= max_items {
+                return results;
+            }
+        }
+    }
+    results
+}
+
+async fn recommendations_for_seed(
+    seed: &Value,
+    direct: &crate::direct_catalog::DirectCatalog,
+) -> Vec<Value> {
+    let seed_title = s(seed, "title").to_string();
+    let seed_artist = s(seed, "artist").to_string();
+    let mut yt_seed_id = if s(seed, "source") == "youtube" {
+        s(seed, "sourceId").to_string()
     } else {
-        s(primary, "playbackId").to_string()
+        s(seed, "playbackId").to_string()
     };
 
     if yt_seed_id.len() != 11 {
@@ -984,27 +1270,77 @@ pub async fn style_recommendations(
         deezer_artist_radio(&seed_title, &seed_artist)
     );
 
-    let mut results = Vec::new();
-    // Interleave YouTube Radio Mix (great for regional/Funk/Montagem/Trap/Electronic) and Deezer Artist Radio
+    let mut combined = Vec::with_capacity(yt_mix.len() + dz_mix.len());
     let max_len = yt_mix.len().max(dz_mix.len());
     for i in 0..max_len {
-        for candidate in [yt_mix.get(i), dz_mix.get(i)].into_iter().flatten() {
-            let cid = s(candidate, "id").to_string();
-            let key = norm_key(s(candidate, "title"), s(candidate, "artist"));
-            if excluded_ids.contains(&cid) || excluded_keys.contains(&key) {
-                continue;
-            }
-            excluded_ids.insert(cid);
-            excluded_keys.insert(key);
-            let mut item = candidate.clone();
-            item["recommended"] = json!(true);
-            results.push(item);
-            if results.len() >= 10 {
-                return Ok(results);
-            }
+        if let Some(item) = yt_mix.get(i) {
+            combined.push(item.clone());
+        }
+        if let Some(item) = dz_mix.get(i) {
+            combined.push(item.clone());
         }
     }
-    Ok(results)
+    combined
+}
+
+pub async fn style_recommendations(
+    seeds: &[Value],
+    exclude_ids: &[String],
+    direct: &crate::direct_catalog::DirectCatalog,
+) -> Result<Vec<Value>> {
+    let chosen_seeds = select_diverse_seeds(seeds, 3);
+    if chosen_seeds.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut excluded_ids: std::collections::HashSet<String> =
+        exclude_ids.iter().cloned().collect();
+    let mut excluded_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in seeds {
+        excluded_ids.insert(s(t, "id").to_string());
+        excluded_keys.insert(norm_key(s(t, "title"), s(t, "artist")));
+    }
+
+    let s0 = chosen_seeds.first();
+    let s1 = chosen_seeds.get(1);
+    let s2 = chosen_seeds.get(2);
+
+    let (b0, b1, b2) = tokio::join!(
+        async {
+            if let Some(seed) = s0 {
+                tokio::time::timeout(Duration::from_secs(5), recommendations_for_seed(seed, direct))
+                    .await
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        },
+        async {
+            if let Some(seed) = s1 {
+                tokio::time::timeout(Duration::from_secs(5), recommendations_for_seed(seed, direct))
+                    .await
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        },
+        async {
+            if let Some(seed) = s2 {
+                tokio::time::timeout(Duration::from_secs(5), recommendations_for_seed(seed, direct))
+                    .await
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        }
+    );
+
+    Ok(interleave_diverse_recommendations(
+        &[b0, b1, b2],
+        &mut excluded_ids,
+        &mut excluded_keys,
+        14,
+        2,
+    ))
 }
 
 #[cfg(test)]
@@ -1089,5 +1425,116 @@ mod tests {
             clean_lyric_snippet("<b>I</b> <b>said</b>:\n<b>Ooh</b>, I'm blinded"),
             "I said: Ooh, I'm blinded"
         );
+    }
+
+    #[test]
+    fn maps_spotify_api_entities_safely_and_skips_null_or_invalid_items() {
+        let track = spotify_item(
+            &json!({
+                "id": "0VjIjW4GlUZAMYd2vXMi3b",
+                "name": "Blinding Lights",
+                "duration_ms": 200040,
+                "artists": [{ "name": "The Weeknd" }],
+                "album": {
+                    "name": "After Hours",
+                    "images": [{ "url": "https://i.scdn.co/image/ab67616d0000b2738863bc11d2aa12b54f5aeb36" }]
+                },
+                "external_ids": { "isrc": "USUG11904206" }
+            }),
+            "track",
+        )
+        .unwrap();
+        assert_eq!(track["source"], "link");
+        assert_eq!(track["catalogSource"], "spotify");
+        assert_eq!(track["album"], "After Hours");
+        assert_eq!(track["isrc"], "USUG11904206");
+
+        let album = spotify_item(
+            &json!({
+                "id": "4yP0hdKOZPNshxUOjY0cZj",
+                "name": "After Hours",
+                "artists": [{ "name": "The Weeknd" }],
+                "images": [{ "url": "https://i.scdn.co/image/ab67616d0000b2738863bc11d2aa12b54f5aeb36" }]
+            }),
+            "album",
+        )
+        .unwrap();
+        assert_eq!(album["kind"], "album");
+        assert_eq!(album["catalogSource"], "spotify");
+
+        let artist = spotify_item(
+            &json!({
+                "id": "1Xyo4u8uXC1ZmMpatF05PJ",
+                "name": "The Weeknd",
+                "images": [{ "url": "https://i.scdn.co/image/ab67616d0000b2738863bc11d2aa12b54f5aeb36" }]
+            }),
+            "artist",
+        )
+        .unwrap();
+        assert_eq!(artist["kind"], "artist");
+
+        let playlist = spotify_item(
+            &json!({
+                "id": "37i9dQZF1DXcBWIGoYBM5M",
+                "name": "Today's Top Hits",
+                "owner": { "display_name": "Spotify" },
+                "images": [{ "url": "https://mosaic.scdn.co/640/ab67616d00001e02playlist" }]
+            }),
+            "playlist",
+        )
+        .unwrap();
+        assert_eq!(playlist["kind"], "playlist");
+
+        assert!(spotify_item(&Value::Null, "playlist").is_none());
+        assert!(spotify_item(&json!({ "id": "bad", "name": "x" }), "track").is_none());
+    }
+
+    #[test]
+    fn interleave_balances_multiple_styles_and_caps_artist_monopoly() {
+        let mk = |id: &str, title: &str, artist: &str| {
+            json!({
+                "id": id,
+                "source": "youtube",
+                "sourceId": id.trim_start_matches("youtube:"),
+                "kind": "track",
+                "title": title,
+                "artist": artist,
+                "duration": 180,
+                "addedAt": 0
+            })
+        };
+        let rock_bucket = vec![
+            mk("youtube:r1aaaaaaaaa", "Rock 1", "Arctic Monkeys"),
+            mk("youtube:r2aaaaaaaaa", "Rock 2", "Arctic Monkeys"),
+            mk("youtube:r3aaaaaaaaa", "Rock 3", "Arctic Monkeys"),
+            mk("youtube:r4aaaaaaaaa", "Rock 4", "The Strokes"),
+        ];
+        let elec_bucket = vec![
+            mk("youtube:e1aaaaaaaaa", "Synth 1", "Daft Punk"),
+            mk("youtube:e2aaaaaaaaa", "Synth 2", "Justice"),
+        ];
+        let mpb_bucket = vec![
+            mk("youtube:m1aaaaaaaaa", "MPB 1", "Seu Jorge"),
+            mk("youtube:m2aaaaaaaaa", "MPB 2", "Djavan"),
+        ];
+
+        let mut ex_ids = std::collections::HashSet::new();
+        let mut ex_keys = std::collections::HashSet::new();
+        let mixed = interleave_diverse_recommendations(
+            &[rock_bucket, elec_bucket, mpb_bucket],
+            &mut ex_ids,
+            &mut ex_keys,
+            14,
+            2,
+        );
+
+        let artists: Vec<&str> = mixed.iter().map(|v| s(v, "artist")).collect();
+        // Round-robin: first 3 items must come from 3 different seeds/styles
+        assert_eq!(artists[0], "Arctic Monkeys");
+        assert_eq!(artists[1], "Daft Punk");
+        assert_eq!(artists[2], "Seu Jorge");
+        // Arctic Monkeys capped at max 2
+        assert_eq!(artists.iter().filter(|a| **a == "Arctic Monkeys").count(), 2);
+        assert!(mixed.iter().all(|v| v["recommended"] == true));
     }
 }

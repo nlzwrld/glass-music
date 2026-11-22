@@ -69,6 +69,7 @@
   text-align: left;
   overflow: hidden;
   min-width: 0;
+  transition: background-color var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard);
 }
 
 .quick-tile:hover {
@@ -673,6 +674,7 @@ html:not([data-ui-style='glass']) .button {
   border: 1px solid var(--m-border);
   color: var(--m-text);
   box-shadow: none;
+  transition: background-color var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard), transform var(--motion-press) var(--ease-standard);
 }
 
 html:not([data-ui-style='glass']) .button:hover:not(:disabled) {
@@ -715,6 +717,7 @@ html:not([data-ui-style='glass']) .icon-button {
   border-radius: 5px;
   color: var(--m-text-sec);
   border: 0;
+  transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard), transform var(--motion-press) var(--ease-standard);
 }
 
 html:not([data-ui-style='glass']) .icon-button svg {
@@ -973,23 +976,51 @@ html:not([data-ui-style='glass']) .playlist-hero-art + div {
   margin-left: 0;
 }
 
+html:not([data-ui-style='glass']) .collection-action-btn,
 html:not([data-ui-style='glass']) .playlist-play {
-  height: 34px;
-  min-width: 0;
-  padding: 0 16px;
-  gap: 7px;
-  border-radius: 6px;
-  background: var(--m-text);
-  color: var(--m-on-primary);
-  font-size: 12.5px;
-  font-weight: 600;
+  width: 38px;
+  height: 38px;
+  min-width: 38px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--m-surface);
+  border: 1px solid var(--m-border);
+  color: var(--m-text);
   box-shadow: none;
-  transform: none !important;
+  transition:
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard),
+    transform var(--motion-press) var(--ease-standard);
 }
 
+html:not([data-ui-style='glass']) .collection-action-btn:hover:not(:disabled),
 html:not([data-ui-style='glass']) .playlist-play:hover:not(:disabled) {
-  opacity: 0.9;
+  background: var(--m-hover);
+  border-color: var(--m-border-strong);
   box-shadow: none;
+}
+
+html:not([data-ui-style='glass']) .collection-action-btn:active:not(:disabled),
+html:not([data-ui-style='glass']) .playlist-play:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+html:not([data-ui-style='glass']) .collection-action-btn.is-active {
+  color: var(--m-accent);
+}
+
+html:not([data-ui-style='glass']) .collection-action-btn .action-active-dot {
+  background: var(--m-accent);
+}
+
+@media (pointer: coarse) {
+  html:not([data-ui-style='glass']) .collection-action-btn,
+  html:not([data-ui-style='glass']) .playlist-play {
+    width: 42px;
+    height: 42px;
+    min-width: 42px;
+  }
 }
 
 /* Dense Feishin / Spotify Track Table */
@@ -1018,6 +1049,7 @@ html:not([data-ui-style='glass']) .track-row {
   padding: 0 8px;
   border-radius: 4px;
   border: 0;
+  transition: background-color var(--motion-instant) var(--ease-standard);
 }
 
 html:not([data-ui-style='glass']) .track-row:hover,
@@ -1167,10 +1199,15 @@ html:not([data-ui-style='glass']) .play-main {
   color: var(--m-on-primary) !important;
   border: 0 !important;
   box-shadow: none !important;
+  transition: opacity var(--motion-fast) var(--ease-standard), transform var(--motion-press) var(--ease-standard);
 }
 
 html:not([data-ui-style='glass']) .play-main:hover:not(:disabled) {
   opacity: 0.9;
+}
+
+html:not([data-ui-style='glass']) .play-main:active:not(:disabled) {
+  transform: scale(0.95);
 }
 
 html:not([data-ui-style='glass']) .player .play-main svg {
@@ -1237,6 +1274,7 @@ html:not([data-ui-style='glass']) input[type='range']::-webkit-slider-thumb {
   background: var(--m-text);
   border: 0;
   box-shadow: none;
+  transition: opacity var(--motion-instant) var(--ease-standard), transform var(--motion-instant) var(--ease-standard);
 }
 
 html:not([data-ui-style='glass']) .seek input:not(:hover):not(:focus-visible)::-webkit-slider-thumb {
@@ -1273,6 +1311,21 @@ html:not([data-ui-style='glass']) .side-cover > .cover-fallback {
 html:not([data-ui-style='glass']) .side-info h2 {
   font-size: 14px;
   font-weight: 600;
+}
+
+html:not([data-ui-style='glass']) .side-next-card {
+  background: var(--m-surface);
+  border-color: var(--m-border-subtle);
+  border-radius: 6px;
+}
+
+html:not([data-ui-style='glass']) .side-next-card:hover {
+  background: var(--m-hover);
+  border-color: var(--m-border);
+}
+
+html:not([data-ui-style='glass']) .side-next-cover {
+  border-radius: 4px;
 }
 
 html:not([data-ui-style='glass']) .queue-panel {
@@ -1659,15 +1712,6 @@ html:not([data-ui-style='glass']) .update-banner .update-now-btn {
    8. LIQUID HUB INDICATORS, SHUFFLE PLAY, CONDITIONAL LYRICS & LIVE JAM
    -------------------------------------------------------------------------- */
 
-.playlist-shuffle-play {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  height: 34px;
-  padding: 0 14px;
-  font-weight: 550;
-}
-
 .col-quick-shuffle {
   display: flex;
   align-items: center;
@@ -1689,7 +1733,7 @@ html:not([data-ui-style='glass']) .update-banner .update-now-btn {
   background: transparent;
   border: 1px solid var(--line);
   cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+  transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard);
 }
 
 .tracklist-shuffle-btn:hover {
@@ -1697,25 +1741,9 @@ html:not([data-ui-style='glass']) .update-banner .update-now-btn {
   color: var(--text);
 }
 
-/* Conditional Lyrics Button Smooth Micro-Animation (Fade + Scale) */
-@keyframes liquidLyricsAppear {
-  from {
-    opacity: 0;
-    transform: scale(0.82);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
 .lyrics-btn-presence {
   display: inline-flex;
   align-items: center;
-}
-
-html:not([data-motion='reduced']) .lyrics-btn-presence {
-  animation: liquidLyricsAppear 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .lyrics-header-actions,

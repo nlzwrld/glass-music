@@ -1,7 +1,13 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { JamRealtimeEvent } from '../../shared/jam';
-import type { GlassAPI, MediaCommand, Snapshot, IntegrationStatus } from '../../shared/types';
+import type {
+  DownloadProgressEvent,
+  GlassAPI,
+  IntegrationStatus,
+  MediaCommand,
+  Snapshot,
+} from '../../shared/types';
 
 let resourceBase = '';
 const call = <T>(action: string, payload?: unknown) =>
@@ -15,10 +21,29 @@ export const glass: GlassAPI = {
   offlineSource: id => call('offlineSource', id),
   downloadOffline: track => call('downloadOffline', track),
   removeOffline: id => call('removeOffline', id),
+  cancelDownload: id => call('cancelDownload', id),
+  offlineSummary: () => call('offlineSummary'),
+  onDownloadProgress: callback => {
+    let disposed = false;
+    let off: (() => void) | undefined;
+    void listen<DownloadProgressEvent>('download-progress', event => callback(event.payload)).then(
+      unlisten => {
+        if (disposed) unlisten();
+        else off = unlisten;
+      },
+    );
+    return () => {
+      disposed = true;
+      off?.();
+    };
+  },
+  cacheGet: key => call('cacheGet', { key }),
+  cacheSet: entry => call('cacheSet', entry),
   openLyrics: () => call('openLyrics'),
   closeLyrics: () => call('closeLyrics'),
   pinLyrics: pinned => call('pinLyrics', { pinned }),
   updateStatus: (install = false) => call('updateStatus', { install }),
+  maintenanceStatus: (repair = false) => call('maintenanceStatus', { repair }),
   trackArtwork: id => call('trackArtwork', id),
   lyrics: track => call('lyrics', track),
   playlistArtwork: id => call('playlistArtwork', id),
@@ -53,6 +78,17 @@ export const glass: GlassAPI = {
   hubResetPassword: payload => call('hubResetPassword', payload),
   hubAcceptTerms: payload => call('hubAcceptTerms', payload),
   hubUpdateProfile: payload => call('hubUpdateProfile', payload),
+  hubGetProfile: payload => call('hubGetProfile', payload),
+  hubSearchUsers: payload => call('hubSearchUsers', payload),
+  hubPublishPlaylist: payload => call('hubPublishPlaylist', payload),
+  hubMyPlaylists: payload => call('hubMyPlaylists', payload || {}),
+  hubGetSharedPlaylist: payload => call('hubGetSharedPlaylist', payload),
+  hubMutateSharedPlaylist: payload => call('hubMutateSharedPlaylist', payload),
+  hubInviteCollaborator: payload => call('hubInviteCollaborator', payload),
+  hubRespondPlaylistInvite: payload => call('hubRespondPlaylistInvite', payload),
+  hubRemoveCollaborator: payload => call('hubRemoveCollaborator', payload),
+  hubPlusStatus: payload => call('hubPlusStatus', payload || {}),
+  hubVersionPolicy: payload => call('hubVersionPolicy', payload || {}),
   hubLibraryPull: payload => call('hubLibraryPull', payload || {}),
   hubLibraryPush: payload => call('hubLibraryPush', payload),
   importLink: (url, playlist = false) => call('importLink', { url, playlist }),

@@ -158,6 +158,114 @@ export function loadOptics(): OpticalSettings {
     return { ...opticalDefaults };
   }
 }
+export const MAX_WEBGL_SURFACES = 12;
+
+export const glassVisualPresets = {
+  liquid: {
+    label: 'Vidro Líquido',
+    appearance: {
+      material: 'floating' as const,
+      blur: 14,
+      refraction: 5.2,
+      specular: 0.34,
+      edge: 0.42,
+      fresnel: 0.28,
+      quality: 'auto' as const,
+    },
+    glass: 22,
+  },
+  crystal: {
+    label: 'Cristal',
+    appearance: {
+      material: 'clear' as const,
+      blur: 8,
+      refraction: 3.8,
+      specular: 0.4,
+      edge: 0.38,
+      fresnel: 0.3,
+      quality: 'balanced' as const,
+    },
+    glass: 14,
+  },
+  frosted: {
+    label: 'Fosco Suave',
+    appearance: {
+      material: 'frosted' as const,
+      blur: 18,
+      refraction: 2.8,
+      specular: 0.2,
+      edge: 0.28,
+      fresnel: 0.2,
+      quality: 'balanced' as const,
+    },
+    glass: 30,
+  },
+  battery: {
+    label: 'Economia',
+    appearance: {
+      material: 'subtle' as const,
+      blur: 6,
+      refraction: 0,
+      specular: 0.14,
+      edge: 0.18,
+      fresnel: 0.12,
+      quality: 'economy' as const,
+    },
+    glass: 26,
+  },
+} as const;
+
+export function resolveGlassQualityTier(input: {
+  requested: OpticalSettings['quality'];
+  uiStyle: 'matte' | 'glass';
+  performanceMode: boolean;
+  prefersContrastMore?: boolean;
+  prefersReducedTransparency?: boolean;
+  rendererName?: string;
+  maxTextureSize?: number;
+  hardwareConcurrency?: number;
+  deviceMemory?: number;
+  isMobileTouch?: boolean;
+}): { quality: 'economy' | 'balanced' | 'high'; engine: 'webgl' | 'css'; reason: string } {
+  if (input.uiStyle === 'matte') {
+    return { quality: 'economy', engine: 'css', reason: 'matte' };
+  }
+  if (input.performanceMode) {
+    return { quality: 'economy', engine: 'css', reason: 'performance' };
+  }
+  if (input.prefersContrastMore) {
+    return { quality: 'economy', engine: 'css', reason: 'contrast' };
+  }
+  if (input.prefersReducedTransparency) {
+    return { quality: 'economy', engine: 'css', reason: 'reduced-transparency' };
+  }
+  if (input.requested === 'economy') {
+    return { quality: 'economy', engine: 'css', reason: 'economy' };
+  }
+  if (input.requested === 'auto') {
+    if (input.isMobileTouch) {
+      return { quality: 'economy', engine: 'css', reason: 'mobile-touch' };
+    }
+    if (input.rendererName && /swiftshader|llvmpipe|software/i.test(input.rendererName)) {
+      return { quality: 'economy', engine: 'css', reason: 'software-gpu' };
+    }
+    if (input.maxTextureSize !== undefined && input.maxTextureSize < 4096) {
+      return { quality: 'economy', engine: 'css', reason: 'low-texture' };
+    }
+    if (input.hardwareConcurrency !== undefined && input.hardwareConcurrency <= 2) {
+      return { quality: 'economy', engine: 'css', reason: 'low-cpu' };
+    }
+    if (input.deviceMemory !== undefined && input.deviceMemory <= 4) {
+      return { quality: 'economy', engine: 'css', reason: 'low-memory' };
+    }
+    return { quality: 'balanced', engine: 'webgl', reason: 'auto' };
+  }
+  if (input.requested === 'high') {
+    return { quality: 'high', engine: 'webgl', reason: 'high' };
+  }
+  return { quality: 'balanced', engine: 'webgl', reason: 'balanced' };
+}
+
 export function surfaceTint(settings: OpticalSettings, light: boolean) {
   if (settings.background === 'desktop') return light ? '#f4f4f4' : '#202020';
   const base = light ? '#edf4f7' : '#192b35';
