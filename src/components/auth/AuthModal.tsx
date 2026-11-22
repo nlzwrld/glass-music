@@ -7,6 +7,7 @@ import {
   LoaderCircle,
   Mail,
   Radio,
+  RefreshCw,
   ShieldCheck,
   X,
 } from 'lucide-react';
@@ -15,12 +16,13 @@ import {
   LEGAL_SUMMARY,
   hasAcceptedCurrentLegal,
 } from '../../../shared/auth';
+import { AutoUpdates, useUpdateNotice } from '../../lib/updates';
 import {
   DEFAULT_HUB_BROKER_URL,
   resolveEffectiveBroker,
   useAccounts,
 } from '../../stores/accounts';
-import { useApp } from '../../stores/app';
+import { cleanError, useApp } from '../../stores/app';
 import { IconButton } from '../glass/controls';
 import { DiscordIcon, GitHubIcon } from './ProviderIcons';
 import './auth.css';
@@ -68,6 +70,8 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
   const [oauthClientId, setOauthClientId] = useState('');
   const [oauthClientSecret, setOauthClientSecret] = useState('');
   const [copiedCallback, setCopiedCallback] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateMsg, setUpdateMsg] = useState('');
 
   const effectiveBroker = resolveEffectiveBroker(undefined, { preferredBrokerUrl, hub });
   const oauthCallbackUrl = `${effectiveBroker}/v1/auth/oauth/${oauthSetupProvider}/callback`;
@@ -185,6 +189,8 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
           )}
         </div>
 
+        {mandatory && <AutoUpdates />}
+
         {postAuthJamInvite && (
           <div className="auth-jam-banner" role="status">
             <Radio size={15} />
@@ -287,20 +293,60 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
             </div>
 
             {mandatory && (
-              <details className="auth-legal-details auth-server-details">
-                <summary>Servidor de autenticação</summary>
-                <label className="field-label" style={{ marginTop: 4 }}>
-                  URL do servidor HTTPS (ou loopback)
-                  <input
-                    type="url"
-                    className="input"
-                    aria-label="Servidor de autenticação"
-                    placeholder={DEFAULT_HUB_BROKER_URL}
-                    value={preferredBrokerUrl}
-                    onChange={e => setPreferredBrokerUrl(e.target.value)}
-                  />
-                </label>
-              </details>
+              <>
+                <details className="auth-legal-details auth-server-details">
+                  <summary>Servidor de autenticação</summary>
+                  <label className="field-label" style={{ marginTop: 4 }}>
+                    URL do servidor HTTPS (ou loopback)
+                    <input
+                      type="url"
+                      className="input"
+                      aria-label="Servidor de autenticação"
+                      placeholder={DEFAULT_HUB_BROKER_URL}
+                      value={preferredBrokerUrl}
+                      onChange={e => setPreferredBrokerUrl(e.target.value)}
+                    />
+                  </label>
+                </details>
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: 8,
+                    paddingTop: 2,
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="text-button"
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                    disabled={checkingUpdate || !!busy}
+                    onClick={() => {
+                      setCheckingUpdate(true);
+                      setUpdateMsg('');
+                      void ensureLegalConsent()
+                        .then(() => window.glass.updateStatus(false))
+                        .then(v => {
+                          setUpdateMsg(v.message);
+                          if (v.available && v.version) {
+                            useUpdateNotice.getState().setAvailable(v.version);
+                          }
+                        })
+                        .catch(e => setUpdateMsg(cleanError(e)))
+                        .finally(() => setCheckingUpdate(false));
+                    }}
+                  >
+                    <RefreshCw size={12} className={checkingUpdate ? 'auth-spin' : ''} />
+                    {checkingUpdate ? 'Verificando atualizações…' : 'Verificar atualizações'}
+                  </button>
+                  {updateMsg && (
+                    <span className="fine-print" role="status">
+                      {updateMsg}
+                    </span>
+                  )}
+                </div>
+              </>
             )}
           </>
         )}
