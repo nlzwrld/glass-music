@@ -23,8 +23,9 @@
 
 .import-playlist{gap:8px;justify-content:flex-start;margin:0 8px 10px 13px;font-size:11px}.account-row>div:first-child{min-width:0}.account-row small{display:block;font-size:11px;margin-top:4px;overflow-wrap:anywhere}.account-actions{display:flex;align-items:center;gap:8px;flex:none}.account-actions .button{display:flex;align-items:center;gap:7px;font-size:12px;padding:8px 11px}.account-notice{display:flex;align-items:center;gap:8px;margin:12px 0;font-size:12px}.account-setup{margin-top:16px;font-size:12px;color:var(--muted)}.account-setup summary{cursor:pointer}.account-setup p{margin:10px 0}.account-connections>.fine-print{margin:10px 0}
 .nav-item-badge{margin-left:auto;min-width:20px;height:20px;padding:0 6px;display:inline-flex;align-items:center;justify-content:center;border-radius:999px;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;background:var(--hover);border:1px solid var(--line);color:var(--text)}
-.shuffle-transport-btn{position:relative}
-.shuffle-smart-badge{position:absolute;top:5px;right:5px;display:inline-flex;align-items:center;justify-content:center;color:var(--accent);pointer-events:none;line-height:1}
+.transport>.icon-button:first-child,.transport>.icon-button:last-child{width:30px}
+.shuffle-transport-btn,.repeat-transport-btn{position:relative}
+.transport-active-dot{position:absolute;bottom:2px;left:50%;width:4px;height:4px;border-radius:50%;background:currentColor;transform:translateX(-50%);pointer-events:none}
 .spotify-provenance-banner{display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:9px 12px;border-radius:12px;background:var(--surface);border:1px solid var(--line);font-size:12px;color:var(--muted)}
 .spotify-provenance-banner svg{flex:none}
 .link-import-preview{display:flex;align-items:center;gap:8px;margin-top:8px;padding:7px 10px;border-radius:11px;background:var(--hover);border:1px solid var(--line);font-size:12px;color:var(--text)}

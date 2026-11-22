@@ -53,7 +53,7 @@ export default function App() {
     hub = useAccounts(s => s.hub),
     hubHydrated = useAccounts(s => s.hubHydrated),
     visitorMode = useAccounts(s => s.visitorMode);
-  const { isMobile } = useAndroidBetaLifecycle();
+  const { isAndroid } = useAndroidBetaLifecycle();
   const lockedByAuth =
     ready &&
     p.onboardingDone &&
@@ -339,7 +339,7 @@ export default function App() {
               <Queue />
               <Lyrics />
               <Player />
-              {isMobile && <MobileBottomNav />}
+              {isAndroid && <MobileBottomNav />}
               <Dialogs />
               <GlassLaboratory />
             </>

@@ -15,7 +15,8 @@ import {
 } from 'lucide-react';
 import type { ProfileVisibility, SocialLinks } from '../../../shared/types';
 import { oauthProviderLabel, resolveEffectiveBroker, useAccounts } from '../../stores/accounts';
-import { useApp } from '../../stores/app';
+import { setPreferencesFromUI, useApp } from '../../stores/app';
+import { Toggle } from '../glass/controls';
 import { DiscordIcon, GitHubIcon, GoogleIcon } from '../auth/ProviderIcons';
 import '../auth/auth.css';
 
@@ -94,7 +95,13 @@ export default function AccountConnections() {
 
   return (
     <section className="settings-section account-connections">
-      <h2>Contas</h2>
+      <h2>Conta e Integrações</h2>
+      <Toggle
+        label="Acesso online"
+        description="Permite conexões com contas, pesquisas remotas, descobertas, letras, perfis e sessões JAM"
+        checked={p.onlineConsent}
+        onChange={v => setPreferencesFromUI({ onlineConsent: v, catalogConsent: v })}
+      />
       {accounts.map(a => (
         <div className="setting-row account-row" key={a.provider} data-provider={a.provider}>
           <div>
@@ -187,8 +194,7 @@ export default function AccountConnections() {
                     <div className="hub-profile-meta">
                       <strong>{hub.displayName || hub.subject}</strong>
                       <small>
-                        @{hub.publicHandle || hub.username || hub.subject} · Cofre DPAPI ativo ·{' '}
-                        {hub.brokerUrl}
+                        @{hub.publicHandle || hub.username || hub.subject} · Sessão protegida no cofre local
                       </small>
                       <div className="hub-badge-row">
                         {hub.email && (
@@ -259,7 +265,6 @@ export default function AccountConnections() {
                   return (
                     <form
                       className="hub-nickname-form"
-                      style={{ display: 'grid', gap: 10 }}
                       onSubmit={e => {
                         e.preventDefault();
                         void updateProfile({
@@ -273,8 +278,8 @@ export default function AccountConnections() {
                         });
                       }}
                     >
-                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        <label className="field-label" style={{ flex: 1, minWidth: 180 }}>
+                      <div className="hub-form-grid">
+                        <label className="field-label">
                           Nome de exibição / Nickname
                           <input
                             type="text"
@@ -286,7 +291,7 @@ export default function AccountConnections() {
                             required
                           />
                         </label>
-                        <label className="field-label" style={{ flex: 1, minWidth: 180 }}>
+                        <label className="field-label">
                           @handle público (único)
                           <input
                             type="text"
@@ -297,7 +302,7 @@ export default function AccountConnections() {
                             onChange={e => setHandleInput(e.target.value)}
                           />
                         </label>
-                        <label className="field-label" style={{ minWidth: 180 }}>
+                        <label className="field-label">
                           Privacidade do perfil
                           <select
                             className="input"
@@ -398,7 +403,7 @@ export default function AccountConnections() {
                         </small>
                       )}
 
-                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <div className="hub-form-actions">
                         <button
                           type="submit"
                           className="button primary"
@@ -406,18 +411,6 @@ export default function AccountConnections() {
                         >
                           {busy === 'hub:profile' ? 'Salvando…' : 'Salvar perfil'}
                         </button>
-                        {hub.publicHandle && (
-                          <button
-                            type="button"
-                            className="button secondary"
-                            onClick={() =>
-                              useApp.getState().setPage(`profile:${hub.publicHandle}`)
-                            }
-                          >
-                            <ExternalLink size={14} />
-                            Ver perfil
-                          </button>
-                        )}
                         {shareHttpUrl && (
                           <button
                             type="button"
@@ -734,21 +727,9 @@ export default function AccountConnections() {
         )}
       </div>
 
-      <details className="account-setup">
-        <summary>Sessão Liquid Hub (Zero-Trust)</summary>
-        {hub.authenticated ? (
-          <div className="setting-row">
-            <span>
-              <strong>
-                <ShieldCheck size={14} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 5 }} />
-                {hub.displayName || hub.subject}
-              </strong>
-              <small>
-                ID {hub.userId || hub.subject} · Sessão cifrada localmente
-              </small>
-            </span>
-          </div>
-        ) : (
+      {!hub.authenticated && (
+        <details className="account-setup">
+          <summary>Conexão avançada de servidor (Zero-Trust)</summary>
           <form
             className="hub-auth-form"
             onSubmit={e => {
@@ -762,6 +743,7 @@ export default function AccountConnections() {
               Servidor HTTPS (ou loopback)
               <input
                 type="url"
+                className="input"
                 placeholder="https://hub.exemplo.com"
                 value={brokerUrl}
                 onChange={e => {
@@ -775,6 +757,7 @@ export default function AccountConnections() {
               E-mail ou usuário
               <input
                 type="text"
+                className="input"
                 autoComplete="username"
                 minLength={3}
                 maxLength={160}
@@ -787,6 +770,7 @@ export default function AccountConnections() {
               Senha (mínimo 12 caracteres · Argon2id)
               <input
                 type="password"
+                className="input"
                 autoComplete={registerMode ? 'new-password' : 'current-password'}
                 minLength={12}
                 maxLength={256}
@@ -812,11 +796,11 @@ export default function AccountConnections() {
               </button>
             </div>
           </form>
-        )}
-      </details>
+        </details>
+      )}
 
       <details className="account-setup">
-        <summary>Cadastro OAuth</summary>
+        <summary>Credenciais OAuth personalizadas (opcional)</summary>
         <p className="fine-print">
           Playlists públicas podem ser importadas diretamente por link sem conectar conta.
         </p>

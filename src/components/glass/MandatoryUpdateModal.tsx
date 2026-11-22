@@ -29,13 +29,13 @@ export function MandatoryUpdateModal() {
 
   return (
     <div
-      className="auth-modal-backdrop"
+      className="modal-backdrop"
       role="dialog"
       aria-modal="true"
       aria-labelledby="mandatory-update-title"
       style={{ zIndex: 10000 }}
     >
-      <div className="auth-modal-card glass-surface-heavy" style={{ maxWidth: 520 }}>
+      <div className="modal glass" style={{ width: 'min(520px, 94vw)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 14 }}>
           <LiquidHubLogo size={42} variant="dark" />
           <div>

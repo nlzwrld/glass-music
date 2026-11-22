@@ -325,7 +325,7 @@ export default function Settings() {
     : SETTINGS_CATEGORIES;
 
   const showCategory = (id: SettingsCategory) =>
-    q ? matchingTabs.some(c => c.id === id) : true;
+    q ? matchingTabs.some(c => c.id === id) : activeTab === id;
 
   return (
     <div className="settings-page settings-shell">
@@ -360,8 +360,8 @@ export default function Settings() {
                   setFilter('');
                   setActiveTab(id);
                   document
-                    .getElementById(`settings-cat-${id}`)
-                    ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    .querySelector('.main-scroll')
+                    ?.scrollTo({ top: 0, behavior: 'smooth' });
                 }}
               >
                 <Icon size={16} />
@@ -648,11 +648,11 @@ function InstallationMaintenanceSection() {
       aria-label="Manutenção, integridade e reparo da instalação"
     >
       <h2>Manutenção e Integridade da Instalação</h2>
-      <p className="fine-print" style={{ marginTop: 0 }}>
+      <p className="fine-print">
         Verifica a integridade do banco SQLite local, do cofre criptografado, remove arquivos
         temporários órfãos e gera um ponto de restauração seguro sem afetar suas playlists.
       </p>
-      <div className="settings-actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      <div className="settings-actions-row">
         <button
           type="button"
           className="button secondary"
@@ -671,19 +671,9 @@ function InstallationMaintenanceSection() {
         </button>
       </div>
       {report && (
-        <div
-          role="status"
-          style={{
-            marginTop: 12,
-            padding: 12,
-            borderRadius: 10,
-            background: 'rgba(255, 255, 255, 0.04)',
-            border: '1px solid rgba(255, 255, 255, 0.08)',
-            fontSize: 12.5,
-          }}
-        >
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>{report.message}</div>
-          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', opacity: 0.82 }}>
+        <div role="status" className="maintenance-report-card">
+          <strong>{report.message}</strong>
+          <div className="maintenance-report-grid">
             <span>Banco SQLite: {report.dbIntegrityOk ? 'Íntegro' : 'Requer reparo'}</span>
             <span>Cofre local: {report.vaultReadable ? 'Legível' : 'Erro'}</span>
             <span>Backups locais: {report.backupsCount}</span>

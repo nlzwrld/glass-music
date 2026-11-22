@@ -111,8 +111,11 @@ export function PlaybackControls({
         }}
       >
         <Shuffle size={15} />
-        {p.shuffle && shuffleMode === 'smart' && (
-          <Sparkles size={9} className="shuffle-smart-badge" aria-hidden="true" />
+        {p.shuffle && (
+          <span
+            className={`transport-active-dot ${shuffleMode === 'smart' ? 'is-smart' : ''}`}
+            aria-hidden="true"
+          />
         )}
       </IconButton>
       <IconButton
@@ -157,6 +160,7 @@ export function PlaybackControls({
       <IconButton
         label={`Repetir: ${p.repeat === 'off' ? 'desligado' : p.repeat === 'all' ? 'fila' : 'uma faixa'}`}
         active={p.repeat !== 'off'}
+        className="repeat-transport-btn"
         onClick={() =>
           setPreferencesFromUI({
             repeat: p.repeat === 'off' ? 'all' : p.repeat === 'all' ? 'one' : 'off',
@@ -164,6 +168,7 @@ export function PlaybackControls({
         }
       >
         {p.repeat === 'one' ? <Repeat1 size={15} /> : <Repeat size={15} />}
+        {p.repeat !== 'off' && <span className="transport-active-dot" aria-hidden="true" />}
       </IconButton>
     </div>
   );

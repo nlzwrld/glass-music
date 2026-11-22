@@ -173,23 +173,45 @@ html:not([data-ui-style='glass']) .track-table.is-reorderable .track-table-headi
 [data-theme=light] .collab-invite-banner{background:rgba(109,40,217,.08);border-color:rgba(109,40,217,.28)}
 [data-theme=light] .user-search-card:hover,[data-theme=light] .user-search-card:focus-visible{border-color:rgba(20,38,52,.28)}
 
-/* Phase 4: Settings Reorganization, Liquid Glass Presets, Liquid Plus & Brand Previews */
+/* Phase 4 & 6: Settings Reorganization, Form Inputs, Sidebar Bottom, Track Table & Visitor Banner */
+.sidebar-bottom{display:flex;align-items:center;gap:4px}
+.sidebar-bottom>.sidebar-account-btn{flex:1;min-width:0}
+.sidebar-profile-link{width:30px;height:30px;flex:none;border-radius:10px}
+
+.track-table:not(.is-reorderable) .track-table-heading,.track-table:not(.is-reorderable) .track-row{grid-template-columns:30px minmax(100px,1fr) 103px 96px 52px}
+.track-row>time{text-align:right;font-variant-numeric:tabular-nums}
+
 .glass-preset-row{flex-wrap:wrap}
-.settings-shell{max-width:1160px;margin-inline:auto;display:grid;gap:18px}
-.settings-header-row{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap}
-.settings-layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:20px;align-items:start}
-.settings-tabs{display:grid;gap:4px;position:sticky;top:8px}
-.settings-tab-btn{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;border:1px solid transparent;color:var(--muted);text-align:left;font-size:13px;transition:background var(--motion-hover),color var(--motion-hover),border-color var(--motion-hover)}
+.settings-shell{max-width:1120px;width:100%;margin-inline:auto;display:flex;flex-direction:column;gap:18px}
+.settings-header-row{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:4px !important}
+.settings-filter{min-width:220px;border:1px solid var(--line) !important;border-radius:10px;padding:6px 12px !important;background:var(--surface)}
+.settings-filter input{width:100% !important;min-width:140px}
+.version-pill{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;background:var(--hover);border:1px solid var(--line);font-size:11px;color:var(--muted);font-weight:500}
+.settings-layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:20px;align-items:start;width:100%}
+.settings-tabs{display:grid;gap:4px;position:sticky;top:8px;padding:6px;border-radius:14px;background:var(--surface);border:1px solid var(--line)}
+.settings-tab-btn{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;border:1px solid transparent;color:var(--muted);text-align:left;font-size:13px;width:100%;transition:background var(--motion-hover),color var(--motion-hover),border-color var(--motion-hover)}
 .settings-tab-btn:hover{background:var(--hover);color:var(--text)}
 .settings-tab-btn.selected{background:var(--selected);border-color:var(--line);color:var(--text);font-weight:600}
+.settings-tab-btn.selected svg{color:var(--accent)}
 .settings-tab-btn.matched{border-color:rgba(82,183,154,.45);color:var(--text)}
-.settings-content{display:grid;gap:16px;min-width:0}
+.settings-content{display:grid;gap:16px;min-width:0;width:100%}
 .settings-content>.settings-section{margin:0}
+
+.input,.field-label input,.field-label select,.field-label textarea{min-height:36px;padding:7px 11px;border-radius:8px;border:1px solid var(--line);background:var(--hover);color:var(--text);font-size:13px;width:100%;outline:none;transition:border-color 140ms ease,background-color 140ms ease}
+.input:focus,.field-label input:focus,.field-label select:focus,.field-label textarea:focus{border-color:var(--accent)}
+.field-label select option,select.input option{background:var(--panel);color:var(--text)}
+textarea.input,.field-label textarea{min-height:68px;resize:vertical;line-height:1.45;font-family:inherit}
+.settings-section .field-label,.hub-nickname-form .field-label,.auth-form .field-label,.share-modal-body .field-label{margin-top:0;gap:6px}
+.hub-nickname-form{display:grid;gap:12px}
+.hub-form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(195px,1fr));gap:12px}
+.hub-form-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.maintenance-report-card{margin-top:12px;padding:12px 14px;border-radius:10px;background:var(--hover);border:1px solid var(--line);font-size:12.5px;display:grid;gap:6px}
+.maintenance-report-grid{display:flex;gap:16px;flex-wrap:wrap;color:var(--muted);font-size:12px}
 
 @media(max-width:860px){
   .settings-layout{grid-template-columns:1fr}
-  .settings-tabs{display:flex;overflow-x:auto;padding-bottom:6px;position:static}
-  .settings-tab-btn{white-space:nowrap;flex:none}
+  .settings-tabs{display:flex;overflow-x:auto;padding:6px;position:static}
+  .settings-tab-btn{white-space:nowrap;flex:none;width:auto}
 }
 
 .plus-shell{display:grid;gap:14px}
@@ -209,24 +231,36 @@ html:not([data-ui-style='glass']) .track-table.is-reorderable .track-table-headi
 .plus-plan-foot{padding-top:8px;border-top:1px solid var(--line)}
 
 .brand-preview-section{display:grid;gap:14px}
-.brand-preview-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
+.brand-preview-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
 .brand-preview-card{display:grid;gap:6px;padding:12px;border-radius:14px;border:1px solid var(--line);background:var(--surface);text-align:center}
 .brand-preview-stage{height:86px;border-radius:11px;display:grid;place-items:center;background:var(--hover)}
+.brand-preview-stage img{width:56px;height:56px;aspect-ratio:1;object-fit:contain}
 .brand-preview-card.is-dark .brand-preview-stage{background:#09151d}
 .brand-preview-card.is-light .brand-preview-stage{background:#eef6f8}
 .brand-preview-card strong{font-size:12px}
 .brand-preview-card small{font-size:11px;color:var(--muted)}
 .brand-splash-preview{display:grid;gap:6px;justify-items:start}
-.brand-splash-preview img{max-width:100%;height:auto;border-radius:16px;border:1px solid var(--line)}
+.brand-splash-preview img{width:100%;max-width:560px;height:auto;aspect-ratio:640 / 240;object-fit:contain;border-radius:14px;border:1px solid var(--line)}
+
+.visitor-visual-ad-banner{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 18px;padding:9px 14px;border-radius:10px;background:var(--surface);border:1px solid var(--line);font-size:12px;flex:none}
+.visitor-visual-ad-info{display:flex;align-items:center;gap:10px;min-width:0;flex:1}
+.visitor-visual-ad-badge{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:999px;background:rgba(56,189,248,.14);border:1px solid rgba(56,189,248,.32);color:#38bdf8;font-size:11px;font-weight:600;white-space:nowrap;flex:none}
+.visitor-visual-ad-text{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.visitor-visual-ad-text strong{color:var(--text)}
+.visitor-visual-ad-actions{display:flex;align-items:center;gap:6px;flex:none}
+[data-theme=light] .visitor-visual-ad-badge{background:rgba(14,116,144,.12);border-color:rgba(14,116,144,.28);color:#0e7490}
 
 [data-theme=light] .plus-policy-banner{background:rgba(16,122,87,.08);border-color:rgba(16,122,87,.28)}
 
 .mobile-bottom-nav{display:flex;align-items:center;justify-content:space-around;height:62px;padding:4px 8px env(safe-area-inset-bottom,4px);border-top:1px solid var(--line);background:var(--surface);backdrop-filter:blur(18px);z-index:45}
 .mobile-bottom-nav-item{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-width:56px;min-height:48px;padding:6px 10px;border-radius:12px;color:var(--muted);font-size:11px;font-weight:500;transition:color var(--motion-hover),background var(--motion-hover)}
 .mobile-bottom-nav-item.active{color:var(--text);background:var(--selected);font-weight:600}
-@media(max-width:768px){
+@media(max-width:768px) and (pointer:coarse){
   .app-body>.sidebar{display:none}
-  .visitor-visual-ad-banner{flex-direction:column;align-items:flex-start !important}
+}
+@media(max-width:768px){
+  .visitor-visual-ad-banner{flex-direction:column;align-items:flex-start}
+  .visitor-visual-ad-text{white-space:normal}
 }
 
 

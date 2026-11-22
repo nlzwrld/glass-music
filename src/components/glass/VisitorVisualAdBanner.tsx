@@ -84,55 +84,29 @@ export function VisitorVisualAdBanner() {
 
   return (
     <aside
-      className="visitor-visual-ad-banner glass-surface"
+      className="visitor-visual-ad-banner"
       aria-label="Banner informativo de modo visitante e destaque visual patrocinado sem áudio"
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 12,
-        margin: '8px 18px 0',
-        padding: '10px 14px',
-        borderRadius: 12,
-        background: 'rgba(255, 255, 255, 0.04)',
-        border: '1px solid rgba(255, 255, 255, 0.09)',
-        fontSize: 12.5,
-      }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-        <span
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 4,
-            padding: '2px 8px',
-            borderRadius: 999,
-            background: 'rgba(56, 189, 248, 0.14)',
-            color: '#38bdf8',
-            fontSize: 11,
-            fontWeight: 600,
-            whiteSpace: 'nowrap',
-          }}
-        >
+      <div className="visitor-visual-ad-info">
+        <span className="visitor-visual-ad-badge">
           <VolumeX size={12} />
           {VISITOR_VISUAL_AD_SPEC.label}
         </span>
-        <span style={{ opacity: 0.88, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        <span className="visitor-visual-ad-text">
           <strong>Modo Visitante:</strong> você pode buscar e ouvir músicas livremente. Crie sua
           conta gratuita para usar JAM ao vivo, playlists colaborativas e sincronização na nuvem —
           ou conheça o <strong>Liquid Plus</strong> sem banners visuais.
         </span>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+      <div className="visitor-visual-ad-actions">
         <button
           type="button"
-          className="button ghost"
+          className="button secondary"
           onClick={() => {
             setSettingsTab('plus');
             setPage('settings');
           }}
-          style={{ padding: '5px 10px', fontSize: 12 }}
         >
           <Sparkles size={13} />
           Liquid Plus
@@ -141,17 +115,15 @@ export function VisitorVisualAdBanner() {
           type="button"
           className="button primary"
           onClick={() => openAuthModal({ view: 'choose' })}
-          style={{ padding: '5px 11px', fontSize: 12 }}
         >
           <UserPlus size={13} />
           Criar conta ou entrar
         </button>
         <button
           type="button"
-          className="text-button"
+          className="icon-button"
           aria-label="Ocultar banner visual"
           onClick={() => setDismissed(true)}
-          style={{ padding: 4 }}
         >
           <X size={14} />
         </button>
