@@ -2220,6 +2220,11 @@ export interface CfJamEnv {
   GITHUB_TOKEN_URL?: string;
   GITHUB_USER_URL?: string;
   GITHUB_EMAILS_URL?: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  GOOGLE_AUTH_URL?: string;
+  GOOGLE_TOKEN_URL?: string;
+  GOOGLE_USER_URL?: string;
 }
 
 const workerRates = new Map<string, { until: number; count: number }>();
@@ -3303,12 +3308,16 @@ export async function handleCloudflareJamFetch(request: Request, env: CfJamEnv):
       const headers = new Headers(request.headers);
       headers.set('X-Liquid-Client-IP', ip);
       headers.delete('CF-Connecting-IP');
+      headers.delete('Content-Length');
+      const body =
+        request.method !== 'GET' && request.method !== 'HEAD'
+          ? await request.arrayBuffer()
+          : undefined;
       const forwarded = new Request(request.url, {
         method: request.method,
         headers,
         redirect: 'manual',
-        body:
-          request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined,
+        body,
       });
       return await env.JAM_ROOMS.get(env.JAM_ROOMS.idFromName('__hub_auth_v1__')).fetch(forwarded);
     }

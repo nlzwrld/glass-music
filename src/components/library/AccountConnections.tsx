@@ -10,9 +10,9 @@ import {
   ShieldCheck,
   Unplug,
 } from 'lucide-react';
-import { useAccounts } from '../../stores/accounts';
+import { oauthProviderLabel, useAccounts } from '../../stores/accounts';
 import { useApp } from '../../stores/app';
-import { DiscordIcon, GitHubIcon } from '../auth/ProviderIcons';
+import { DiscordIcon, GitHubIcon, GoogleIcon } from '../auth/ProviderIcons';
 import '../auth/auth.css';
 
 const names = { youtube: 'YouTube', soundcloud: 'SoundCloud', spotify: 'Spotify' };
@@ -135,6 +135,7 @@ export default function AccountConnections() {
         {hub.authenticated ? (
           (() => {
             const identities = hub.identities || [];
+            const googleId = identities.find(i => i.provider === 'google');
             const discordId = identities.find(i => i.provider === 'discord');
             const githubId = identities.find(i => i.provider === 'github');
             const emailId = identities.find(i => i.provider === 'email');
@@ -229,6 +230,44 @@ export default function AccountConnections() {
                 )}
 
                 <div className="hub-identities-list" aria-label="Identidades vinculadas">
+                  <div className="hub-identity-row" data-hub-provider="google">
+                    <div className="hub-identity-info">
+                      <GoogleIcon size={17} />
+                      <div>
+                        <strong>Google</strong>
+                        <small>
+                          {googleId
+                            ? `${googleId.displayName || googleId.username || googleId.providerSubject}${googleId.email ? ` · ${googleId.email}` : ''}`
+                            : 'Não vinculado'}
+                        </small>
+                      </div>
+                    </div>
+                    {googleId ? (
+                      <button
+                        type="button"
+                        className="button secondary"
+                        disabled={!!busy || methodCount <= 1}
+                        title={
+                          methodCount <= 1
+                            ? 'Adicione outro método de login antes de desvincular.'
+                            : 'Desvincular Google'
+                        }
+                        onClick={() => void unlinkIdentity('google', activeBroker)}
+                      >
+                        Desvincular
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="button secondary"
+                        disabled={!!busy || !online}
+                        onClick={() => void oauthHub('google', 'link', activeBroker)}
+                      >
+                        Vincular Google
+                      </button>
+                    )}
+                  </div>
+
                   <div className="hub-identity-row" data-hub-provider="discord">
                     <div className="hub-identity-info">
                       <DiscordIcon size={17} />
@@ -398,7 +437,7 @@ export default function AccountConnections() {
         ) : (
           <div className="hub-profile-card">
             <p className="fine-print">
-              Entre com Discord, GitHub ou e-mail para manter um único perfil verificado no Liquid Hub.
+              Entre com Google, Discord, GitHub ou e-mail para manter um único perfil verificado no Liquid Hub.
             </p>
             <div className="settings-actions-row">
               <button
@@ -411,6 +450,15 @@ export default function AccountConnections() {
               >
                 <ShieldCheck size={15} />
                 Entrar no Liquid Hub
+              </button>
+              <button
+                type="button"
+                className="button secondary"
+                disabled={!!busy || !online}
+                onClick={() => void oauthHub('google', 'login', brokerUrl.trim() || undefined)}
+              >
+                <GoogleIcon size={16} />
+                Continuar com Google
               </button>
               <button
                 type="button"
@@ -434,7 +482,7 @@ export default function AccountConnections() {
             {oauthPending && (
               <div className="settings-actions-row">
                 <span className="fine-print">
-                  Aguardando retorno do {oauthPending === 'discord' ? 'Discord' : 'GitHub'}…
+                  Aguardando retorno do {oauthProviderLabel(oauthPending)}…
                 </span>
                 <button
                   type="button"

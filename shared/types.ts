@@ -286,8 +286,8 @@ export interface IntegrationStatus {
   shortcuts: boolean;
 }
 
-export type HubAuthProvider = 'email' | 'discord' | 'github';
-export type HubOAuthProvider = 'discord' | 'github';
+export type HubAuthProvider = 'email' | 'discord' | 'github' | 'google';
+export type HubOAuthProvider = 'discord' | 'github' | 'google';
 
 export interface HubIdentityPublic {
   provider: HubAuthProvider;
@@ -314,6 +314,7 @@ export interface HubProvidersAvailability {
   };
   discord: HubProviderAvailability;
   github: HubProviderAvailability;
+  google: HubProviderAvailability;
   termsVersion: string;
   privacyVersion: string;
 }

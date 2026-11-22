@@ -6,6 +6,13 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { CURRENT_PRIVACY_VERSION, CURRENT_TERMS_VERSION } from '../../shared/auth';
 import {
+  buildProviderAuthorizeUrl,
+  describeProviderAvailability,
+  initAuthSchema,
+  resolveOAuthProviders,
+  sha256Base64Url,
+} from '../../server/auth';
+import {
   computePkceS256Challenge,
   createBroker,
   hashPasswordArgon2id,
@@ -14,6 +21,7 @@ import {
   ZeroTrustAuthEngine,
   type Argon2AsyncAdapter,
 } from '../../server/broker';
+import { handleCloudflareJamFetch, JamRoomDO, type CfJamEnv } from '../../server/jam';
 
 const TEST_ARGON2 = { memory: 1024, passes: 1, parallelism: 1, tagLength: 16 };
 
@@ -593,7 +601,7 @@ describe('Zero-Trust Broker & Auth Engine', () => {
 interface MockOAuthBehavior {
   mode?: 'approve' | 'cancel';
   id: string;
-  username: string;
+  username?: string;
   displayName?: string | null;
   email?: string | null;
   emailVerified?: boolean;
@@ -601,11 +609,17 @@ interface MockOAuthBehavior {
   privateGithubEmailsForbidden?: boolean;
 }
 
-async function startMockOAuthProvider(provider: 'discord' | 'github', initial: MockOAuthBehavior) {
+async function startMockOAuthProvider(
+  provider: 'discord' | 'github' | 'google',
+  initial: MockOAuthBehavior,
+) {
   let behavior = initial;
-  const server = createServer((req, res) => {
+  let lastAuthorizeParams: URLSearchParams | null = null;
+  let lastTokenParams: URLSearchParams | null = null;
+  const server = createServer(async (req, res) => {
     const u = new URL(req.url || '/', 'http://127.0.0.1');
     if (req.method === 'GET' && u.pathname === '/authorize') {
+      lastAuthorizeParams = new URLSearchParams(u.searchParams);
       const redirectUri = u.searchParams.get('redirect_uri')!;
       const state = u.searchParams.get('state')!;
       const target = new URL(redirectUri);
@@ -620,6 +634,9 @@ async function startMockOAuthProvider(provider: 'discord' | 'github', initial: M
       return;
     }
     if (req.method === 'POST' && u.pathname === '/token') {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      lastTokenParams = new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
       res.writeHead(200, { 'Content-Type': 'application/json' }).end(
         JSON.stringify({ access_token: `mock_tok_${behavior.id}`, token_type: 'Bearer' }),
       );
@@ -635,6 +652,17 @@ async function startMockOAuthProvider(provider: 'discord' | 'github', initial: M
             avatar: behavior.avatar ?? null,
             email: behavior.email ?? null,
             verified: behavior.emailVerified ?? Boolean(behavior.email),
+          }),
+        );
+      } else if (provider === 'google') {
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(
+          JSON.stringify({
+            sub: behavior.id,
+            name: behavior.displayName ?? undefined,
+            preferred_username: behavior.username ?? undefined,
+            email: behavior.email ?? undefined,
+            email_verified: behavior.emailVerified ?? Boolean(behavior.email),
+            picture: behavior.avatar ?? undefined,
           }),
         );
       } else {
@@ -671,6 +699,12 @@ async function startMockOAuthProvider(provider: 'discord' | 'github', initial: M
     setBehavior(next: MockOAuthBehavior) {
       behavior = next;
     },
+    getLastAuthorizeParams() {
+      return lastAuthorizeParams;
+    },
+    getLastTokenParams() {
+      return lastTokenParams;
+    },
     config() {
       return {
         clientId: `${provider}_client_id`,
@@ -678,7 +712,7 @@ async function startMockOAuthProvider(provider: 'discord' | 'github', initial: M
         authorizeUrl: `${base}/authorize`,
         tokenUrl: `${base}/token`,
         userInfoUrl: `${base}/user`,
-        emailsUrl: `${base}/user/emails`,
+        emailsUrl: provider === 'github' ? `${base}/user/emails` : '',
       };
     },
     close: () => new Promise<void>(r => server.close(() => r())),
@@ -687,7 +721,7 @@ async function startMockOAuthProvider(provider: 'discord' | 'github', initial: M
 
 async function runHttpOAuthPkce(input: {
   brokerUrl: string;
-  provider: 'discord' | 'github';
+  provider: 'discord' | 'github' | 'google';
   mode?: 'login' | 'link';
   bearerToken?: string;
   terms?: boolean;
@@ -1135,6 +1169,697 @@ describe('Multi-Provider Identity, OAuth & SQLite Persistence', () => {
       await discord.close();
       await github.close();
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('implements Google OAuth 2.0 + OpenID Connect end-to-end: config resolution, availability, PKCE S256, OIDC sub mapping, unverified emails, linking, cancellation, state CSRF & Cloudflare Worker callback', async () => {
+    // 1. Credential resolution & official Google OIDC URLs
+    const emptyResolved = resolveOAuthProviders({});
+    expect(emptyResolved.google).toEqual({
+      clientId: '',
+      clientSecret: '',
+      authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl: 'https://oauth2.googleapis.com/token',
+      userInfoUrl: 'https://openidconnect.googleapis.com/v1/userinfo',
+      emailsUrl: '',
+    });
+
+    const envResolved = resolveOAuthProviders({
+      GOOGLE_CLIENT_ID: 'mock-google-client-id.apps.googleusercontent.com',
+      GOOGLE_CLIENT_SECRET: 'mock-google-client-secret',
+    });
+    expect(envResolved.google.clientId).toBe('mock-google-client-id.apps.googleusercontent.com');
+    expect(envResolved.google.clientSecret).toBe('mock-google-client-secret');
+
+    // 2. Provider availability requires BOTH clientId and clientSecret
+    const partialResolved = resolveOAuthProviders({
+      GOOGLE_CLIENT_ID: 'only-client-id',
+    });
+    const availUnconfigured = describeProviderAvailability(
+      'https://liquid-hub-jam.nlzezwrld.workers.dev',
+      partialResolved,
+    );
+    expect(availUnconfigured.google).toEqual({
+      configured: false,
+      label: 'Google',
+      scopes: ['openid', 'email', 'profile'],
+    });
+
+    const availConfigured = describeProviderAvailability(
+      'https://liquid-hub-jam.nlzezwrld.workers.dev',
+      envResolved,
+    );
+    expect(availConfigured.google).toEqual({
+      configured: true,
+      label: 'Google',
+      scopes: ['openid', 'email', 'profile'],
+    });
+
+    // 3 & 4 & 5. Authorization URL construction, exact scopes (openid email profile), and PKCE S256
+    const googleCallbackUrl =
+      'https://liquid-hub-jam.nlzezwrld.workers.dev/v1/auth/oauth/google/callback';
+    const providerVerifier = randomBytes(32).toString('base64url');
+    const authUrlStr = buildProviderAuthorizeUrl({
+      provider: 'google',
+      config: envResolved.google,
+      callbackUrl: googleCallbackUrl,
+      state: 'st_google_unit_test_state_1234567890',
+      codeVerifier: providerVerifier,
+    });
+    const parsedAuthUrl = new URL(authUrlStr);
+    expect(parsedAuthUrl.origin + parsedAuthUrl.pathname).toBe(
+      'https://accounts.google.com/o/oauth2/v2/auth',
+    );
+    expect(parsedAuthUrl.searchParams.get('client_id')).toBe(
+      'mock-google-client-id.apps.googleusercontent.com',
+    );
+    expect(parsedAuthUrl.searchParams.get('redirect_uri')).toBe(googleCallbackUrl);
+    expect(parsedAuthUrl.searchParams.get('response_type')).toBe('code');
+    expect(parsedAuthUrl.searchParams.get('scope')).toBe('openid email profile');
+    expect(parsedAuthUrl.searchParams.get('state')).toBe('st_google_unit_test_state_1234567890');
+    expect(parsedAuthUrl.searchParams.get('code_challenge')).toBe(
+      sha256Base64Url(providerVerifier),
+    );
+    expect(parsedAuthUrl.searchParams.get('code_challenge_method')).toBe('S256');
+
+    // Legacy SQLite table migration check: upgrades existing CHECK constraints to include 'google'
+    const { createRequire } = await import('node:module');
+    const req = createRequire(import.meta.url);
+    const { DatabaseSync } = req('node:sqlite');
+    const legacyDb = new DatabaseSync(':memory:');
+    legacyDb.exec(`
+      CREATE TABLE hub_users (user_id TEXT PRIMARY KEY);
+      CREATE TABLE hub_identities (
+        provider TEXT NOT NULL CHECK (provider IN ('email', 'discord', 'github')),
+        provider_subject TEXT NOT NULL,
+        user_id TEXT NOT NULL REFERENCES hub_users(user_id) ON DELETE CASCADE,
+        username TEXT,
+        display_name TEXT,
+        email TEXT,
+        avatar_url TEXT,
+        verified INTEGER NOT NULL DEFAULT 0,
+        linked_at INTEGER NOT NULL,
+        PRIMARY KEY (provider, provider_subject)
+      );
+      CREATE TABLE hub_oauth_flows (
+        state TEXT PRIMARY KEY,
+        provider TEXT NOT NULL CHECK (provider IN ('discord', 'github')),
+        mode TEXT NOT NULL CHECK (mode IN ('login', 'link')),
+        link_user_id TEXT,
+        client_id TEXT NOT NULL,
+        redirect_uri TEXT NOT NULL,
+        code_challenge TEXT NOT NULL,
+        code_challenge_method TEXT NOT NULL,
+        provider_verifier TEXT NOT NULL,
+        terms_version TEXT,
+        privacy_version TEXT,
+        terms_accepted_at INTEGER,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+    `);
+    initAuthSchema(legacyDb);
+    const upgradedEngine = new ZeroTrustAuthEngine({
+      dbPath: legacyDb,
+      argon2Params: TEST_ARGON2,
+    });
+
+    // Unconfigured Google rejects startOAuthFlow with 503 provider_not_configured
+    expect(() =>
+      upgradedEngine.startOAuthFlow({
+        raw: {
+          provider: 'google',
+          client_id: 'liquid-hub-desktop',
+          redirect_uri: 'http://127.0.0.1:51234/callback',
+          code_challenge: computePkceS256Challenge(randomBytes(32).toString('base64url')),
+          code_challenge_method: 'S256',
+          state: randomBytes(24).toString('base64url'),
+        },
+        providerConfig: emptyResolved.google,
+        callbackUrl: googleCallbackUrl,
+        linkUserId: null,
+      }),
+    ).toThrowError(/Google não está configurado/);
+    upgradedEngine.close();
+
+    // Start mock OAuth servers for Google, Discord, and GitHub
+    const googleMock = await startMockOAuthProvider('google', {
+      id: '109876543210123456789',
+      displayName: 'Clara Google',
+      email: 'clara.google@example.com',
+      emailVerified: true,
+      avatar: 'https://lh3.googleusercontent.com/a/ACg8ocClaraAvatar=s96-c',
+    });
+    const discordMock = await startMockOAuthProvider('discord', {
+      id: '888111222',
+      username: 'clara_discord',
+      displayName: 'Clara Discord',
+      email: 'clara.discord@example.com',
+      emailVerified: true,
+    });
+
+    const server = createBroker(
+      {
+        BROKER_ACCESS_TOKEN: 'owner-secret-token-value-123456',
+        BROKER_REQUESTS_PER_MINUTE: '300',
+        BROKER_AUTH_REQUESTS_PER_MINUTE: '100',
+        SOUNDCLOUD_CLIENT_ID: 'sc_id',
+        SOUNDCLOUD_CLIENT_SECRET: 'sc_secret',
+      },
+      mockSoundcloudFetch(),
+      Date.now,
+      {
+        argon2Params: TEST_ARGON2,
+        google: googleMock.config(),
+        discord: discordMock.config(),
+      },
+    );
+    await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+
+    try {
+      // GET /v1/auth/providers reports google.configured = true, github.configured = false
+      const provRes = await fetch(`${base}/v1/auth/providers`);
+      expect(provRes.status).toBe(200);
+      const provBody = (await provRes.json()) as any;
+      expect(provBody.google).toEqual({
+        configured: true,
+        label: 'Google',
+        scopes: ['openid', 'email', 'profile'],
+      });
+      expect(provBody.discord.configured).toBe(true);
+      expect(provBody.github.configured).toBe(false);
+
+      // 6, 7, 11, 12. Full Google login flow (authorize -> token exchange with PKCE -> OIDC userinfo -> loopback callback -> desktop token exchange)
+      const googleLogin = await runHttpOAuthPkce({
+        brokerUrl: base,
+        provider: 'google',
+        terms: true,
+      });
+      expect(googleLogin.ok).toBe(true);
+      if (!googleLogin.ok) throw new Error('expected google login ok');
+
+      // Verify exact parameters received by Google /authorize and /token endpoints
+      const authParams = googleMock.getLastAuthorizeParams()!;
+      expect(authParams.get('client_id')).toBe('google_client_id');
+      expect(authParams.get('response_type')).toBe('code');
+      expect(authParams.get('scope')).toBe('openid email profile');
+      expect(authParams.get('code_challenge_method')).toBe('S256');
+      expect(authParams.get('code_challenge')).toBeTruthy();
+
+      const tokenParams = googleMock.getLastTokenParams()!;
+      expect(tokenParams.get('client_id')).toBe('google_client_id');
+      expect(tokenParams.get('client_secret')).toBe('google_super_secret');
+      expect(tokenParams.get('grant_type')).toBe('authorization_code');
+      expect(tokenParams.get('redirect_uri')).toBe(`${base}/v1/auth/oauth/google/callback`);
+      const sentVerifier = tokenParams.get('code_verifier')!;
+      expect(sentVerifier).toBeTruthy();
+      expect(sha256Base64Url(sentVerifier)).toBe(authParams.get('code_challenge'));
+
+      // Verify OIDC sub is used as providerSubject (never email)
+      const claraUser = googleLogin.tokens.user;
+      expect(claraUser.displayName).toBe('Clara Google');
+      expect(claraUser.email).toBe('clara.google@example.com');
+      expect(claraUser.emailVerified).toBe(true);
+      expect(claraUser.avatarUrl).toBe(
+        'https://lh3.googleusercontent.com/a/ACg8ocClaraAvatar=s96-c',
+      );
+      expect(claraUser.needsTermsAcceptance).toBe(false);
+      expect(claraUser.identities).toHaveLength(1);
+      expect(claraUser.identities[0]).toMatchObject({
+        provider: 'google',
+        providerSubject: '109876543210123456789',
+        email: 'clara.google@example.com',
+        verified: true,
+      });
+      expect(claraUser.identities[0].providerSubject).not.toBe('clara.google@example.com');
+
+      // If user changes their email on Google, the same OIDC sub still logs into the same user
+      googleMock.setBehavior({
+        id: '109876543210123456789',
+        displayName: 'Clara Google Updated',
+        email: 'clara.new@example.com',
+        emailVerified: true,
+      });
+      const googleRelogin = await runHttpOAuthPkce({
+        brokerUrl: base,
+        provider: 'google',
+        terms: true,
+      });
+      expect(googleRelogin.ok).toBe(true);
+      if (!googleRelogin.ok) throw new Error('expected google relogin');
+      expect(googleRelogin.tokens.user.userId).toBe(claraUser.userId);
+
+      // 8. Unverified email handling + incomplete profile (no name, no picture)
+      googleMock.setBehavior({
+        id: '209876543210000000999',
+        displayName: null,
+        email: 'unverified.google@example.com',
+        emailVerified: false,
+        avatar: null,
+      });
+      const unverifiedLogin = await runHttpOAuthPkce({
+        brokerUrl: base,
+        provider: 'google',
+        terms: true,
+      });
+      expect(unverifiedLogin.ok).toBe(true);
+      if (!unverifiedLogin.ok) throw new Error('expected unverified login to succeed safely');
+      expect(unverifiedLogin.tokens.user.emailVerified).toBe(false);
+      expect(unverifiedLogin.tokens.user.email).toBeNull();
+      expect(unverifiedLogin.tokens.user.identities[0].providerSubject).toBe(
+        '209876543210000000999',
+      );
+      expect(unverifiedLogin.tokens.user.identities[0].verified).toBe(false);
+
+      // 9. State validation: invalid state & cross-provider state rejection
+      const invalidStateCb = await fetch(
+        `${base}/v1/auth/oauth/google/callback?state=st_nonexistent_12345678901234567890&code=abc`,
+        { redirect: 'manual' },
+      );
+      expect(invalidStateCb.status).toBe(400);
+
+      // Start a Discord flow and try to use its state on Google callback -> rejected with 400
+      const crossState = randomBytes(24).toString('base64url');
+      await fetch(`${base}/v1/auth/oauth/discord/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: 'discord',
+          client_id: 'liquid-hub-desktop',
+          redirect_uri: 'http://127.0.0.1:49999/callback',
+          code_challenge: computePkceS256Challenge(randomBytes(32).toString('base64url')),
+          code_challenge_method: 'S256',
+          state: crossState,
+        }),
+      });
+      const crossProviderCb = await fetch(
+        `${base}/v1/auth/oauth/google/callback?state=${encodeURIComponent(crossState)}&code=abc`,
+        { redirect: 'manual' },
+      );
+      expect(crossProviderCb.status).toBe(400);
+
+      // 13. Identity linking: link Discord to Clara's Google account, then unlink Discord, and link Google to a Discord account
+      const linkedDiscord = await runHttpOAuthPkce({
+        brokerUrl: base,
+        provider: 'discord',
+        mode: 'link',
+        bearerToken: googleLogin.tokens.access_token,
+      });
+      expect(linkedDiscord.ok).toBe(true);
+      if (!linkedDiscord.ok) throw new Error('expected discord link');
+      expect(linkedDiscord.tokens.user.userId).toBe(claraUser.userId);
+      expect(linkedDiscord.tokens.user.identities.map((i: any) => i.provider)).toEqual([
+        'google',
+        'discord',
+      ]);
+
+      // Unlink Google while Discord remains linked -> succeeds
+      const unlinkGoogleRes = await fetch(`${base}/v1/auth/identities/google`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${googleLogin.tokens.access_token}` },
+      });
+      expect(unlinkGoogleRes.status).toBe(200);
+      const afterUnlink = (await unlinkGoogleRes.json()) as any;
+      expect(afterUnlink.identities.map((i: any) => i.provider)).toEqual(['discord']);
+
+      // Re-link Google back to Clara's account -> succeeds
+      googleMock.setBehavior({
+        id: '109876543210123456789',
+        displayName: 'Clara Google',
+        email: 'clara.google@example.com',
+        emailVerified: true,
+      });
+      const relinkGoogle = await runHttpOAuthPkce({
+        brokerUrl: base,
+        provider: 'google',
+        mode: 'link',
+        bearerToken: googleLogin.tokens.access_token,
+      });
+      expect(relinkGoogle.ok).toBe(true);
+      if (!relinkGoogle.ok) throw new Error('expected google relink');
+      expect(relinkGoogle.tokens.user.identities.map((i: any) => i.provider)).toEqual([
+        'discord',
+        'google',
+      ]);
+
+      // 14. Cancellation on Google OAuth
+      googleMock.setBehavior({
+        mode: 'cancel',
+        id: '999999999999999999999',
+        displayName: 'Canceled Google',
+      });
+      const canceledGoogle = await runHttpOAuthPkce({
+        brokerUrl: base,
+        provider: 'google',
+      });
+      expect(canceledGoogle.ok).toBe(false);
+      if (!canceledGoogle.ok) expect(canceledGoogle.error).toBe('access_denied');
+
+      // 10. Cloudflare Worker + Durable Object callback flow (handleCloudflareJamFetch -> JamRoomDO)
+      googleMock.setBehavior({
+        id: '309876543210987654321',
+        displayName: 'Cloudflare Worker Google User',
+        email: 'cf.worker.google@example.com',
+        emailVerified: true,
+        avatar: 'https://lh3.googleusercontent.com/a/ACg8ocCfWorker=s96-c',
+      });
+      const cfGoogleConfig = googleMock.config();
+      let authDoInstance: JamRoomDO | null = null;
+      const cfEnv: CfJamEnv = {
+        GOOGLE_CLIENT_ID: cfGoogleConfig.clientId,
+        GOOGLE_CLIENT_SECRET: cfGoogleConfig.clientSecret,
+        GOOGLE_AUTH_URL: cfGoogleConfig.authorizeUrl,
+        GOOGLE_TOKEN_URL: cfGoogleConfig.tokenUrl,
+        GOOGLE_USER_URL: cfGoogleConfig.userInfoUrl,
+        BROKER_PUBLIC_URL: 'https://liquid-hub-jam.nlzezwrld.workers.dev',
+        JAM_ROOMS: {
+          idFromName: (name: string) => name,
+          get: () => ({
+            fetch: async (req: Request) => {
+              if (!authDoInstance) {
+                authDoInstance = new JamRoomDO(
+                  {
+                    storage: {
+                      get: async () => undefined,
+                      put: async () => {},
+                      deleteAll: async () => {},
+                      setAlarm: async () => {},
+                    },
+                    acceptWebSocket: () => {},
+                    getWebSockets: () => [],
+                  },
+                  cfEnv,
+                );
+              }
+              return authDoInstance.fetch(req);
+            },
+          }),
+        },
+      };
+
+      const cfVerifier = randomBytes(32).toString('base64url');
+      const cfChallenge = computePkceS256Challenge(cfVerifier);
+      const cfState = 'st_cf_' + randomBytes(24).toString('base64url');
+      const cfLoopbackRedirect = 'http://127.0.0.1:54321/callback';
+
+      const cfStartRes = await handleCloudflareJamFetch(
+        new Request(
+          'https://liquid-hub-jam.nlzezwrld.workers.dev/v1/auth/oauth/google/start',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              provider: 'google',
+              client_id: 'liquid-hub-desktop',
+              redirect_uri: cfLoopbackRedirect,
+              code_challenge: cfChallenge,
+              code_challenge_method: 'S256',
+              state: cfState,
+              termsVersion: CURRENT_TERMS_VERSION,
+              privacyVersion: CURRENT_PRIVACY_VERSION,
+            }),
+          },
+        ),
+        cfEnv,
+      );
+      expect(cfStartRes.status).toBe(200);
+      const cfStarted = (await cfStartRes.json()) as { authorizeUrl: string };
+      expect(cfStarted.authorizeUrl).toContain('/authorize?');
+
+      const cfGoogleAuthHop = await fetch(cfStarted.authorizeUrl, { redirect: 'manual' });
+      expect(cfGoogleAuthHop.status).toBe(302);
+      const cfCallbackLocation = cfGoogleAuthHop.headers.get('location')!;
+      expect(cfCallbackLocation.startsWith('https://liquid-hub-jam.nlzezwrld.workers.dev/v1/auth/oauth/google/callback')).toBe(true);
+
+      const cfCallbackRes = await handleCloudflareJamFetch(
+        new Request(cfCallbackLocation, { method: 'GET' }),
+        cfEnv,
+      );
+      expect(cfCallbackRes.status).toBe(302);
+      const loopbackUrl = new URL(cfCallbackRes.headers.get('location')!);
+      expect(loopbackUrl.origin + loopbackUrl.pathname).toBe(cfLoopbackRedirect);
+      expect(loopbackUrl.searchParams.get('state')).toBe(cfState);
+      const cfIssuedCode = loopbackUrl.searchParams.get('code')!;
+      expect(cfIssuedCode).toBeTruthy();
+
+      const cfTokenRes = await handleCloudflareJamFetch(
+        new Request('https://liquid-hub-jam.nlzezwrld.workers.dev/v1/auth/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            grant_type: 'authorization_code',
+            code: cfIssuedCode,
+            client_id: 'liquid-hub-desktop',
+            code_verifier: cfVerifier,
+            redirect_uri: cfLoopbackRedirect,
+          }),
+        }),
+        cfEnv,
+      );
+      expect(cfTokenRes.status).toBe(200);
+      const cfSession = (await cfTokenRes.json()) as any;
+      expect(cfSession.user.displayName).toBe('Cloudflare Worker Google User');
+      expect(cfSession.user.identities[0]).toMatchObject({
+        provider: 'google',
+        providerSubject: '309876543210987654321',
+      });
+    } finally {
+      server.close();
+      await googleMock.close();
+      await discordMock.close();
+    }
+  });
+
+  it('audits Discord OAuth 2.0 end-to-end: credential resolution, availability, authorize URL, identify+email scopes, PKCE S256, unverified email rejection, flow expiration & Cloudflare Worker callback', async () => {
+    // 1. Credential resolution & official Discord endpoints
+    const defaultResolved = resolveOAuthProviders({});
+    expect(defaultResolved.discord).toEqual({
+      clientId: '',
+      clientSecret: '',
+      authorizeUrl: 'https://discord.com/oauth2/authorize',
+      tokenUrl: 'https://discord.com/api/oauth2/token',
+      userInfoUrl: 'https://discord.com/api/users/@me',
+      emailsUrl: '',
+    });
+
+    const configuredResolved = resolveOAuthProviders({
+      DISCORD_CLIENT_ID: 'mock-discord-client-id',
+      DISCORD_CLIENT_SECRET: 'mock-discord-client-secret',
+    });
+    expect(configuredResolved.discord.clientId).toBe('mock-discord-client-id');
+    expect(configuredResolved.discord.clientSecret).toBe('mock-discord-client-secret');
+
+    // 2. Availability requires BOTH clientId and clientSecret
+    expect(
+      describeProviderAvailability(
+        'https://liquid-hub-jam.nlzezwrld.workers.dev',
+        resolveOAuthProviders({ DISCORD_CLIENT_ID: 'only-id' }),
+      ).discord,
+    ).toEqual({
+      configured: false,
+      label: 'Discord',
+      scopes: ['identify', 'email'],
+    });
+    expect(
+      describeProviderAvailability(
+        'https://liquid-hub-jam.nlzezwrld.workers.dev',
+        configuredResolved,
+      ).discord,
+    ).toEqual({
+      configured: true,
+      label: 'Discord',
+      scopes: ['identify', 'email'],
+    });
+
+    // 3 & 4 & 5. Official authorize URL, identify+email scopes, PKCE S256
+    const discordCallback =
+      'https://liquid-hub-jam.nlzezwrld.workers.dev/v1/auth/oauth/discord/callback';
+    const providerVerifier = randomBytes(32).toString('base64url');
+    const builtUrl = new URL(
+      buildProviderAuthorizeUrl({
+        provider: 'discord',
+        config: configuredResolved.discord,
+        callbackUrl: discordCallback,
+        state: 'st_discord_audit_state_12345678901234',
+        codeVerifier: providerVerifier,
+      }),
+    );
+    expect(builtUrl.origin + builtUrl.pathname).toBe('https://discord.com/oauth2/authorize');
+    expect(builtUrl.searchParams.get('client_id')).toBe('mock-discord-client-id');
+    expect(builtUrl.searchParams.get('redirect_uri')).toBe(discordCallback);
+    expect(builtUrl.searchParams.get('response_type')).toBe('code');
+    expect(builtUrl.searchParams.get('scope')).toBe('identify email');
+    expect(builtUrl.searchParams.get('state')).toBe('st_discord_audit_state_12345678901234');
+    expect(builtUrl.searchParams.get('code_challenge')).toBe(sha256Base64Url(providerVerifier));
+    expect(builtUrl.searchParams.get('code_challenge_method')).toBe('S256');
+
+    // 15. OAuth flow expiration (10-minute TTL)
+    let now = 1_760_000_000_000;
+    const expiringEngine = new ZeroTrustAuthEngine({
+      clock: () => now,
+      argon2Params: TEST_ARGON2,
+    });
+    const expState = 'st_expiring_' + randomBytes(20).toString('base64url');
+    expiringEngine.startOAuthFlow({
+      raw: {
+        provider: 'discord',
+        client_id: 'liquid-hub-desktop',
+        redirect_uri: 'http://127.0.0.1:54321/callback',
+        code_challenge: computePkceS256Challenge(randomBytes(32).toString('base64url')),
+        code_challenge_method: 'S256',
+        state: expState,
+      },
+      providerConfig: configuredResolved.discord,
+      callbackUrl: discordCallback,
+      linkUserId: null,
+    });
+    expect(expiringEngine.peekOAuthFlow(expState, 'discord')).not.toBeNull();
+    now += 10 * 60 * 1000 + 1;
+    expect(expiringEngine.consumeOAuthFlow(expState, 'discord')).toBeNull();
+    expiringEngine.close();
+
+    // 6, 7, 8, 9, 10, 11, 12. Full Discord Cloudflare Worker + Durable Object flow + unverified email check
+    const discordMock = await startMockOAuthProvider('discord', {
+      id: '987654321098765432',
+      username: 'discord_auditor',
+      displayName: 'Discord Auditor',
+      email: 'unverified.discord@example.com',
+      emailVerified: false,
+      avatar: 'avatar_hash_99',
+    });
+
+    try {
+      const cfg = discordMock.config();
+      let authDo: JamRoomDO | null = null;
+      const cfEnv: CfJamEnv = {
+        DISCORD_CLIENT_ID: cfg.clientId,
+        DISCORD_CLIENT_SECRET: cfg.clientSecret,
+        DISCORD_AUTH_URL: cfg.authorizeUrl,
+        DISCORD_TOKEN_URL: cfg.tokenUrl,
+        DISCORD_USER_URL: cfg.userInfoUrl,
+        BROKER_PUBLIC_URL: 'https://liquid-hub-jam.nlzezwrld.workers.dev',
+        JAM_ROOMS: {
+          idFromName: (name: string) => name,
+          get: () => ({
+            fetch: async (req: Request) => {
+              if (!authDo) {
+                authDo = new JamRoomDO(
+                  {
+                    storage: {
+                      get: async () => undefined,
+                      put: async () => {},
+                      deleteAll: async () => {},
+                      setAlarm: async () => {},
+                    },
+                    acceptWebSocket: () => {},
+                    getWebSockets: () => [],
+                  },
+                  cfEnv,
+                );
+              }
+              return authDo.fetch(req);
+            },
+          }),
+        },
+      };
+
+      // Providers endpoint reports discord configured: true
+      const provRes = await handleCloudflareJamFetch(
+        new Request('https://liquid-hub-jam.nlzezwrld.workers.dev/v1/auth/providers'),
+        cfEnv,
+      );
+      expect(provRes.status).toBe(200);
+      const provJson = (await provRes.json()) as any;
+      expect(provJson.discord.configured).toBe(true);
+
+      const verifier = randomBytes(32).toString('base64url');
+      const challenge = computePkceS256Challenge(verifier);
+      const state = 'st_cf_discord_' + randomBytes(20).toString('base64url');
+      const loopback = 'http://127.0.0.1:54321/callback';
+
+      const startRes = await handleCloudflareJamFetch(
+        new Request('https://liquid-hub-jam.nlzezwrld.workers.dev/v1/auth/oauth/discord/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            provider: 'discord',
+            client_id: 'liquid-hub-desktop',
+            redirect_uri: loopback,
+            code_challenge: challenge,
+            code_challenge_method: 'S256',
+            state,
+            termsVersion: CURRENT_TERMS_VERSION,
+            privacyVersion: CURRENT_PRIVACY_VERSION,
+          }),
+        }),
+        cfEnv,
+      );
+      expect(startRes.status).toBe(200);
+      const started = (await startRes.json()) as { authorizeUrl: string };
+
+      const authHop = await fetch(started.authorizeUrl, { redirect: 'manual' });
+      expect(authHop.status).toBe(302);
+      const cbLoc = authHop.headers.get('location')!;
+      expect(
+        cbLoc.startsWith(
+          'https://liquid-hub-jam.nlzezwrld.workers.dev/v1/auth/oauth/discord/callback',
+        ),
+      ).toBe(true);
+
+      const cbRes = await handleCloudflareJamFetch(
+        new Request(cbLoc, { method: 'GET' }),
+        cfEnv,
+      );
+      expect(cbRes.status).toBe(302);
+      const finalTarget = new URL(cbRes.headers.get('location')!);
+      expect(finalTarget.origin + finalTarget.pathname).toBe(loopback);
+      expect(finalTarget.searchParams.get('state')).toBe(state);
+
+      // Verify PKCE code_verifier was sent to Discord token endpoint and matched code_challenge
+      const authParams = discordMock.getLastAuthorizeParams()!;
+      const tokenParams = discordMock.getLastTokenParams()!;
+      expect(authParams.get('scope')).toBe('identify email');
+      expect(authParams.get('code_challenge_method')).toBe('S256');
+      expect(sha256Base64Url(tokenParams.get('code_verifier')!)).toBe(
+        authParams.get('code_challenge'),
+      );
+
+      // Replaying the same callback state is rejected with 400
+      const replayCb = await handleCloudflareJamFetch(
+        new Request(cbLoc, { method: 'GET' }),
+        cfEnv,
+      );
+      expect(replayCb.status).toBe(400);
+
+      // Exchange code + desktop PKCE verifier
+      const tokRes = await handleCloudflareJamFetch(
+        new Request('https://liquid-hub-jam.nlzezwrld.workers.dev/v1/auth/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            grant_type: 'authorization_code',
+            code: finalTarget.searchParams.get('code'),
+            client_id: 'liquid-hub-desktop',
+            code_verifier: verifier,
+            redirect_uri: loopback,
+          }),
+        }),
+        cfEnv,
+      );
+      expect(tokRes.status).toBe(200);
+      const session = (await tokRes.json()) as any;
+      expect(session.user.displayName).toBe('Discord Auditor');
+      // Unverified Discord email MUST NOT be trusted or stored as verified
+      expect(session.user.email).toBeNull();
+      expect(session.user.emailVerified).toBe(false);
+      // Discord Snowflake ID is used as providerSubject (never username)
+      expect(session.user.identities[0]).toMatchObject({
+        provider: 'discord',
+        providerSubject: '987654321098765432',
+      });
+    } finally {
+      await discordMock.close();
     }
   });
 });

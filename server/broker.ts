@@ -386,6 +386,7 @@ export interface ZeroTrustAuthEngineOptions {
   onAuthEmail?: (email: AuthEmailMessage) => void | Promise<void>;
   discord?: OAuthProviderConfig;
   github?: OAuthProviderConfig;
+  google?: OAuthProviderConfig;
   publicUrl?: string;
 }
 
@@ -463,6 +464,7 @@ export class ZeroTrustAuthEngine {
     return {
       discord: this.resolveEffectiveProviderConfig('discord', base.discord),
       github: this.resolveEffectiveProviderConfig('github', base.github),
+      google: this.resolveEffectiveProviderConfig('google', base.google),
     };
   }
 
@@ -723,6 +725,13 @@ export class ZeroTrustAuthEngine {
       data.provider,
       input.providerConfig,
     );
+    if (data.provider === 'google' && (!effectiveConfig.clientId || !effectiveConfig.clientSecret)) {
+      throw new BrokerHttpError(
+        'O login com Google não está configurado neste servidor.',
+        503,
+        'provider_not_configured',
+      );
+    }
     const mode = data.mode ?? 'login';
     if (mode === 'link') {
       if (!input.linkUserId || !this.store.findUserById(input.linkUserId)) {
@@ -1412,7 +1421,12 @@ export function createBroker(
     dbPath: authOptions.dbPath ?? env.BROKER_DB_PATH,
     ...authOptions,
   });
-  const oauthProviders = resolveOAuthProviders(env, authOptions.discord, authOptions.github);
+  const oauthProviders = resolveOAuthProviders(
+    env,
+    authOptions.discord,
+    authOptions.github,
+    authOptions.google,
+  );
 
   if (env.BROKER_ADMIN_USER && env.BROKER_ADMIN_PASSWORD && env.BROKER_ADMIN_PASSWORD.length >= 12) {
     try {

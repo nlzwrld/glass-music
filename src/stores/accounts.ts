@@ -109,6 +109,12 @@ const commit = (result: Awaited<ReturnType<typeof window.glass.syncAccount>>) =>
 
 export const DEFAULT_HUB_BROKER_URL = 'https://liquid-hub-jam.nlzezwrld.workers.dev';
 
+export function oauthProviderLabel(provider: HubOAuthProvider): string {
+  if (provider === 'google') return 'Google';
+  if (provider === 'discord') return 'Discord';
+  return 'GitHub';
+}
+
 function normalizeBrokerCandidate(raw?: string): string {
   const trimmed = (raw || '').trim().replace(/\/+$/, '');
   if (!trimmed || trimmed.toLowerCase() === 'https://api.liquidhub.app') return '';
@@ -384,7 +390,7 @@ export const useAccounts = create<State>((set, get) => ({
     if (get().busy) return false;
     purgeSensitiveWebStorage();
     const broker = resolveEffectiveBroker(brokerUrl, get());
-    const label = provider === 'discord' ? 'Discord' : 'GitHub';
+    const label = oauthProviderLabel(provider);
     set({
       busy: `hub:oauth:${provider}`,
       oauthPending: provider,

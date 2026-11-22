@@ -166,6 +166,28 @@
   border-color: rgb(255 255 255 / 0.34);
 }
 
+.auth-provider-btn--google {
+  background: #ffffff;
+  border-color: rgb(255 255 255 / 0.24);
+  color: #1f1f1f;
+}
+
+.auth-provider-btn--google:hover:not(:disabled) {
+  background: #f2f4f8;
+  border-color: rgb(255 255 255 / 0.4);
+}
+
+:root[data-theme='light'] .auth-provider-btn--google {
+  background: #ffffff;
+  border-color: rgb(0 0 0 / 0.16);
+  color: #1f1f1f;
+}
+
+:root[data-theme='light'] .auth-provider-btn--google:hover:not(:disabled) {
+  background: #f7f8fa;
+  border-color: rgb(0 0 0 / 0.28);
+}
+
 .auth-legal-box {
   display: grid;
   gap: 8px;

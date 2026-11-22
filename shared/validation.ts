@@ -348,8 +348,8 @@ export const legalVersionSchema = z
   .max(32)
   .regex(/^[a-zA-Z0-9._-]+$/);
 export const passwordSchema = z.string().min(12).max(256);
-export const hubOAuthProviderSchema = z.enum(['discord', 'github']);
-export const hubAuthProviderSchema = z.enum(['email', 'discord', 'github']);
+export const hubOAuthProviderSchema = z.enum(['discord', 'github', 'google']);
+export const hubAuthProviderSchema = z.enum(['email', 'discord', 'github', 'google']);
 
 const brokerClientIdSchema = z
   .string()

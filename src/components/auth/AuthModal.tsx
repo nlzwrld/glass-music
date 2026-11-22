@@ -16,20 +16,23 @@ import {
   LEGAL_SUMMARY,
   hasAcceptedCurrentLegal,
 } from '../../../shared/auth';
+import type { HubOAuthProvider } from '../../../shared/types';
 import { AutoUpdates, useUpdateNotice } from '../../lib/updates';
 import {
   DEFAULT_HUB_BROKER_URL,
+  oauthProviderLabel,
   useAccounts,
 } from '../../stores/accounts';
 import { cleanError, useApp } from '../../stores/app';
 import { IconButton } from '../glass/controls';
-import { DiscordIcon, GitHubIcon } from './ProviderIcons';
+import { DiscordIcon, GitHubIcon, GoogleIcon } from './ProviderIcons';
 import './auth.css';
 
 export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
   const open = useAccounts(s => s.authModalOpen),
     storeView = useAccounts(s => s.authModalView),
     hub = useAccounts(s => s.hub),
+    hubProviders = useAccounts(s => s.hubProviders),
     oauthPending = useAccounts(s => s.oauthPending),
     postAuthJamInvite = useAccounts(s => s.postAuthJamInvite),
     preferredBrokerUrl = useAccounts(s => s.preferredBrokerUrl),
@@ -38,6 +41,7 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
     closeAuthModal = useAccounts(s => s.closeAuthModal),
     setView = useAccounts(s => s.setAuthModalView),
     setPreferredBrokerUrl = useAccounts(s => s.setPreferredBrokerUrl),
+    loadHubProviders = useAccounts(s => s.loadHubProviders),
     ensureLegalConsent = useAccounts(s => s.ensureLegalConsent),
     loginHub = useAccounts(s => s.loginHub),
     oauthHub = useAccounts(s => s.oauthHub),
@@ -71,8 +75,11 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
     if (effectiveOpen) {
       setTermsChecked(alreadyConsented);
       setLocalError('');
+      if (alreadyConsented) {
+        void loadHubProviders(preferredBrokerUrl || undefined);
+      }
     }
-  }, [effectiveOpen, alreadyConsented]);
+  }, [effectiveOpen, alreadyConsented, preferredBrokerUrl, loadHubProviders]);
 
   useEffect(() => {
     if (!effectiveOpen || mandatory) return;
@@ -101,11 +108,13 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
     return ensureLegalConsent();
   };
 
-  const handleOAuth = async (provider: 'discord' | 'github') => {
+  const handleOAuth = async (provider: HubOAuthProvider) => {
     const legal = await requireTerms();
     if (!legal) return;
     await oauthHub(provider, 'login');
   };
+
+  const googleUnavailable = hubProviders?.google?.configured === false;
 
   const handleOpenEmail = async () => {
     const legal = await requireTerms();
@@ -192,7 +201,7 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
             <span className="auth-pending-label">
               <LoaderCircle size={15} className="auth-spin" />
               <span>
-                Aguardando autorização no {oauthPending === 'discord' ? 'Discord' : 'GitHub'}…
+                Aguardando autorização no {oauthProviderLabel(oauthPending)}…
               </span>
             </span>
             <button
@@ -222,11 +231,34 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
             <div className="auth-provider-stack">
               <button
                 type="button"
+                className="auth-provider-btn auth-provider-btn--google"
+                disabled={!!busy || googleUnavailable}
+                title={
+                  googleUnavailable
+                    ? 'O login com Google não está configurado neste servidor.'
+                    : undefined
+                }
+                onClick={() => void handleOAuth('google')}
+              >
+                {busy === 'hub:oauth:google' ? (
+                  <LoaderCircle size={18} className="auth-spin" />
+                ) : (
+                  <GoogleIcon size={18} />
+                )}
+                <span>Continuar com Google</span>
+              </button>
+
+              <button
+                type="button"
                 className="auth-provider-btn auth-provider-btn--discord"
                 disabled={!!busy}
                 onClick={() => void handleOAuth('discord')}
               >
-                <DiscordIcon size={18} />
+                {busy === 'hub:oauth:discord' ? (
+                  <LoaderCircle size={18} className="auth-spin" />
+                ) : (
+                  <DiscordIcon size={18} />
+                )}
                 <span>Continuar com Discord</span>
               </button>
 
@@ -236,7 +268,11 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
                 disabled={!!busy}
                 onClick={() => void handleOAuth('github')}
               >
-                <GitHubIcon size={18} />
+                {busy === 'hub:oauth:github' ? (
+                  <LoaderCircle size={18} className="auth-spin" />
+                ) : (
+                  <GitHubIcon size={18} />
+                )}
                 <span>Continuar com GitHub</span>
               </button>
 

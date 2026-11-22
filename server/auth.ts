@@ -231,7 +231,7 @@ const AUTH_SCHEMA_STATEMENTS = [
     updated_at INTEGER NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS hub_identities (
-    provider TEXT NOT NULL CHECK (provider IN ('email', 'discord', 'github')),
+    provider TEXT NOT NULL CHECK (provider IN ('email', 'discord', 'github', 'google')),
     provider_subject TEXT NOT NULL,
     user_id TEXT NOT NULL REFERENCES hub_users(user_id) ON DELETE CASCADE,
     username TEXT,
@@ -254,7 +254,7 @@ const AUTH_SCHEMA_STATEMENTS = [
   )`,
   `CREATE TABLE IF NOT EXISTS hub_oauth_flows (
     state TEXT PRIMARY KEY,
-    provider TEXT NOT NULL CHECK (provider IN ('discord', 'github')),
+    provider TEXT NOT NULL CHECK (provider IN ('discord', 'github', 'google')),
     mode TEXT NOT NULL CHECK (mode IN ('login', 'link')),
     link_user_id TEXT,
     client_id TEXT NOT NULL,
@@ -301,6 +301,67 @@ const AUTH_SCHEMA_STATEMENTS = [
 export function initAuthSchema(db: SqliteDatabaseLike) {
   for (const stmt of AUTH_SCHEMA_STATEMENTS) {
     db.exec(stmt);
+  }
+  try {
+    const flowsTable = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'hub_oauth_flows'")
+      .get();
+    if (
+      flowsTable &&
+      typeof flowsTable.sql === 'string' &&
+      !flowsTable.sql.includes("'google'")
+    ) {
+      db.exec(`
+        ALTER TABLE hub_oauth_flows RENAME TO hub_oauth_flows_legacy;
+        CREATE TABLE hub_oauth_flows (
+          state TEXT PRIMARY KEY,
+          provider TEXT NOT NULL CHECK (provider IN ('discord', 'github', 'google')),
+          mode TEXT NOT NULL CHECK (mode IN ('login', 'link')),
+          link_user_id TEXT,
+          client_id TEXT NOT NULL,
+          redirect_uri TEXT NOT NULL,
+          code_challenge TEXT NOT NULL,
+          code_challenge_method TEXT NOT NULL,
+          provider_verifier TEXT NOT NULL,
+          terms_version TEXT,
+          privacy_version TEXT,
+          terms_accepted_at INTEGER,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL
+        );
+        INSERT INTO hub_oauth_flows SELECT * FROM hub_oauth_flows_legacy;
+        DROP TABLE hub_oauth_flows_legacy;
+      `);
+    }
+    const identitiesTable = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'hub_identities'")
+      .get();
+    if (
+      identitiesTable &&
+      typeof identitiesTable.sql === 'string' &&
+      !identitiesTable.sql.includes("'google'")
+    ) {
+      db.exec(`
+        ALTER TABLE hub_identities RENAME TO hub_identities_legacy;
+        CREATE TABLE hub_identities (
+          provider TEXT NOT NULL CHECK (provider IN ('email', 'discord', 'github', 'google')),
+          provider_subject TEXT NOT NULL,
+          user_id TEXT NOT NULL REFERENCES hub_users(user_id) ON DELETE CASCADE,
+          username TEXT,
+          display_name TEXT,
+          email TEXT,
+          avatar_url TEXT,
+          verified INTEGER NOT NULL DEFAULT 0,
+          linked_at INTEGER NOT NULL,
+          PRIMARY KEY (provider, provider_subject)
+        );
+        INSERT INTO hub_identities SELECT * FROM hub_identities_legacy;
+        DROP TABLE hub_identities_legacy;
+        CREATE INDEX IF NOT EXISTS idx_hub_identities_user ON hub_identities(user_id);
+      `);
+    }
+  } catch {
+    // Ignore if sqlite_master introspection is unavailable
   }
 }
 
@@ -677,7 +738,7 @@ export class HubAuthStore {
         .prepare(
           `INSERT INTO hub_identities (
              provider, provider_subject, user_id, username, display_name, email, avatar_url, verified, linked_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           input.profile.provider,
@@ -687,6 +748,7 @@ export class HubAuthStore {
           input.profile.displayName,
           input.profile.email,
           input.profile.avatarUrl,
+          input.profile.email && !input.profile.emailVerified ? 0 : 1,
           input.now,
         );
     });
@@ -704,7 +766,7 @@ export class HubAuthStore {
     this.db
       .prepare(
         `UPDATE hub_identities
-         SET username = ?, display_name = ?, email = ?, avatar_url = ?, verified = 1
+         SET username = ?, display_name = ?, email = ?, avatar_url = ?, verified = ?
          WHERE provider = ? AND provider_subject = ? AND user_id = ?`,
       )
       .run(
@@ -712,6 +774,7 @@ export class HubAuthStore {
         input.profile.displayName,
         input.profile.email,
         input.profile.avatarUrl,
+        input.profile.email && !input.profile.emailVerified ? 0 : 1,
         input.profile.provider,
         input.profile.providerSubject,
         input.userId,
@@ -757,7 +820,7 @@ export class HubAuthStore {
         .prepare(
           `INSERT INTO hub_identities (
              provider, provider_subject, user_id, username, display_name, email, avatar_url, verified, linked_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           input.profile.provider,
@@ -767,6 +830,7 @@ export class HubAuthStore {
           input.profile.displayName,
           input.profile.email,
           input.profile.avatarUrl,
+          input.profile.email && !input.profile.emailVerified ? 0 : 1,
           input.now,
         );
 
@@ -1176,9 +1240,11 @@ export function resolveOAuthProviders(
   env: NodeJS.ProcessEnv,
   discordOverride?: OAuthProviderConfig,
   githubOverride?: OAuthProviderConfig,
+  googleOverride?: OAuthProviderConfig,
 ): {
   discord: Required<OAuthProviderConfig>;
   github: Required<OAuthProviderConfig>;
+  google: Required<OAuthProviderConfig>;
 } {
   return {
     discord: {
@@ -1218,6 +1284,23 @@ export function resolveOAuthProviders(
         env.GITHUB_EMAILS_URL ??
         'https://api.github.com/user/emails',
     },
+    google: {
+      clientId: googleOverride?.clientId ?? env.GOOGLE_CLIENT_ID ?? '',
+      clientSecret: googleOverride?.clientSecret ?? env.GOOGLE_CLIENT_SECRET ?? '',
+      authorizeUrl:
+        googleOverride?.authorizeUrl ??
+        env.GOOGLE_AUTH_URL ??
+        'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl:
+        googleOverride?.tokenUrl ??
+        env.GOOGLE_TOKEN_URL ??
+        'https://oauth2.googleapis.com/token',
+      userInfoUrl:
+        googleOverride?.userInfoUrl ??
+        env.GOOGLE_USER_URL ??
+        'https://openidconnect.googleapis.com/v1/userinfo',
+      emailsUrl: '',
+    },
   };
 }
 
@@ -1240,6 +1323,11 @@ export function describeProviderAvailability(
       configured: Boolean(providers.github.clientId && providers.github.clientSecret),
       label: 'GitHub',
       scopes: ['read:user', 'user:email'],
+    },
+    google: {
+      configured: Boolean(providers.google.clientId && providers.google.clientSecret),
+      label: 'Google',
+      scopes: ['openid', 'email', 'profile'],
     },
     termsVersion: CURRENT_TERMS_VERSION,
     privacyVersion: CURRENT_PRIVACY_VERSION,
@@ -1264,6 +1352,12 @@ export function buildProviderAuthorizeUrl(input: {
       url.searchParams.set('code_challenge', sha256Base64Url(input.codeVerifier));
       url.searchParams.set('code_challenge_method', 'S256');
     }
+  } else if (input.provider === 'google') {
+    url.searchParams.set('scope', 'openid email profile');
+    if (input.codeVerifier) {
+      url.searchParams.set('code_challenge', sha256Base64Url(input.codeVerifier));
+      url.searchParams.set('code_challenge_method', 'S256');
+    }
   } else {
     url.searchParams.set('scope', 'read:user user:email');
   }
@@ -1284,7 +1378,7 @@ export async function exchangeExternalOAuthProfile(input: {
     redirect_uri: input.callbackUrl,
     grant_type: 'authorization_code',
   });
-  if (input.provider === 'discord' && input.codeVerifier) {
+  if ((input.provider === 'discord' || input.provider === 'google') && input.codeVerifier) {
     tokenBody.set('code_verifier', input.codeVerifier);
   }
 
@@ -1312,11 +1406,76 @@ export async function exchangeExternalOAuthProfile(input: {
     throw error;
   }
 
+  if (input.provider === 'google') {
+    const userRes = await fetch(input.config.userInfoUrl, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+        'User-Agent': 'LiquidHub-Broker/1.0',
+      },
+    });
+    if (!userRes.ok) {
+      const error = new Error('Não foi possível obter o perfil do Google.') as Error & {
+        oauthCode?: string;
+      };
+      error.oauthCode = 'provider_profile_failed';
+      throw error;
+    }
+    const raw = (await userRes.json()) as {
+      sub?: string | number;
+      name?: string | null;
+      given_name?: string | null;
+      preferred_username?: string | null;
+      email?: string | null;
+      email_verified?: boolean | string;
+      picture?: string | null;
+    };
+    const sub = raw.sub !== undefined && raw.sub !== null ? String(raw.sub).trim() : '';
+    if (!sub) {
+      const error = new Error('Identificador (sub) do Google ausente na resposta.') as Error & {
+        oauthCode?: string;
+      };
+      error.oauthCode = 'provider_profile_invalid';
+      throw error;
+    }
+    const rawEmail =
+      typeof raw.email === 'string' && raw.email.includes('@')
+        ? raw.email.trim().toLowerCase()
+        : null;
+    const emailVerified =
+      Boolean(rawEmail) && (raw.email_verified === true || raw.email_verified === 'true');
+    const emailLocalPart = rawEmail ? rawEmail.split('@')[0]?.trim() || '' : '';
+    const fullName =
+      (typeof raw.name === 'string' && raw.name.trim()) ||
+      (typeof raw.given_name === 'string' && raw.given_name.trim()) ||
+      '';
+    const preferredUsername =
+      (typeof raw.preferred_username === 'string' && raw.preferred_username.trim()) || '';
+    const fallbackHandle = `google_${sub.slice(0, 16)}`;
+    const username = preferredUsername || emailLocalPart || fullName || fallbackHandle;
+    const displayName = fullName || preferredUsername || emailLocalPart || fallbackHandle;
+    const avatarUrl =
+      typeof raw.picture === 'string' && /^https:\/\//i.test(raw.picture.trim())
+        ? raw.picture.trim()
+        : null;
+
+    return {
+      provider: 'google',
+      providerSubject: sub,
+      username,
+      displayName,
+      email: rawEmail,
+      emailVerified,
+      avatarUrl,
+    };
+  }
+
   if (input.provider === 'discord') {
     const userRes = await fetch(input.config.userInfoUrl, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         Accept: 'application/json',
+        'User-Agent': 'LiquidHub-Broker/1.0',
       },
     });
     if (!userRes.ok) {

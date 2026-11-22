@@ -1030,6 +1030,14 @@ fn hub_callback_code(raw: &str, expected_state: &str) -> Result<String> {
         .ok_or("Código de autorização ausente.".into())
 }
 
+fn valid_hub_oauth_provider(provider: &str) -> bool {
+    matches!(provider, "discord" | "github" | "google")
+}
+
+fn valid_hub_auth_provider(provider: &str) -> bool {
+    matches!(provider, "email" | "discord" | "github" | "google")
+}
+
 pub async fn hub_oauth_flow(
     app: &tauri::AppHandle,
     secrets_mtx: &Mutex<Secrets>,
@@ -1055,7 +1063,7 @@ pub async fn hub_oauth_flow(
         }
     }
     let provider = s(payload, "provider").trim().to_string();
-    if provider != "discord" && provider != "github" {
+    if !valid_hub_oauth_provider(&provider) {
         return Err("Provedor OAuth não suportado.".into());
     }
     let mode_raw = s(payload, "mode").trim();
@@ -1158,9 +1166,6 @@ pub async fn hub_oauth_flow(
     let start_status = start_res.status();
     let start_json: Value = start_res.json().await.unwrap_or(Value::Null);
     if !start_status.is_success() {
-        if s(&start_json, "code") == "provider_not_configured" {
-            return Err(format!("OAUTH_SETUP_REQUIRED:{provider}"));
-        }
         return Err(parse_broker_error(
             &start_json,
             "Provedor OAuth indisponível no servidor.",
@@ -1463,7 +1468,7 @@ pub async fn hub_unlink_identity(
         }
     }
     let provider = s(payload, "provider").trim();
-    if !["email", "discord", "github"].contains(&provider) {
+    if !valid_hub_auth_provider(provider) {
         return Err("Provedor inválido.".into());
     }
     let (broker, token) =
@@ -1768,6 +1773,21 @@ mod tests {
                 .contains("Já existe uma conta")
         );
         assert!(hub_callback_code(&format!("/callback?state=wrong&code={valid_code}"), "st1").is_err());
+    }
+
+    #[test]
+    fn recognizes_google_discord_and_github_as_supported_hub_providers() {
+        assert!(valid_hub_oauth_provider("google"));
+        assert!(valid_hub_oauth_provider("discord"));
+        assert!(valid_hub_oauth_provider("github"));
+        assert!(!valid_hub_oauth_provider("email"));
+        assert!(!valid_hub_oauth_provider("unknown"));
+
+        assert!(valid_hub_auth_provider("google"));
+        assert!(valid_hub_auth_provider("discord"));
+        assert!(valid_hub_auth_provider("github"));
+        assert!(valid_hub_auth_provider("email"));
+        assert!(!valid_hub_auth_provider("firebase"));
     }
 }
 

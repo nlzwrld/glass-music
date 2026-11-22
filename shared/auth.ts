@@ -16,7 +16,7 @@ export const LEGAL_SUMMARY = {
   privacyTitle: 'Política de Privacidade do Liquid Hub',
   termsHighlights: [
     'Sua conta central do Liquid Hub identifica você nas salas JAM e na sincronização segura entre dispositivos.',
-    'O login com Discord ou GitHub acessa apenas os escopos mínimos necessários para perfil e vínculo de identidade.',
+    'O login com Google, Discord ou GitHub acessa apenas os escopos mínimos necessários para perfil e vínculo de identidade.',
     'O uso de recursos multiplayer exige respeito às regras da sala e não abusar de convites ou sessões.',
   ],
   privacyHighlights: [
