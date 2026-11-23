@@ -66,6 +66,9 @@ export const transport = {
   rate: (r: number) => driver?.rate?.(Math.min(1.05, Math.max(0.95, Number.isFinite(r) ? r : 1))),
 };
 
+const hasNativeAndroidMedia = () =>
+  typeof window !== 'undefined' && Boolean(window.LiquidHubAndroid?.isNativeBridgeReady?.());
+
 function upcomingTrack(): Track | undefined {
   const s = useApp.getState();
   const idx = upcomingIndex(s, false);
@@ -78,6 +81,7 @@ export function PlayerEngine() {
     iframe = useRef<HTMLIFrameElement>(null);
   const activeDeck = useRef(0),
     graph = useRef<AudioGraph | undefined>(undefined),
+    graphStateCleanup = useRef<(() => void) | undefined>(undefined),
     fade = useRef(new PlaybackFadeController(PLAYBACK_FADE_MS)),
     retire = useRef<ReturnType<typeof setTimeout> | undefined>(undefined),
     outgoingDeck = useRef<HTMLAudioElement | undefined>(undefined),
@@ -106,13 +110,27 @@ export function PlayerEngine() {
 
   const setupGraph = () => {
     if (!graph.current) {
-      graph.current = new AudioGraph();
-      elements().forEach(el => graph.current!.attach(el));
+      const created = new AudioGraph();
+      graph.current = created;
+      elements().forEach(el => created.attach(el));
+      const ctx = created.context;
+      if (typeof ctx.addEventListener === 'function') {
+        const onStateChange = () => {
+          if (ctx.state !== 'running' && ctx.state !== 'closed') {
+            const s = useApp.getState();
+            if (s.playing && s.playbackIntent) {
+              void created.resume().catch(() => {});
+            }
+          }
+        };
+        ctx.addEventListener('statechange', onStateChange);
+        graphStateCleanup.current = () => ctx.removeEventListener('statechange', onStateChange);
+      }
     }
     void graph.current
       .configure(useApp.getState().data.preferences)
       .catch(e => useApp.getState().message(cleanError(e)));
-    void graph.current.resume();
+    void graph.current.resume().catch(() => {});
     return graph.current;
   };
 
@@ -243,6 +261,9 @@ export function PlayerEngine() {
         el.pause();
         return;
       }
+      if (graph.current && graph.current.context.state !== 'running') {
+        void graph.current.resume().catch(() => {});
+      }
       if (!started) {
         started = true;
         fade.current.consumePendingFadeIn();
@@ -283,7 +304,7 @@ export function PlayerEngine() {
         graph.current?.level(el, 1, 0.06);
       }
       update({ playing: true, playbackIntent: true, status: 'Reproduzindo', error: '' });
-      if ('mediaSession' in navigator) {
+      if ('mediaSession' in navigator && !hasNativeAndroidMedia()) {
         try {
           navigator.mediaSession.playbackState = 'playing';
         } catch {}
@@ -327,7 +348,7 @@ export function PlayerEngine() {
           ...(started ? { playbackIntent: false } : {}),
           ...(started || !useApp.getState().playbackIntent ? { status: 'Pausado' } : {}),
         });
-        if ('mediaSession' in navigator) {
+        if ('mediaSession' in navigator && !hasNativeAndroidMedia()) {
           try {
             navigator.mediaSession.playbackState = 'paused';
           } catch {}
@@ -370,7 +391,12 @@ export function PlayerEngine() {
         mode: resolveNotificationMode(useApp.getState().data.preferences),
         isFocused: isAppWindowFocused(),
       });
-      if ('mediaSession' in navigator && duration > 0 && el.currentTime <= duration) {
+      if (
+        'mediaSession' in navigator &&
+        !hasNativeAndroidMedia() &&
+        duration > 0 &&
+        el.currentTime <= duration
+      ) {
         try {
           navigator.mediaSession.setPositionState({
             duration,
@@ -525,7 +551,7 @@ export function PlayerEngine() {
         if (resumedFromMidFade) {
           pausedDuringPreparation = false;
           update({ playing: true, playbackIntent: true, status: 'Reproduzindo', error: '' });
-          if ('mediaSession' in navigator) {
+          if ('mediaSession' in navigator && !hasNativeAndroidMedia()) {
             try {
               navigator.mediaSession.playbackState = 'playing';
             } catch {}
@@ -943,6 +969,8 @@ export function PlayerEngine() {
       fade.current.cancel();
       notifier.current?.dispose();
       elements().forEach(el => el?.pause());
+      graphStateCleanup.current?.();
+      graphStateCleanup.current = undefined;
       void graph.current?.close();
       graph.current = undefined;
     },
@@ -950,33 +978,35 @@ export function PlayerEngine() {
   );
 
   useEffect(() => {
-    const onVisibility = () => {
+    const resumeIfNeeded = () => {
       const state = useApp.getState();
       if (
-        document.visibilityState === 'visible' &&
         state.playing &&
         state.playbackIntent &&
-        graph.current?.context.state === 'suspended'
+        graph.current &&
+        graph.current.context.state !== 'running'
       ) {
         void graph.current.resume().catch(() => {});
       }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') resumeIfNeeded();
+    };
+    const onForeground = () => {
+      resumeIfNeeded();
     };
     const onDeviceChange = () => {
       const state = useApp.getState();
       if (!graph.current) return;
       void graph.current.configure(state.data.preferences).catch(() => {});
-      if (
-        state.playing &&
-        state.playbackIntent &&
-        graph.current.context.state === 'suspended'
-      ) {
-        void graph.current.resume().catch(() => {});
-      }
+      resumeIfNeeded();
     };
     document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('liquid:app-foreground', onForeground);
     navigator.mediaDevices?.addEventListener('devicechange', onDeviceChange);
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('liquid:app-foreground', onForeground);
       navigator.mediaDevices?.removeEventListener('devicechange', onDeviceChange);
     };
   }, []);
@@ -1010,7 +1040,7 @@ export function PlayerEngine() {
   }, []);
 
   useEffect(() => {
-    if (!('mediaSession' in navigator) || !track) return;
+    if (!('mediaSession' in navigator) || !track || hasNativeAndroidMedia()) return;
     const art = coverURL(track);
     navigator.mediaSession.metadata = new MediaMetadata({
       title: track.title,

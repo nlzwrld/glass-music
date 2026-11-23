@@ -336,6 +336,10 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
       expect(serviceKt).toContain('liquid:android-media');
       expect(serviceKt).toContain('EXTRA_ARTWORK_URL');
       expect(serviceKt).toContain('METADATA_KEY_ALBUM_ART');
+      // Regression guard: service must NEVER steal Android AudioFocus from Chromium WebView
+      expect(serviceKt).not.toContain('requestAudioFocus');
+      expect(serviceKt).not.toContain('AudioFocusRequest');
+      expect(serviceKt).toContain('private var inForeground = false');
 
       const mainKt = readFileSync(
         join(appMain, 'java', 'com', 'nlzwrld', 'liquidhub', 'MainActivity.kt'),
@@ -345,6 +349,9 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
       expect(mainKt).toContain('LiquidHubMediaPlaybackService.isCurrentlyPlaying()');
       expect(mainKt).toContain('liquid:app-foreground');
       expect(mainKt).toContain('@JvmOverloads');
+      expect(mainKt).toContain('resumeTimers()');
+      expect(mainKt).toContain('playbackWanted');
+      expect(mainKt).toContain('override fun onStop()');
 
       const gradle = readFileSync(join(tempRoot, 'app', 'build.gradle.kts'), 'utf8');
       expect(gradle).toContain('minSdk = 26');
@@ -379,30 +386,61 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
           duration: 180,
           addedAt: Date.now(),
         };
-        syncMediaSessionMetadata(sampleTrack, true, 12.5, 180, null);
-        expect(updatePlayback).toHaveBeenCalledWith(
-          'Neon Drift',
-          'Liquid Artist',
-          'Beta Album',
-          true,
-          12500,
-          180000,
-          'https://i.ytimg.com/vi/abc12345678/mqdefault.jpg',
-        );
-        // Immediate seek jump (>2.2s) triggers instant lockscreen scrubber update
-        syncMediaSessionMetadata(sampleTrack, true, 65.0, 180, null);
-        expect(updatePlayback).toHaveBeenCalledTimes(2);
-        expect(updatePlayback).toHaveBeenLastCalledWith(
-          'Neon Drift',
-          'Liquid Artist',
-          'Beta Album',
-          true,
-          65000,
-          180000,
-          'https://i.ytimg.com/vi/abc12345678/mqdefault.jpg',
-        );
-        syncMediaSessionMetadata(null, false, 0, 0, null);
-        expect(stopPlayback).toHaveBeenCalledTimes(1);
+        const nowSpy = vi.spyOn(Date, 'now');
+        let clock = 1_700_000_000_000;
+        nowSpy.mockImplementation(() => clock);
+        try {
+          syncMediaSessionMetadata(sampleTrack, true, 12.5, 180, null);
+          expect(updatePlayback).toHaveBeenCalledTimes(1);
+          expect(updatePlayback).toHaveBeenCalledWith(
+            'Neon Drift',
+            'Liquid Artist',
+            'Beta Album',
+            true,
+            12500,
+            180000,
+            'https://i.ytimg.com/vi/abc12345678/mqdefault.jpg',
+          );
+          // Normal progressive playback ticks must NOT spam native updatePlayback / startForegroundService
+          clock += 2_500;
+          syncMediaSessionMetadata(sampleTrack, true, 15.0, 180, null);
+          clock += 3_500;
+          syncMediaSessionMetadata(sampleTrack, true, 18.5, 180, null);
+          clock += 6_000;
+          syncMediaSessionMetadata(sampleTrack, true, 24.5, 180, null);
+          expect(updatePlayback).toHaveBeenCalledTimes(1);
+
+          // Genuine seek jump (>2.5s divergence from expected elapsed playback) triggers instant lockscreen update
+          syncMediaSessionMetadata(sampleTrack, true, 65.0, 180, null);
+          expect(updatePlayback).toHaveBeenCalledTimes(2);
+          expect(updatePlayback).toHaveBeenLastCalledWith(
+            'Neon Drift',
+            'Liquid Artist',
+            'Beta Album',
+            true,
+            65000,
+            180000,
+            'https://i.ytimg.com/vi/abc12345678/mqdefault.jpg',
+          );
+
+          // Pausing immediately syncs playing=false
+          syncMediaSessionMetadata(sampleTrack, false, 65.0, 180, null);
+          expect(updatePlayback).toHaveBeenCalledTimes(3);
+          expect(updatePlayback).toHaveBeenLastCalledWith(
+            'Neon Drift',
+            'Liquid Artist',
+            'Beta Album',
+            false,
+            65000,
+            180000,
+            'https://i.ytimg.com/vi/abc12345678/mqdefault.jpg',
+          );
+
+          syncMediaSessionMetadata(null, false, 0, 0, null);
+          expect(stopPlayback).toHaveBeenCalledTimes(1);
+        } finally {
+          nowSpy.mockRestore();
+        }
       } finally {
         (globalThis as { window?: unknown }).window = prevWindow;
         resetAndroidNativeSyncCache();

@@ -36,8 +36,6 @@ import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.media.AudioAttributes
-import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaMetadata
 import android.media.session.MediaSession
@@ -118,10 +116,9 @@ class LiquidHubMediaPlaybackService : Service() {
     }
 
     private lateinit var mediaSession: MediaSession
-    private lateinit var audioManager: AudioManager
-    private var audioFocusRequest: AudioFocusRequest? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var noisyReceiverRegistered = false
+    private var inForeground = false
 
     private var currentTitle: String = "Liquid Hub"
     private var currentArtist: String = ""
@@ -148,22 +145,9 @@ class LiquidHubMediaPlaybackService : Service() {
         }
     }
 
-    private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
-        when (focusChange) {
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> dispatchAudioFocus("loss_transient")
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> dispatchAudioFocus("duck")
-            AudioManager.AUDIOFOCUS_LOSS -> {
-                abandonAudioFocus()
-                dispatchAudioFocus("loss_permanent")
-            }
-            AudioManager.AUDIOFOCUS_GAIN -> dispatchAudioFocus("gain")
-        }
-    }
-
     override fun onCreate() {
         super.onCreate()
         runningFlag.set(true)
-        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         ensureNotificationChannel()
 
         mediaSession = MediaSession(this, "LiquidHubMediaSession").apply {
@@ -237,7 +221,9 @@ class LiquidHubMediaPlaybackService : Service() {
                 }
                 playingFlag.set(currentPlaying)
                 if (currentPlaying) {
-                    requestAudioFocus()
+                    // Do NOT request Android AudioFocus here: Chromium WebView's AudioFocusDelegateAndroid
+                    // already acquires AUDIOFOCUS_GAIN for <audio>/AudioContext. Requesting a second focus
+                    // handle from this Service immediately revokes WebView's focus and pauses playback!
                     acquireWakeLock()
                 } else {
                     releaseWakeLock()
@@ -260,8 +246,8 @@ class LiquidHubMediaPlaybackService : Service() {
     override fun onDestroy() {
         runningFlag.set(false)
         playingFlag.set(false)
+        inForeground = false
         releaseWakeLock()
-        abandonAudioFocus()
         if (noisyReceiverRegistered) {
             try {
                 unregisterReceiver(becomingNoisyReceiver)
@@ -319,8 +305,8 @@ class LiquidHubMediaPlaybackService : Service() {
     private fun stopPlaybackService() {
         currentPlaying = false
         playingFlag.set(false)
+        inForeground = false
         releaseWakeLock()
-        abandonAudioFocus()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
@@ -347,39 +333,6 @@ class LiquidHubMediaPlaybackService : Service() {
                 }
                 manager.createNotificationChannel(channel)
             }
-        }
-    }
-
-    private fun requestAudioFocus() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            if (audioFocusRequest == null) {
-                val attrs = AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .build()
-                audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                    .setAudioAttributes(attrs)
-                    .setWillPauseWhenDucked(false)
-                    .setOnAudioFocusChangeListener(audioFocusListener, mainHandler)
-                    .build()
-            }
-            audioFocusRequest?.let { audioManager.requestAudioFocus(it) }
-        } else {
-            @Suppress("DEPRECATION")
-            audioManager.requestAudioFocus(
-                audioFocusListener,
-                AudioManager.STREAM_MUSIC,
-                AudioManager.AUDIOFOCUS_GAIN
-            )
-        }
-    }
-
-    private fun abandonAudioFocus() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
-        } else {
-            @Suppress("DEPRECATION")
-            audioManager.abandonAudioFocus(audioFocusListener)
         }
     }
 
@@ -510,29 +463,44 @@ class LiquidHubMediaPlaybackService : Service() {
         mediaSession.setMetadata(metaBuilder.build())
 
         val notification = buildNotification()
+        val manager = getSystemService(NotificationManager::class.java)
         if (currentPlaying) {
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    startForeground(
-                        NOTIFICATION_ID,
-                        notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-                    )
-                } else {
-                    startForeground(NOTIFICATION_ID, notification)
+            if (!inForeground) {
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        startForeground(
+                            NOTIFICATION_ID,
+                            notification,
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                        )
+                    } else {
+                        startForeground(NOTIFICATION_ID, notification)
+                    }
+                    inForeground = true
+                } catch (_: Throwable) {
+                    // Android 14/15 may deny FGS promotion when invoked while backgrounded
+                    try {
+                        manager?.notify(NOTIFICATION_ID, notification)
+                    } catch (_: Throwable) {
+                    }
                 }
-            } catch (_: Throwable) {
-                // Android 14/15 may deny FGS promotion when invoked while backgrounded
+            } else {
+                try {
+                    manager?.notify(NOTIFICATION_ID, notification)
+                } catch (_: Throwable) {
+                }
             }
         } else {
             try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    stopForeground(STOP_FOREGROUND_DETACH)
-                } else {
-                    @Suppress("DEPRECATION")
-                    stopForeground(false)
+                if (inForeground) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        stopForeground(STOP_FOREGROUND_DETACH)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        stopForeground(false)
+                    }
+                    inForeground = false
                 }
-                val manager = getSystemService(NotificationManager::class.java)
                 manager?.notify(NOTIFICATION_ID, notification)
             } catch (_: Throwable) {
             }
@@ -566,6 +534,8 @@ import ${applicationId}.media.LiquidHubMediaPlaybackService
 class MainActivity : TauriActivity() {
     private var activeWebView: WebView? = null
     private var requestedNotificationPermission = false
+    @Volatile
+    internal var playbackWanted = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -596,6 +566,9 @@ class MainActivity : TauriActivity() {
             }
             ViewCompat.requestApplyInsets(contentRoot)
         }
+        // Request notification permission once on startup rather than mid-Play so the OS
+        // permission dialog never triggers onPause() right as audio begins.
+        window.decorView.post { ensureNotificationPermissionOnce() }
     }
 
     override fun onWebViewCreate(webView: WebView) {
@@ -617,14 +590,24 @@ class MainActivity : TauriActivity() {
     override fun onPause() {
         super.onPause()
         // Keep WebView audio and playback queue timers alive when screen locks or app is backgrounded
-        if (LiquidHubMediaPlaybackService.isCurrentlyPlaying()) {
+        if (playbackWanted || LiquidHubMediaPlaybackService.isCurrentlyPlaying()) {
             activeWebView?.onResume()
+            activeWebView?.resumeTimers()
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (playbackWanted || LiquidHubMediaPlaybackService.isCurrentlyPlaying()) {
+            activeWebView?.onResume()
+            activeWebView?.resumeTimers()
         }
     }
 
     override fun onResume() {
         super.onResume()
         activeWebView?.onResume()
+        activeWebView?.resumeTimers()
         activeWebView?.evaluateJavascript(
             "window.dispatchEvent(new CustomEvent('liquid:app-foreground'));",
             null
@@ -641,7 +624,12 @@ class MainActivity : TauriActivity() {
     }
 
     internal fun ensureNotificationPermissionOnce() {
-        if (requestedNotificationPermission || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+        if (
+            requestedNotificationPermission ||
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            isFinishing ||
+            isDestroyed
+        ) {
             return
         }
         requestedNotificationPermission = true
@@ -674,11 +662,9 @@ class MainActivity : TauriActivity() {
             durationMs: Long,
             artworkUrl: String? = null
         ) {
+            activity.playbackWanted = playing
             if (!playing && !LiquidHubMediaPlaybackService.isRunning()) {
                 return
-            }
-            if (playing) {
-                activity.ensureNotificationPermissionOnce()
             }
             val intent = Intent(activity, LiquidHubMediaPlaybackService::class.java).apply {
                 action = LiquidHubMediaPlaybackService.ACTION_UPDATE
@@ -691,7 +677,7 @@ class MainActivity : TauriActivity() {
                 putExtra(LiquidHubMediaPlaybackService.EXTRA_ARTWORK_URL, artworkUrl ?: "")
             }
             try {
-                if (playing && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (playing && !LiquidHubMediaPlaybackService.isRunning() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     activity.startForegroundService(intent)
                 } else {
                     activity.startService(intent)
@@ -702,6 +688,7 @@ class MainActivity : TauriActivity() {
 
         @JavascriptInterface
         fun stopPlayback() {
+            activity.playbackWanted = false
             val intent = Intent(activity, LiquidHubMediaPlaybackService::class.java).apply {
                 action = LiquidHubMediaPlaybackService.ACTION_STOP
             }

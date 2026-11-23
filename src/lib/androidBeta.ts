@@ -26,11 +26,13 @@ declare global {
 let lastNativeSyncKey = '';
 let lastNativeSyncAt = 0;
 let lastNativePosSec = 0;
+let lastNativePlaying = false;
 
 export function resetAndroidNativeSyncCache(): void {
   lastNativeSyncKey = '';
   lastNativeSyncAt = 0;
   lastNativePosSec = 0;
+  lastNativePlaying = false;
 }
 
 export const ANDROID_BETA_MANIFEST_SUMMARY = {
@@ -147,6 +149,8 @@ export function syncMediaSessionMetadata(
       if (lastNativeSyncKey !== 'stopped') {
         lastNativeSyncKey = 'stopped';
         lastNativeSyncAt = Date.now();
+        lastNativePosSec = 0;
+        lastNativePlaying = false;
         try {
           nativeBridge.stopPlayback?.();
         } catch {
@@ -154,13 +158,20 @@ export function syncMediaSessionMetadata(
         }
       }
     } else {
-      const stateKey = `${track.id}|${track.title}|${track.artist}|${track.artwork || ''}|${playing ? '1' : '0'}`;
+      const roundedDuration = Math.round(Math.max(0, durationSec));
+      const stateKey = `${track.id}|${track.title}|${track.artist}|${track.artwork || ''}|${playing ? '1' : '0'}|${roundedDuration}`;
       const now = Date.now();
-      const seekJumped = Math.abs(positionSec - lastNativePosSec) >= 2.2;
-      if (stateKey !== lastNativeSyncKey || seekJumped || (playing && now - lastNativeSyncAt >= 5000)) {
+      // Android MediaSession extrapolates playback position natively via playbackSpeed = 1.0f,
+      // so only treat a position delta as a seek when it diverges from elapsed playback time.
+      const expectedPos = lastNativePlaying
+        ? lastNativePosSec + Math.max(0, (now - lastNativeSyncAt) / 1000)
+        : lastNativePosSec;
+      const seekJumped = Math.abs(positionSec - expectedPos) >= 2.5;
+      if (stateKey !== lastNativeSyncKey || seekJumped) {
         lastNativeSyncKey = stateKey;
         lastNativeSyncAt = now;
         lastNativePosSec = positionSec;
+        lastNativePlaying = playing;
         try {
           nativeBridge.updatePlayback?.(
             track.title || 'Liquid Hub',
@@ -175,6 +186,11 @@ export function syncMediaSessionMetadata(
           // Ignore Android bridge errors
         }
       }
+    }
+    // When running inside the native Android shell, LiquidHubMediaPlaybackService owns the
+    // single Android MediaSession — avoid duplicate WebView navigator.mediaSession updates.
+    if (nativeBridge.isNativeBridgeReady?.()) {
+      return;
     }
   }
 
@@ -288,6 +304,7 @@ export function useAndroidBetaLifecycle(): { isMobile: boolean; isAndroid: boole
   const [isAndroid] = useState(() => isAndroidPlatform());
   const track = useApp(s => s.queue[s.index]);
   const playing = useApp(s => s.playing);
+  const playbackIntent = useApp(s => s.playbackIntent);
   const position = useApp(s => s.position);
   const duration = useApp(s => s.duration);
 
@@ -324,18 +341,20 @@ export function useAndroidBetaLifecycle(): { isMobile: boolean; isAndroid: boole
       },
     });
 
-    const unregister = registerMediaSessionBridge({
-      onPlay: () => transport.play(),
-      onPause: () => transport.pause(),
-      onPreviousTrack: () => useApp.getState().previous(),
-      onNextTrack: () => useApp.getState().next(true),
-      onSeekTo: sec => transport.seek(sec),
-      onSeekBy: delta => {
-        const nextSec = Math.max(0, (useApp.getState().position || 0) + delta);
-        transport.seek(nextSec);
-      },
-      onStop: () => transport.pause(),
-    });
+    const unregister = window.LiquidHubAndroid?.isNativeBridgeReady?.()
+      ? () => {}
+      : registerMediaSessionBridge({
+          onPlay: () => transport.play(),
+          onPause: () => transport.pause(),
+          onPreviousTrack: () => useApp.getState().previous(),
+          onNextTrack: () => useApp.getState().next(true),
+          onSeekTo: sec => transport.seek(sec),
+          onSeekBy: delta => {
+            const nextSec = Math.max(0, (useApp.getState().position || 0) + delta);
+            transport.seek(nextSec);
+          },
+          onStop: () => transport.pause(),
+        });
 
     const onNativeMediaAction = (e: Event) => {
       const detail = (e as CustomEvent<{ action?: string; positionMs?: number }>).detail;
@@ -392,8 +411,10 @@ export function useAndroidBetaLifecycle(): { isMobile: boolean; isAndroid: boole
   }, []);
 
   useEffect(() => {
-    syncMediaSessionMetadata(track, playing, position, duration || track?.duration || 0);
-  }, [track, playing, position, duration]);
+    // Keep Android ForegroundService & WakeLock active across buffering and track transitions
+    const effectivePlaying = Boolean(track) && (playing || playbackIntent);
+    syncMediaSessionMetadata(track, effectivePlaying, position, duration || track?.duration || 0);
+  }, [track, playing, playbackIntent, position, duration]);
 
   return { isMobile, isAndroid };
 }
