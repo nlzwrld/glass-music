@@ -29,6 +29,10 @@ import {
 import { validateAndroidBetaConfig } from '../../scripts/android-beta.mjs';
 // @ts-expect-error ESM script module
 import { setupAndroidProject } from '../../scripts/android-setup.mjs';
+import {
+  createBeatDetectorState,
+  stepBeatDetector,
+} from '../../src/components/glass/BeatPulseOverlay';
 
 describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Android Beta & Visitor Mode', () => {
   it('evaluates semantic versions and mandatory minimum version policies accurately (Seção 18)', () => {
@@ -142,6 +146,41 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
 
     const tauriConf = JSON.parse(readFileSync(tauriConfPath, 'utf8'));
     expect(tauriConf.bundle?.windows?.nsis?.installerHooks).toBe('windows/hooks.nsh');
+    expect(tauriConf.bundle?.windows?.nsis?.headerImage).toBe('windows/nsis-header.bmp');
+    expect(tauriConf.bundle?.windows?.nsis?.sidebarImage).toBe('windows/nsis-sidebar.bmp');
+    expect(existsSync(resolve(root, 'src-tauri', 'windows', 'nsis-header.bmp'))).toBe(true);
+    expect(existsSync(resolve(root, 'src-tauri', 'windows', 'nsis-sidebar.bmp'))).toBe(true);
+    expect(readFileSync(resolve(root, 'src-tauri', 'windows', 'nsis-sidebar.bmp')).subarray(0, 2).toString('ascii')).toBe('BM');
+  });
+
+  it('triggers musical beat flashes on bass onsets, moves History/Settings to topbar profile menu, and ships minimalist download site', () => {
+    let state = createBeatDetectorState();
+    // Calm passage keeps flash at 0
+    state = stepBeatDetector(state, { bass: 0.05, mid: 0.05, energy: 0.05 }, 16.6);
+    expect(state.flash).toBe(0);
+
+    // Kick drum transient spikes flash cleanly
+    state = stepBeatDetector(state, { bass: 0.82, mid: 0.4, energy: 0.7 }, 16.6);
+    expect(state.flash).toBeGreaterThan(0.5);
+    expect(state.cooldownMs).toBeGreaterThan(0);
+
+    // Silence decays flash smoothly
+    const afterDecay = stepBeatDetector(state, { bass: 0, mid: 0, energy: 0 }, 200);
+    expect(afterDecay.flash).toBeLessThan(state.flash);
+
+    const root = process.cwd();
+    const sidebarSrc = readFileSync(resolve(root, 'src', 'components', 'sidebar', 'Sidebar.tsx'), 'utf8');
+    expect(sidebarSrc).not.toContain("['history', 'Histórico'");
+    expect(sidebarSrc).not.toContain("['settings', 'Configurações'");
+
+    const topbarSrc = readFileSync(resolve(root, 'src', 'components', 'glass', 'GlassSearch.tsx'), 'utf8');
+    expect(topbarSrc).toContain('Perfil e configurações');
+    expect(topbarSrc).toContain('Histórico');
+    expect(topbarSrc).toContain('Configurações');
+
+    expect(existsSync(resolve(root, 'site', 'index.html'))).toBe(true);
+    expect(existsSync(resolve(root, 'site', 'styles.css'))).toBe(true);
+    expect(existsSync(resolve(root, 'site', 'app.js'))).toBe(true);
   });
 
   it('validates Android Beta manifest, MediaSession controls, and transient audio-focus recovery (Seção 3)', () => {

@@ -207,9 +207,40 @@ async fn post_jam(
         }
         bytes.extend_from_slice(&chunk);
     }
-    let value: Value =
-        serde_json::from_slice(&bytes).map_err(|_| "Resposta inválida do servidor de JAM.".to_string())?;
+    let value: Value = if bytes.is_empty() {
+        json!({})
+    } else {
+        serde_json::from_slice(&bytes)
+            .map_err(|_| "Resposta inválida do servidor de JAM.".to_string())?
+    };
     Ok((status, value))
+}
+
+fn is_legacy_unknown_field_error(status: u16, value: &Value) -> bool {
+    if status != 400 {
+        return false;
+    }
+    let err = s(value, "error").to_lowercase();
+    err.contains("campo não autorizado")
+        || err.contains("requireapproval")
+        || err.contains("permissions")
+}
+
+fn strip_legacy_unsupported_fields(payload: &mut Value) -> bool {
+    let Some(obj) = payload.as_object_mut() else {
+        return false;
+    };
+    let mut removed = false;
+    for key in ["requireApproval", "permissions"] {
+        if obj.remove(key).is_some() {
+            removed = true;
+        }
+    }
+    if removed {
+        obj.insert("nonce".into(), json!(uuid::Uuid::new_v4().simple().to_string()));
+        obj.insert("timestamp".into(), json!(db::now()));
+    }
+    removed
 }
 
 fn valid_room_code(code: &str) -> bool {
@@ -255,6 +286,7 @@ pub async fn call(
     app: &AppHandle,
     db_mtx: &Mutex<Library>,
     secrets_mtx: &Mutex<secrets::Secrets>,
+    secrets_path: &std::path::Path,
     realtime: &JamRealtime,
     p: &Value,
     endpoint: &str,
@@ -630,7 +662,7 @@ pub async fn call(
         }
     }
 
-    let bearer = if [
+    let needs_hub_bearer = [
         "create",
         "join",
         "resume",
@@ -638,14 +670,69 @@ pub async fn call(
         "checkJoinRequest",
         "cancelJoinRequest",
     ]
-    .contains(&action.as_str())
-    {
+    .contains(&action.as_str());
+
+    if needs_hub_bearer {
+        let should_refresh = secrets_mtx
+            .lock()
+            .ok()
+            .and_then(|sec| {
+                sec.hub_session.as_ref().map(|s| {
+                    !s.refresh_token.is_empty() && (s.access_token.is_empty() || s.expires_at <= db::now() + 30_000)
+                })
+            })
+            .unwrap_or(false);
+        if should_refresh {
+            let _ = crate::accounts::hub_refresh(secrets_mtx, secrets_path, None).await;
+        }
+    }
+
+    let bearer = if needs_hub_bearer {
         bearer_for_endpoint(secrets_mtx, &base)
     } else {
         None
     };
 
-    let (status, mut value) = post_jam(&base, &payload, bearer.as_deref()).await?;
+    let (mut status, mut value) = post_jam(&base, &payload, bearer.as_deref()).await?;
+
+    // Automatic compatibility fallback for live Cloudflare Workers deployed prior to Phase-3A fields
+    if is_legacy_unknown_field_error(status, &value)
+        && ["create", "join", "updateRoom"].contains(&action.as_str())
+        && strip_legacy_unsupported_fields(&mut payload)
+    {
+        (status, value) = post_jam(&base, &payload, bearer.as_deref()).await?;
+    }
+
+    // If a live Worker doesn't yet support `requestJoin` (rejects with 401 SESSION_EXPIRED or 400),
+    // seamlessly fall back to direct `join` so users can enter rooms immediately.
+    if action == "requestJoin"
+        && (status == 400 || (status == 401 && s(&value, "errorCode") == "SESSION_EXPIRED"))
+    {
+        let mut join_payload = json!({
+            "action": "join",
+            "code": s(&payload, "code"),
+            "name": s(&payload, "name"),
+            "clientId": s(&payload, "clientId"),
+            "nonce": uuid::Uuid::new_v4().simple().to_string(),
+            "timestamp": db::now()
+        });
+        if !s(&payload, "avatar").is_empty() {
+            join_payload["avatar"] = payload["avatar"].clone();
+        }
+        let (join_status, mut join_val) = post_jam(&base, &join_payload, bearer.as_deref()).await?;
+        if (200..300).contains(&join_status) {
+            validate_room_payload(&join_val)?;
+            remember_lan_endpoint(&base);
+            join_val["endpoint"] = json!(base);
+            return Ok(json!({
+                "status": "approved",
+                "requestId": format!("direct_{}", uuid::Uuid::new_v4().simple()),
+                "requestToken": "",
+                "session": join_val,
+                "endpoint": base
+            }));
+        }
+    }
 
     if !(200..300).contains(&status) {
         return Err(if s(&value, "error").is_empty() {
@@ -731,5 +818,29 @@ mod tests {
         let url = s(&cfg, "jamUrl");
         assert!(url.starts_with("https://"), "default jamUrl must use HTTPS: {url}");
         assert!(validate_endpoint(url).is_ok(), "default jamUrl invalid: {url}");
+    }
+
+    #[test]
+    fn legacy_worker_unknown_field_fallback_strips_optional_fields_and_refreshes_nonce() {
+        assert!(is_legacy_unknown_field_error(
+            400,
+            &json!({ "error": "Solicitação JAM contém campo não autorizado (requireApproval)." })
+        ));
+        assert!(!is_legacy_unknown_field_error(401, &json!({ "error": "Unauthorized" })));
+
+        let mut payload = json!({
+            "action": "create",
+            "name": "Host",
+            "roomName": "Sala",
+            "requireApproval": true,
+            "permissions": { "allowChat": true },
+            "nonce": "old_nonce",
+            "timestamp": 100
+        });
+        assert!(strip_legacy_unsupported_fields(&mut payload));
+        assert!(payload.get("requireApproval").is_none());
+        assert!(payload.get("permissions").is_none());
+        assert_ne!(s(&payload, "nonce"), "old_nonce");
+        assert!(payload["timestamp"].as_i64().unwrap_or(0) > 100);
     }
 }

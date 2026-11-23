@@ -30,6 +30,7 @@ import { parseLiquidHubLink } from '../lib/playlist';
 import { getCurrent, onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import Lyrics from '../components/player/Lyrics';
 import Welcome from '../components/glass/Welcome';
+import { BeatPulseOverlay } from '../components/glass/BeatPulseOverlay';
 import { OpticalEngine } from '../components/glass/v3/OpticalEngine';
 import GlassLaboratory from '../components/glass/v3/GlassLaboratory';
 
@@ -204,7 +205,39 @@ export default function App() {
   }, [p.uiStyle, p.theme, p.performance, p.reducedMotion, p.blur, p.glass, p.accent, systemLight]);
 
   useEffect(() => {
+    const syncFullscreen = () => {
+      document.documentElement.dataset.fullscreen = String(Boolean(document.fullscreenElement));
+    };
+    syncFullscreen();
+    document.addEventListener('fullscreenchange', syncFullscreen);
+    const offMax = window.glass?.onWindowMaximized?.(maximized => {
+      document.documentElement.dataset.maximized = String(maximized);
+    });
+    void window.glass
+      ?.windowShape?.()
+      .then(shape => {
+        if (shape) {
+          document.documentElement.dataset.maximized = String(Boolean(shape.maximized));
+        }
+      })
+      .catch(() => {});
+    return () => {
+      document.removeEventListener('fullscreenchange', syncFullscreen);
+      offMax?.();
+    };
+  }, []);
+
+  useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      if (e.key === 'F11') {
+        e.preventDefault();
+        if (document.fullscreenElement) {
+          void document.exitFullscreen().catch(() => {});
+        } else {
+          void document.documentElement.requestFullscreen().catch(() => {});
+        }
+        return;
+      }
       if (lockedByAuth || !p.onboardingDone) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
@@ -247,6 +280,7 @@ export default function App() {
       <GlassWindow
         className={`${mini ? 'mini' : ''} ${external ? 'has-external' : ''} ${expanded ? 'is-expanded' : ''} ${collapsed ? 'sidebar-collapsed' : ''} ${sideOpen ? 'side-open' : ''}`}
       >
+        <BeatPulseOverlay />
         <OpticalEngine>
           {!isAndroid && (
             <header

@@ -298,6 +298,76 @@ html[data-platform='android'] .settings-nav{flex-direction:row!important;overflo
 html[data-platform='android'] .settings-nav button{white-space:nowrap;flex:none}
 html[data-platform='android'] .toast{bottom:142px;max-width:calc(100vw - 24px)}
 
+/* Topbar profile avatar & minimalist popover menu */
+.topbar-profile{position:relative;margin-left:auto;flex:none;display:flex;align-items:center}
+.topbar-avatar-btn{width:34px;height:34px;border-radius:999px;padding:0;display:grid;place-items:center;border:1px solid var(--line);background:var(--surface);color:var(--text);overflow:hidden;transition:transform 180ms var(--ease-glass,ease),border-color 180ms var(--ease-glass,ease),box-shadow 180ms var(--ease-glass,ease),background 180ms var(--ease-glass,ease)}
+.topbar-avatar-btn:hover{transform:scale(1.04);border-color:color-mix(in srgb,var(--user-accent,#52b79a) 55%,var(--line));box-shadow:0 0 0 3px color-mix(in srgb,var(--user-accent,#52b79a) 16%,transparent)}
+.topbar-avatar-btn.active{border-color:var(--user-accent,#52b79a);box-shadow:0 0 0 2px color-mix(in srgb,var(--user-accent,#52b79a) 28%,transparent)}
+.topbar-avatar-img{width:100%;height:100%;object-fit:cover;border-radius:999px;display:block}
+.topbar-avatar-initial{font-size:13px;font-weight:650;letter-spacing:-.02em;line-height:1;color:var(--text)}
+.topbar-profile-menu{position:absolute;top:calc(100% + 8px);right:0;min-width:214px;padding:6px;border-radius:14px;border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(24px);box-shadow:0 16px 40px rgba(0,0,0,.38);z-index:120;display:flex;flex-direction:column;gap:2px}
+html:not([data-ui-style='glass']) .topbar-profile-menu{background:var(--m-elevated,#222222);border-color:var(--m-border,#2c2c2c);backdrop-filter:none;box-shadow:0 14px 36px rgba(0,0,0,.46)}
+.topbar-profile-header{display:flex;align-items:center;gap:10px;padding:8px 10px}
+.topbar-profile-thumb{width:30px;height:30px;border-radius:999px;background:var(--hover);border:1px solid var(--line);display:grid;place-items:center;font-size:12px;font-weight:600;overflow:hidden;flex:none}
+.topbar-profile-thumb img{width:100%;height:100%;object-fit:cover}
+.topbar-profile-meta{min-width:0;display:flex;flex-direction:column;gap:2px}
+.topbar-profile-meta strong{font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.topbar-profile-meta small{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.topbar-profile-divider{height:1px;background:var(--line);margin:4px 6px;opacity:.65}
+.topbar-profile-menu button[role=menuitem]{width:100%;display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;font-size:12.5px;font-weight:500;color:var(--text);text-align:left;transition:background 150ms ease,color 150ms ease}
+.topbar-profile-menu button[role=menuitem]:hover{background:var(--hover)}
+.topbar-profile-menu button[role=menuitem].active{background:var(--selected);color:var(--text)}
+.topbar-profile-menu button[role=menuitem].danger{color:#f09494}
+.topbar-profile-menu button[role=menuitem].danger:hover{background:rgba(220,72,72,.14)}
+
+/* Borderless Fullscreen & Maximized Window — ALL themes (matte, glass, beat, dark, light) */
+html[data-maximized='true'] .app,
+html[data-fullscreen='true'] .app,
+:fullscreen .app{border:0!important;border-radius:0!important;clip-path:none!important;box-shadow:none!important;outline:0!important}
+html[data-maximized='true'] .app:before,
+html[data-fullscreen='true'] .app:before,
+:fullscreen .app:before,
+html[data-maximized='true'] .optical-window-material,
+html[data-fullscreen='true'] .optical-window-material,
+:fullscreen .optical-window-material{border:0!important;border-radius:0!important;box-shadow:none!important}
+html[data-maximized='true'][data-ui-style='glass'] .app,
+html[data-fullscreen='true'][data-ui-style='glass'] .app{padding:6px!important}
+html[data-fullscreen='true'] .titlebar,
+:fullscreen .titlebar{display:none!important}
+
+/* Beat-Reactive "Pulso" Theme (flashes musically in user's --user-accent color) */
+.accent-swatches{display:inline-flex;align-items:center;gap:6px;margin-right:4px}
+.accent-swatch{width:18px;height:18px;border-radius:999px;border:2px solid transparent;padding:0;transition:transform 150ms ease,border-color 150ms ease,box-shadow 150ms ease}
+.accent-swatch:hover{transform:scale(1.14)}
+.accent-swatch.selected{border-color:#fff;box-shadow:0 0 0 2px rgba(255,255,255,.22)}
+html[data-ui-style='beat']{--m-frame:#090a0c;--m-bg:#0c0d10;--m-sidebar:#111317;--m-surface:#16181e;--m-card:#13151a;--m-elevated:#1b1e25;--m-hover:#222630;--m-active:#2a2f3b;--m-border-subtle:#1e2128;--m-border:#272b34}
+html[data-ui-style='beat'][data-theme='light']{--m-frame:#eef1f4;--m-bg:#f5f7f9;--m-sidebar:#ebeff3;--m-surface:#ffffff;--m-card:#ffffff;--m-elevated:#ffffff;--m-hover:#e6ebf0;--m-active:#dce3ea}
+.beat-pulse-layer{position:absolute;inset:0;pointer-events:none;z-index:2;overflow:hidden;border-radius:inherit}
+.beat-pulse-bloom{position:absolute;pointer-events:none;will-change:opacity,transform;transition:opacity 45ms linear}
+.beat-pulse-top{top:-28%;right:-14%;width:66%;height:62%;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--user-accent,#52b79a) 72%,transparent) 0%,transparent 68%);opacity:calc(0.05 + var(--beat-glow,0) * 0.14 + var(--beat-flash,0) * 0.28);transform:scale(calc(0.96 + var(--beat-flash,0) * 0.12))}
+.beat-pulse-bottom{bottom:-32%;left:18%;width:64%;height:56%;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--user-accent,#52b79a) 66%,transparent) 0%,transparent 70%);opacity:calc(0.06 + var(--beat-glow,0) * 0.16 + var(--beat-flash,0) * 0.30);transform:scale(calc(0.95 + var(--beat-flash,0) * 0.14))}
+.beat-pulse-edge{position:absolute;inset:0;box-shadow:inset 0 0 calc(28px + var(--beat-flash,0) * 52px) color-mix(in srgb,var(--user-accent,#52b79a) calc(6% + var(--beat-flash,0) * 34%),transparent);opacity:calc(0.25 + var(--beat-flash,0) * 0.75);will-change:opacity}
+html[data-ui-style='beat'] .player{border-top-color:color-mix(in srgb,var(--user-accent,#52b79a) calc(16% + var(--beat-flash,0) * 62%),var(--m-border-subtle))!important;box-shadow:0 -4px calc(18px + var(--beat-flash,0) * 28px) color-mix(in srgb,var(--user-accent,#52b79a) calc(var(--beat-flash,0) * 22%),transparent)!important}
+html[data-ui-style='beat'] .play-main{background:color-mix(in srgb,var(--user-accent,#52b79a) calc(82% + var(--beat-flash,0) * 18%),#fff)!important;color:#0a0d0c!important;box-shadow:0 0 calc(10px + var(--beat-flash,0) * 22px) color-mix(in srgb,var(--user-accent,#52b79a) calc(30% + var(--beat-flash,0) * 45%),transparent)!important}
+
+/* Refined Minimalist Transitions & Micro-interactions */
+.cover-transition-frame{width:100%;height:100%;display:block;border-radius:inherit;overflow:hidden}
+.now-info-motion{min-width:0;display:block}
+.jam-tool-live{color:var(--user-accent,#52b79a)!important;position:relative}
+.jam-tool-live::after{content:"";position:absolute;top:5px;right:5px;width:6px;height:6px;border-radius:999px;background:var(--user-accent,#52b79a);box-shadow:0 0 8px var(--user-accent,#52b79a)}
+.track-card{transition:transform 220ms var(--ease-glass,cubic-bezier(.22,1,.36,1))}
+.track-card:hover{transform:translateY(-2px)}
+.card-cover>img{transition:transform 320ms var(--ease-glass,cubic-bezier(.22,1,.36,1))}
+.track-card:hover .card-cover>img{transform:scale(1.035)}
+.button,.icon-button,.play-main,.round-play{transition:transform 140ms var(--ease-glass,cubic-bezier(.22,1,.36,1)),background 180ms ease,border-color 180ms ease,color 180ms ease,box-shadow 180ms ease}
+.button:active:not(:disabled),.icon-button:active:not(:disabled),.play-main:active:not(:disabled),.round-play:active:not(:disabled){transform:scale(.96)}
+.track-row{transition:background 160ms ease,border-color 160ms ease,transform 160ms var(--ease-glass,cubic-bezier(.22,1,.36,1))}
+.pills button,.source-filters button{transition:background 180ms ease,color 180ms ease,border-color 180ms ease,transform 140ms ease}
+.pills button:active,.source-filters button:active{transform:scale(.97)}
+.settings-nav button{transition:background 160ms ease,color 160ms ease,transform 160ms var(--ease-glass,cubic-bezier(.22,1,.36,1))}
+.settings-nav button:hover{transform:translateX(2px)}
+.main-scroll{scroll-behavior:smooth}
+
 
 
 

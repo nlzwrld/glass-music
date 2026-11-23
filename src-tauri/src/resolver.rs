@@ -490,6 +490,59 @@ pub async fn search_candidates(
         ("soundcloud", sc_res),
     ];
 
+    fn push_candidate(
+        out: &mut Vec<Value>,
+        seen: &mut HashSet<String>,
+        ref_ms: f64,
+        hint_provider: &str,
+        item: &Value,
+        score: f64,
+    ) {
+        let is_topic = s(item, "artist").to_lowercase().ends_with(" - topic")
+            || hint_provider == "ytmusic";
+        let provider = if hint_provider == "youtube" && is_topic {
+            "ytmusic"
+        } else {
+            hint_provider
+        };
+        let ext_id = s(item, "sourceId");
+        if ext_id.is_empty() {
+            return;
+        }
+        let dedup = format!("{provider}:{ext_id}");
+        if seen.contains(&dedup) {
+            return;
+        }
+        seen.insert(dedup);
+        let cand_ms = track_duration_ms(item);
+        let delta_ms = if ref_ms > 0.0 {
+            (ref_ms - cand_ms).abs().round()
+        } else {
+            0.0
+        };
+        let url = if provider == "ytmusic" {
+            format!("https://music.youtube.com/watch?v={ext_id}")
+        } else {
+            s(item, "url").to_string()
+        };
+        let mut candidate = json!({
+            "provider": provider,
+            "id": ext_id,
+            "title": s(item, "title"),
+            "artist": s(item, "artist"),
+            "duration": item["duration"].as_f64().unwrap_or(0.0),
+            "durationMs": cand_ms,
+            "durationDeltaMs": delta_ms,
+            "score": score,
+            "url": url,
+            "isOfficialTopic": is_topic
+        });
+        if !s(item, "artwork").is_empty() {
+            candidate["artwork"] = item["artwork"].clone();
+        }
+        out.push(candidate);
+    }
+
     for (hint_provider, maybe_val) in groups {
         let Some(val) = maybe_val else { continue };
         let Some(items) = val["items"].as_array() else {
@@ -506,45 +559,57 @@ pub async fn search_candidates(
             } else {
                 *hint_provider
             };
-            let ext_id = s(item, "sourceId");
-            if ext_id.is_empty() {
-                continue;
+            if let Some(score) = score_candidate(&reference, item, provider) {
+                push_candidate(&mut out, &mut seen, ref_ms, hint_provider, item, score);
             }
-            let dedup = format!("{provider}:{ext_id}");
-            if seen.contains(&dedup) {
-                continue;
-            }
-            let Some(score) = score_candidate(&reference, item, provider) else {
+        }
+    }
+
+    // Relaxed rescue pass ONLY when strict matching yielded zero candidates (e.g. music videos with longer intros or romanized titles)
+    if out.is_empty() {
+        let ref_sec = ref_ms / 1000.0;
+        let ref_title_tokens = extract_tokens(&strip_edition(s(&reference, "title")));
+        for (hint_provider, maybe_val) in groups {
+            let Some(val) = maybe_val else { continue };
+            let Some(items) = val["items"].as_array() else {
                 continue;
             };
-            seen.insert(dedup);
-            let cand_ms = track_duration_ms(item);
-            let delta_ms = if ref_ms > 0.0 {
-                (ref_ms - cand_ms).abs().round()
-            } else {
-                0.0
-            };
-            let url = if provider == "ytmusic" {
-                format!("https://music.youtube.com/watch?v={ext_id}")
-            } else {
-                s(item, "url").to_string()
-            };
-            let mut candidate = json!({
-                "provider": provider,
-                "id": ext_id,
-                "title": s(item, "title"),
-                "artist": s(item, "artist"),
-                "duration": item["duration"].as_f64().unwrap_or(0.0),
-                "durationMs": cand_ms,
-                "durationDeltaMs": delta_ms,
-                "score": score,
-                "url": url,
-                "isOfficialTopic": is_topic
-            });
-            if !s(item, "artwork").is_empty() {
-                candidate["artwork"] = item["artwork"].clone();
+            for item in items {
+                if item["available"] == false || s(item, "reason").contains("prévia") {
+                    continue;
+                }
+                let cand_sec = track_duration_ms(item) / 1000.0;
+                if ref_sec > 45.0 && cand_sec > 0.0 && cand_sec <= 35.0 {
+                    continue;
+                }
+                if ref_sec > 0.0 && cand_sec > 0.0 && (ref_sec - cand_sec).abs() > 55.0_f64.max(ref_sec * 0.30) {
+                    continue;
+                }
+                let cand_low = format!(
+                    " {} ",
+                    normalize_ascii_lower(&format!("{} {}", s(item, "title"), s(item, "artist")))
+                );
+                if [" karaoke ", " parody ", " parodia ", " 8d audio ", " nightcore ", " sped up "]
+                    .iter()
+                    .any(|bad| cand_low.contains(bad))
+                {
+                    continue;
+                }
+                let mut cand_tokens = extract_tokens(s(item, "title"));
+                cand_tokens.extend(extract_tokens(s(item, "artist")));
+                let title_cov = coverage(&ref_title_tokens, &cand_tokens);
+                if title_cov >= 0.45 {
+                    let score = (45.0 + title_cov * 25.0).min(72.0);
+                    push_candidate(
+                        &mut out,
+                        &mut seen,
+                        ref_ms,
+                        hint_provider,
+                        item,
+                        (score * 10.0).round() / 10.0,
+                    );
+                }
             }
-            out.push(candidate);
         }
     }
 
@@ -565,18 +630,24 @@ async fn materialize_stream(
     provider: &str,
     ext_id: &str,
     ext_url: Option<&str>,
+    force_refresh: bool,
     audio_streams: &AudioStreams,
     base_url: &str,
     catalog: &str,
     direct: &DirectCatalog,
 ) -> Result<(String, f64)> {
     let cache_key = format!("{provider}:{ext_id}");
-    if let Some((ticket, dur)) = audio_streams.cached(&cache_key) {
+    if force_refresh {
+        audio_streams.invalidate(&cache_key);
+        audio_streams.invalidate(ext_id);
+    } else if let Some((ticket, dur)) = audio_streams.cached(&cache_key) {
         return Ok((format!("{base_url}/audio/{ticket}"), dur));
     }
     if ["ytmusic", "youtube"].contains(&provider) {
-        if let Some((ticket, dur)) = audio_streams.cached(ext_id) {
-            return Ok((format!("{base_url}/audio/{ticket}"), dur));
+        if !force_refresh {
+            if let Some((ticket, dur)) = audio_streams.cached(ext_id) {
+                return Ok((format!("{base_url}/audio/{ticket}"), dur));
+            }
         }
         if !catalog.is_empty() && !direct.available() {
             // Hosted-catalog-only environment without local extractor
@@ -626,6 +697,7 @@ pub async fn resolve_stream(
                     &m.resolved_provider,
                     &m.resolved_id,
                     m.resolved_url.as_deref(),
+                    false,
                     audio_streams,
                     base_url,
                     catalog,
@@ -693,6 +765,7 @@ pub async fn resolve_stream(
             &provider,
             &ext_id,
             cand_url.as_deref(),
+            opts.force_refresh,
             audio_streams,
             base_url,
             catalog,

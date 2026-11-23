@@ -71,6 +71,7 @@ export default function Appearance() {
             [
               ['matte', 'Fosco'],
               ['glass', 'Liquid Glass'],
+              ['beat', 'Pulso'],
             ] as const
           ).map(([mode, label]) => (
             <button
@@ -108,8 +109,25 @@ export default function Appearance() {
       </div>
 
       <label className="setting-row">
-        <strong>Cor de destaque</strong>
+        <span>
+          <strong>Cor de destaque</strong>
+          {uiStyle === 'beat' && (
+            <small>Pulsa no ritmo da batida da música.</small>
+          )}
+        </span>
         <span className="setting-inline">
+          <div className="accent-swatches" role="group" aria-label="Cores rápidas">
+            {['#52b79a', '#1db954', '#6366f1', '#ec4899', '#f59e0b', '#38bdf8'].map(hex => (
+              <button
+                key={hex}
+                type="button"
+                className={`accent-swatch ${(p.accent || '#52b79a').toLowerCase() === hex ? 'selected' : ''}`}
+                style={{ background: hex }}
+                aria-label={`Cor ${hex}`}
+                onClick={() => pref({ accent: hex })}
+              />
+            ))}
+          </div>
           <input
             type="color"
             aria-label="Cor de destaque"

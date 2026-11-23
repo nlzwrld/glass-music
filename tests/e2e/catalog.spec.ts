@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { resolve, join } from 'node:path';
 import { createBroker } from '../../server/broker';
 import { createCatalog } from '../../server/catalog';
-import { navButton, waitForCdp } from './ui';
+import { navButton, openProfileMenuPage, waitForCdp } from './ui';
 
 // The desktop and catalog server are real. Only external platform responses are fixtures.
 // This test never sends owner credentials or fixture search terms to a real platform.
@@ -106,7 +106,7 @@ test('shared catalog: consent, discovery, search, pagination and recovery withou
     failSoundcloud = false;
     const recovered = await page.evaluate(r => window.glass.search(r), { ...request, requestId: 'recover-two' });
     expect(recovered.items.map(t => t.source)).toEqual(['soundcloud']); expect(recovered.notices).toEqual([]);
-    await navButton(page,'Configurações').click();
+    await openProfileMenuPage(page, 'Configurações');
     await page.getByRole('switch', { name: 'Acesso online' }).click();
     await expect.poll(() => page.evaluate(async () => (await window.glass.bootstrap()).preferences.catalogConsent)).toBe(false);
     const count = traffic.length;

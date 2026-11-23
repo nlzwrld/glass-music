@@ -1407,15 +1407,27 @@ export const useApp = create<State>((set, get) => ({
     const flight = (async () => {
       try {
         const current = s.queue[s.index];
-        const recentInQueue = s.queue
-          .slice(Math.max(0, s.index - 2), s.index + 1)
-          .reverse()
-          .filter(Boolean);
-        const seeds = recentInQueue.length ? recentInQueue : current ? [current] : [];
+        // Anchor autoplay to up to 5 recent tracks from the user's active session (preferring user-chosen / Spotify playlist tracks over drifted autoplay tracks)
+        const playedSlice = s.queue.slice(0, s.index + 1).reverse().filter(Boolean);
+        const userAnchored = playedSlice.filter(t => !t.recommended);
+        const seedSource = userAnchored.length >= 2 ? userAnchored : playedSlice;
+        const seeds: Track[] = [];
+        const seenSeedIds = new Set<string>();
+        if (current) {
+          seeds.push(current);
+          seenSeedIds.add(current.id);
+        }
+        for (const candidate of seedSource) {
+          if (seeds.length >= 5) break;
+          if (!seenSeedIds.has(candidate.id)) {
+            seenSeedIds.add(candidate.id);
+            seeds.push(candidate);
+          }
+        }
         const excludeIds = Array.from(
           new Set([
             ...s.queue.map(t => t.id),
-            ...s.data.history.slice(0, 30).map(h => h.id),
+            ...s.data.history.slice(0, 40).map(h => h.id),
           ]),
         );
         const recs = await window.glass.recommendations(seeds, excludeIds);

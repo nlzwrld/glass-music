@@ -1409,8 +1409,11 @@ async fn call(
                 && video
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b));
+            let force_refresh = p["forceRefresh"] == true;
             if valid_video {
-                if let Some((ticket, dur)) = st.audio.cached(video) {
+                if force_refresh {
+                    st.audio.invalidate(video);
+                } else if let Some((ticket, dur)) = st.audio.cached(video) {
                     return Ok(json!({"url": format!("{}/audio/{ticket}", st.base), "duration": dur}));
                 }
             } else if title.is_empty() {
@@ -1814,6 +1817,11 @@ async fn call(
                 if let Ok(hwnd) = window.hwnd() {
                     corners::apply(hwnd.0, window.scale_factor().unwrap_or(1.0));
                 }
+                let _ = app.emit_to(
+                    "main",
+                    "glass-window-maximized",
+                    window.is_maximized().unwrap_or(false),
+                );
             }
             Ok(Value::Null)
         }
@@ -1828,10 +1836,12 @@ async fn call(
         }
         "jam" => {
             let pref = st.db.lock().unwrap().pref();
+            let secrets_path = st.data.join("credentials.dpapi");
             jam::call(
                 &app,
                 &st.db,
                 &st.secrets,
+                &secrets_path,
                 &st.jam_realtime,
                 &p,
                 db::s(&pref, "jamEndpoint"),
@@ -2149,6 +2159,10 @@ pub fn run() {
     let builder = builder.on_window_event(|window, event| {
         match event {
             tauri::WindowEvent::Resized(size) => {
+                let _ = window.emit(
+                    "glass-window-maximized",
+                    window.is_maximized().unwrap_or(false),
+                );
                 #[cfg(windows)]
                 {
                     if size.width > 0 && size.height > 0 {

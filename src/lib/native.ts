@@ -147,6 +147,20 @@ export const glass: GlassAPI = {
       off?.();
     };
   },
+  onWindowMaximized: callback => {
+    let disposed = false;
+    let off: (() => void) | undefined;
+    void listen<boolean>('glass-window-maximized', event => callback(Boolean(event.payload))).then(
+      unlisten => {
+        if (disposed) unlisten();
+        else off = unlisten;
+      },
+    );
+    return () => {
+      disposed = true;
+      off?.();
+    };
+  },
   onMedia: callback => {
     let disposed = false;
     let off: (() => void) | undefined;

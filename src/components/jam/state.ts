@@ -302,6 +302,25 @@ export const useJam = create<State>((set, get) => ({
         avatar: opts?.avatar,
         clientId: get().clientId || undefined,
       });
+      const directSession = (res as { session?: JamSession }).session;
+      if (res.status === 'approved' && directSession) {
+        stopJoinRequestPolling();
+        set({
+          session: directSession,
+          room: directSession,
+          connected: true,
+          reconnecting: false,
+          pendingJoinRequest: null,
+          pendingInvite: null,
+          lookupState: { input: '', loading: false, result: null },
+          error: '',
+          rttMs: Math.round(jamClient.clock.rttMs),
+        });
+        useApp
+          .getState()
+          .message(`Você entrou na JAM ${directSession.roomName || directSession.code}.`);
+        return true;
+      }
       const reqId = res.requestId;
       const pendingReq: PendingJoinRequestState = {
         code: res.preview?.code || normCode,

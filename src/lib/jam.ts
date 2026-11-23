@@ -438,7 +438,7 @@ export class JamClient {
     if (opts?.avatar !== undefined) this.lastAvatar = opts.avatar.trim();
     const cid = opts?.clientId || this.clientId || undefined;
     const normCode = normalizeJamCode(code) || code.trim().toUpperCase();
-    return this.request<JamJoinRequestResult>({
+    const res = await this.request<JamJoinRequestResult>({
       action: 'requestJoin',
       code: normCode,
       name: this.lastKnownName,
@@ -446,6 +446,15 @@ export class JamClient {
       ...(this.lastAvatar ? { avatar: this.lastAvatar } : {}),
       ...(cid ? { clientId: cid } : {}),
     });
+    if (res.status === 'approved' && res.session) {
+      res.session.mode = isLocalJamEndpoint(res.session.endpoint || endpoint) ? 'lan' : 'cloud';
+      const session = this.decorateSession(res.session, endpoint);
+      this.session = session;
+      this.cachedRoom = session;
+      this.lastSequence = session.playback.sequence;
+      res.session = session;
+    }
+    return res;
   }
 
   async checkJoinRequest(

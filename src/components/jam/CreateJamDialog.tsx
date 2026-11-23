@@ -11,6 +11,7 @@ import {
   buildDiscordShareText,
   buildJamInviteUrl,
   buildWhatsAppShareUrl,
+  parseJamInvite,
   shareNativeInvite,
 } from '../../lib/jam';
 import { openJamWindow } from '../../lib/jamWindow';
@@ -56,7 +57,9 @@ export function CreateJamDialog({ onClose }: { onClose: () => void }) {
   const consent = useApp(
     s => s.data.preferences.onlineConsent && s.data.preferences.onboardingDone,
   );
+  const [mode, setMode] = useState<'create' | 'join'>('create');
   const [roomName, setRoomName] = useState('');
+  const [joinInput, setJoinInput] = useState('');
   const [copied, setCopied] = useState<'link' | 'discord' | ''>('');
   const [localError, setLocalError] = useState('');
   const isAuthenticated = Boolean(hub.authenticated && !hub.needsTermsAcceptance);
@@ -203,17 +206,34 @@ export function CreateJamDialog({ onClose }: { onClose: () => void }) {
     <form
       onSubmit={async e => {
         e.preventDefault();
-        const trimmedRoom = roomName.trim();
-        if (!trimmedRoom) return;
         setLocalError('');
         if (!isAuthenticated) {
-          setLocalError('Entre em uma conta Liquid Hub para criar uma JAM.');
+          setLocalError('Entre em uma conta Liquid Hub para usar a JAM.');
           return;
         }
         if (!consent) {
-          setLocalError('Ative o acesso online em Configurações para criar uma JAM.');
+          setLocalError('Ative o acesso online em Configurações para usar a JAM.');
           return;
         }
+        if (mode === 'join') {
+          const parsed = parseJamInvite(joinInput, jam.endpoint);
+          if (!parsed.code) {
+            setLocalError('Informe um código ou link válido da JAM.');
+            return;
+          }
+          const ok = await useJam
+            .getState()
+            .requestJoin(parsed.code, host.name, parsed.endpoint || undefined, {
+              avatar: host.avatar,
+            });
+          if (ok && useJam.getState().session) {
+            void openJamWindow();
+            onClose();
+          }
+          return;
+        }
+        const trimmedRoom = roomName.trim();
+        if (!trimmedRoom) return;
         const ok = await useJam.getState().enter('create', host.name, undefined, undefined, {
           roomName: trimmedRoom,
           avatar: host.avatar,
@@ -224,15 +244,41 @@ export function CreateJamDialog({ onClose }: { onClose: () => void }) {
         }
       }}
     >
-      <h2 id="dialog-title">Nova JAM</h2>
+      <h2 id="dialog-title">JAM</h2>
+      <div className="pills" role="tablist" aria-label="Modo da JAM" style={{ marginBottom: 12 }}>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === 'create'}
+          className={mode === 'create' ? 'selected' : ''}
+          onClick={() => {
+            setMode('create');
+            setLocalError('');
+          }}
+        >
+          Criar sala
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === 'join'}
+          className={mode === 'join' ? 'selected' : ''}
+          onClick={() => {
+            setMode('join');
+            setLocalError('');
+          }}
+        >
+          Entrar com código
+        </button>
+      </div>
       <p className="subtle" style={{ marginTop: 0 }}>
-        Anfitrião: <strong>{host.name}</strong>
+        Conectado como <strong>{host.name}</strong>
         {host.providerLabel ? ` (${host.providerLabel})` : ''}
       </p>
 
       {!isAuthenticated && (
         <div className="jam-auth-notice">
-          <span>Apenas usuários autenticados podem criar uma JAM.</span>
+          <span>Entre em uma conta para criar ou participar de uma JAM.</span>
           <button
             type="button"
             className="text-button"
@@ -246,18 +292,33 @@ export function CreateJamDialog({ onClose }: { onClose: () => void }) {
         </div>
       )}
 
-      <label className="field-label">
-        Nome da JAM
-        <Input
-          autoFocus
-          aria-label="Nome da JAM"
-          value={roomName}
-          maxLength={60}
-          onChange={e => setRoomName(e.target.value)}
-          placeholder={`Ex: JAM de ${host.name}`}
-          required
-        />
-      </label>
+      {mode === 'create' ? (
+        <label className="field-label">
+          Nome da sala
+          <Input
+            autoFocus
+            aria-label="Nome da JAM"
+            value={roomName}
+            maxLength={60}
+            onChange={e => setRoomName(e.target.value)}
+            placeholder={`Ex: JAM de ${host.name}`}
+            required
+          />
+        </label>
+      ) : (
+        <label className="field-label">
+          Código ou link da JAM
+          <Input
+            autoFocus
+            aria-label="Código ou link da JAM"
+            value={joinInput}
+            maxLength={300}
+            onChange={e => setJoinInput(e.target.value)}
+            placeholder="Ex: W4EMG8DL ou link de convite"
+            required
+          />
+        </label>
+      )}
 
       {(localError || jam.error) && (
         <p className="form-error" role="alert">
@@ -272,15 +333,21 @@ export function CreateJamDialog({ onClose }: { onClose: () => void }) {
         <button
           type="submit"
           className="button primary"
-          disabled={jam.busy || !roomName.trim() || !isAuthenticated}
+          disabled={
+            jam.busy ||
+            !isAuthenticated ||
+            (mode === 'create' ? !roomName.trim() : !joinInput.trim())
+          }
         >
           {jam.busy ? (
             <>
               <LoaderCircle size={14} className="spinner" />
-              Criando JAM…
+              {mode === 'create' ? 'Criando JAM…' : 'Entrando…'}
             </>
-          ) : (
+          ) : mode === 'create' ? (
             'Criar JAM'
+          ) : (
+            'Entrar na JAM'
           )}
         </button>
       </div>

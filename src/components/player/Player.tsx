@@ -2,7 +2,7 @@ import { useRef } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Heart, ChevronDown, GripVertical, ListMusic, MicVocal, X } from 'lucide-react';
 import { useApp, formatTime } from '../../stores/app';
-import { drawerMotion, useReducedUI } from '../../lib/motion';
+import { coverMotion, drawerMotion, useReducedUI } from '../../lib/motion';
 import Cover from '../glass/Cover';
 import SVGPlane from '../glass/v3/SVGPlane';
 import { IconButton, OfflineIndicator, SourceBadge } from '../glass/controls';
@@ -61,7 +61,15 @@ export function ExpandedPlayer() {
       </div>
       <div className="expanded-content">
         <div className="expanded-art">
-          <Cover track={track} />
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={track.id}
+              className="cover-transition-frame"
+              {...coverMotion(reduced)}
+            >
+              <Cover track={track} />
+            </motion.div>
+          </AnimatePresence>
         </div>
         <div className="expanded-title">
           <div>

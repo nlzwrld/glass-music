@@ -1113,39 +1113,220 @@ fn norm_key(title: &str, artist: &str) -> String {
     format!("{}::{}", clean(title), clean(artist))
 }
 
-async fn deezer_artist_radio(title: &str, artist: &str) -> Vec<Value> {
-    let q = format!("{artist} {title}");
-    let Ok(search) = get_json(
+const GENERIC_ARTIST_LABELS: &[&str] = &[
+    "spotify",
+    "deezer",
+    "apple music",
+    "tidal",
+    "bandcamp",
+    "youtube",
+    "youtube music",
+    "soundcloud",
+    "artista desconhecido",
+    "unknown artist",
+];
+
+fn is_generic_artist(artist: &str) -> bool {
+    let norm = crate::resolver::normalize_ascii_lower(artist);
+    norm.is_empty() || GENERIC_ARTIST_LABELS.contains(&norm.as_str())
+}
+
+fn artist_names_match(wanted: &str, found: &str) -> bool {
+    let w_norm = norm_artist_key(wanted);
+    let f_norm = norm_artist_key(found);
+    if w_norm.is_empty() || f_norm.is_empty() {
+        return false;
+    }
+    if w_norm == f_norm || f_norm.contains(&w_norm) || w_norm.contains(&f_norm) {
+        return true;
+    }
+    let w_tokens: Vec<&str> = w_norm.split_whitespace().collect();
+    let f_tokens: std::collections::HashSet<&str> = f_norm.split_whitespace().collect();
+    if w_tokens.is_empty() {
+        return false;
+    }
+    let hits = w_tokens.iter().filter(|t| f_tokens.contains(*t)).count();
+    (hits as f64 / w_tokens.len() as f64) >= 0.65
+}
+
+pub fn is_valid_autoplay_candidate(item: &Value) -> bool {
+    let title = s(item, "title");
+    let artist = s(item, "artist");
+    if title.trim().is_empty() {
+        return false;
+    }
+    let dur = item["duration"].as_f64().unwrap_or(0.0);
+    if dur > 0.0 && (dur < 45.0 || dur > 600.0) {
+        return false;
+    }
+    let combined = format!(
+        " {} ",
+        crate::resolver::normalize_ascii_lower(&format!("{title} {artist}"))
+    );
+    const BAD_AUTOPLAY: &[&str] = &[
+        " karaoke ",
+        " podcast ",
+        " entrevista ",
+        " interview ",
+        " reaction ",
+        " react ",
+        " audiobook ",
+        " asmr ",
+        " white noise ",
+        " sleep sounds ",
+        " 1 hour ",
+        " 1 hora ",
+        " 10 hours ",
+        " compilation ",
+        " compilado ",
+        " nightcore ",
+        " sped up ",
+        " 8d audio ",
+        " slowed reverb ",
+        " parody ",
+        " parodia ",
+    ];
+    !BAD_AUTOPLAY.iter().any(|needle| combined.contains(needle))
+}
+
+async fn resolve_verified_deezer_artist_id(title: &str, artist: &str) -> Option<u64> {
+    if !is_generic_artist(artist) {
+        let primary = crate::resolver::primary_artist(
+            artist
+                .trim_end_matches(" - Topic")
+                .trim_end_matches(" - topic"),
+        );
+        if let Ok(found) = get_json(
+            "https://api.deezer.com/search/artist",
+            &[("q", primary), ("limit", "5")],
+            350_000,
+        )
+        .await
+        {
+            if let Some(arr) = found["data"].as_array() {
+                for row in arr {
+                    let cand_name = s(row, "name");
+                    if artist_names_match(primary, cand_name) {
+                        if let Some(id) = row["id"].as_u64() {
+                            return Some(id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let q = if is_generic_artist(artist) {
+        crate::resolver::strip_edition(title)
+    } else {
+        format!(
+            "{} {}",
+            crate::resolver::primary_artist(artist),
+            crate::resolver::strip_edition(title)
+        )
+    };
+    let search = get_json(
         "https://api.deezer.com/search/track",
-        &[("q", q.trim()), ("limit", "3")],
+        &[("q", q.trim()), ("limit", "5")],
         500_000,
     )
     .await
-    else {
-        return Vec::new();
+    .ok()?;
+    let rows = search["data"].as_array()?;
+    let wanted_title_tokens = crate::resolver::extract_tokens(&crate::resolver::strip_edition(title));
+    for row in rows {
+        let row_artist = s(&row["artist"], "name");
+        if !is_generic_artist(artist) && !artist_names_match(artist, row_artist) {
+            continue;
+        }
+        let row_title_tokens = crate::resolver::extract_tokens(s(row, "title"));
+        let hits = wanted_title_tokens
+            .iter()
+            .filter(|t| row_title_tokens.contains(*t))
+            .count();
+        let cov = if wanted_title_tokens.is_empty() {
+            0.0
+        } else {
+            hits as f64 / wanted_title_tokens.len() as f64
+        };
+        if cov >= 0.6 {
+            if let Some(id) = row["artist"]["id"].as_u64() {
+                return Some(id);
+            }
+        }
+    }
+    None
+}
+
+async fn deezer_artist_radio(title: &str, artist: &str) -> (Vec<Value>, Vec<String>) {
+    let Some(artist_id) = resolve_verified_deezer_artist_id(title, artist).await else {
+        return (Vec::new(), Vec::new());
     };
-    let Some(artist_id) = search["data"]
-        .as_array()
-        .and_then(|a| a.first())
-        .and_then(|r| r["artist"]["id"].as_u64())
-    else {
-        return Vec::new();
-    };
-    let Ok(radio) = get_json(
-        &format!("https://api.deezer.com/artist/{artist_id}/radio"),
-        &[("limit", "16")],
-        800_000,
-    )
-    .await
-    else {
-        return Vec::new();
-    };
-    radio["data"]
-        .as_array()
-        .into_iter()
-        .flatten()
+    let radio_url = format!("https://api.deezer.com/artist/{artist_id}/radio");
+    let related_url = format!("https://api.deezer.com/artist/{artist_id}/related");
+    let (radio_res, related_res) = tokio::join!(
+        get_json(&radio_url, &[("limit", "16")], 800_000),
+        get_json(&related_url, &[("limit", "6")], 400_000)
+    );
+
+    let mut items: Vec<Value> = radio_res
+        .ok()
+        .and_then(|v| v["data"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
         .filter_map(|r| deezer_item(r, "track"))
-        .collect()
+        .filter(is_valid_autoplay_candidate)
+        .collect();
+
+    let related_artists: Vec<(u64, String)> = related_res
+        .ok()
+        .and_then(|v| v["data"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| Some((r["id"].as_u64()?, s(r, "name").to_string())))
+        .take(4)
+        .collect();
+
+    let related_keys: Vec<String> = related_artists
+        .iter()
+        .map(|(_, name)| norm_artist_key(name))
+        .filter(|k| !k.is_empty())
+        .collect();
+
+    // Fetch top tracks from the top 2 verified related artists so autoplay mirrors the exact musical scene
+    let r0 = related_artists.first().map(|(id, _)| *id);
+    let r1 = related_artists.get(1).map(|(id, _)| *id);
+    let (top0, top1) = tokio::join!(
+        async {
+            if let Some(id) = r0 {
+                get_json(&format!("https://api.deezer.com/artist/{id}/top"), &[("limit", "3")], 350_000)
+                    .await
+                    .ok()
+            } else {
+                None
+            }
+        },
+        async {
+            if let Some(id) = r1 {
+                get_json(&format!("https://api.deezer.com/artist/{id}/top"), &[("limit", "3")], 350_000)
+                    .await
+                    .ok()
+            } else {
+                None
+            }
+        }
+    );
+    for maybe_top in [top0, top1].into_iter().flatten() {
+        for row in maybe_top["data"].as_array().into_iter().flatten() {
+            if let Some(track) = deezer_item(row, "track") {
+                if is_valid_autoplay_candidate(&track) {
+                    items.push(track);
+                }
+            }
+        }
+    }
+
+    (items, related_keys)
 }
 
 fn norm_artist_key(artist: &str) -> String {
@@ -1235,34 +1416,54 @@ pub fn interleave_diverse_recommendations(
 async fn recommendations_for_seed(
     seed: &Value,
     direct: &crate::direct_catalog::DirectCatalog,
-) -> Vec<Value> {
+) -> (Vec<Value>, Vec<String>) {
     let seed_title = s(seed, "title").to_string();
     let seed_artist = s(seed, "artist").to_string();
     let mut yt_seed_id = if s(seed, "source") == "youtube" {
         s(seed, "sourceId").to_string()
+    } else if s(seed, "resolvedExternalId").len() == 11 {
+        s(seed, "resolvedExternalId").to_string()
     } else {
         s(seed, "playbackId").to_string()
     };
 
-    if yt_seed_id.len() != 11 {
-        let req = json!({ "query": format!("{seed_title} {seed_artist}"), "kind": "track", "cursor": {} });
-        if let Ok(found) = direct.search("youtube", &req).await {
-            if let Some(id) = found["items"]
+    if yt_seed_id.len() != 11 && !seed_title.trim().is_empty() {
+        let q = if is_generic_artist(&seed_artist) {
+            crate::resolver::strip_edition(&seed_title)
+        } else {
+            format!(
+                "{} {}",
+                crate::resolver::primary_artist(&seed_artist),
+                crate::resolver::strip_edition(&seed_title)
+            )
+        };
+        if let Ok(found) = direct.ytmusic_search(q.trim()).await {
+            if let Some(best) = found["items"]
                 .as_array()
-                .and_then(|a| a.first())
-                .map(|v| s(v, "sourceId").to_string())
+                .into_iter()
+                .flatten()
+                .filter_map(|cand| {
+                    let score = crate::resolver::score_candidate(seed, cand, "ytmusic")?;
+                    Some((score, s(cand, "sourceId").to_string()))
+                })
+                .max_by(|a, b| a.0.total_cmp(&b.0))
             {
-                yt_seed_id = id;
+                if best.1.len() == 11 {
+                    yt_seed_id = best.1;
+                }
             }
         }
     }
 
-    let (yt_mix, dz_mix) = tokio::join!(
+    let (yt_mix, (dz_mix, related_keys)) = tokio::join!(
         async {
             if yt_seed_id.len() == 11 {
                 crate::direct_catalog::youtube_radio_mix(&yt_seed_id)
                     .await
                     .unwrap_or_default()
+                    .into_iter()
+                    .filter(is_valid_autoplay_candidate)
+                    .collect::<Vec<_>>()
             } else {
                 Vec::new()
             }
@@ -1270,17 +1471,18 @@ async fn recommendations_for_seed(
         deezer_artist_radio(&seed_title, &seed_artist)
     );
 
-    let mut combined = Vec::with_capacity(yt_mix.len() + dz_mix.len());
-    let max_len = yt_mix.len().max(dz_mix.len());
+    // Prioritize verified Deezer artist-radio / related-artist tracks alongside verified YT Music radio
+    let mut combined = Vec::with_capacity(dz_mix.len() + yt_mix.len());
+    let max_len = dz_mix.len().max(yt_mix.len());
     for i in 0..max_len {
-        if let Some(item) = yt_mix.get(i) {
-            combined.push(item.clone());
-        }
         if let Some(item) = dz_mix.get(i) {
             combined.push(item.clone());
         }
+        if let Some(item) = yt_mix.get(i) {
+            combined.push(item.clone());
+        }
     }
-    combined
+    (combined, related_keys)
 }
 
 pub async fn style_recommendations(
@@ -1288,54 +1490,100 @@ pub async fn style_recommendations(
     exclude_ids: &[String],
     direct: &crate::direct_catalog::DirectCatalog,
 ) -> Result<Vec<Value>> {
-    let chosen_seeds = select_diverse_seeds(seeds, 3);
+    let chosen_seeds = select_diverse_seeds(seeds, 4);
     if chosen_seeds.is_empty() {
         return Ok(Vec::new());
     }
     let mut excluded_ids: std::collections::HashSet<String> =
         exclude_ids.iter().cloned().collect();
     let mut excluded_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut session_artist_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     for t in seeds {
         excluded_ids.insert(s(t, "id").to_string());
         excluded_keys.insert(norm_key(s(t, "title"), s(t, "artist")));
+        let ak = norm_artist_key(s(t, "artist"));
+        if !ak.is_empty() && !is_generic_artist(s(t, "artist")) {
+            session_artist_keys.insert(ak);
+        }
     }
 
     let s0 = chosen_seeds.first();
     let s1 = chosen_seeds.get(1);
     let s2 = chosen_seeds.get(2);
+    let s3 = chosen_seeds.get(3);
 
-    let (b0, b1, b2) = tokio::join!(
+    let (r0, r1, r2, r3) = tokio::join!(
         async {
             if let Some(seed) = s0 {
-                tokio::time::timeout(Duration::from_secs(5), recommendations_for_seed(seed, direct))
+                tokio::time::timeout(Duration::from_secs(6), recommendations_for_seed(seed, direct))
                     .await
                     .unwrap_or_default()
             } else {
-                Vec::new()
+                (Vec::new(), Vec::new())
             }
         },
         async {
             if let Some(seed) = s1 {
-                tokio::time::timeout(Duration::from_secs(5), recommendations_for_seed(seed, direct))
+                tokio::time::timeout(Duration::from_secs(6), recommendations_for_seed(seed, direct))
                     .await
                     .unwrap_or_default()
             } else {
-                Vec::new()
+                (Vec::new(), Vec::new())
             }
         },
         async {
             if let Some(seed) = s2 {
-                tokio::time::timeout(Duration::from_secs(5), recommendations_for_seed(seed, direct))
+                tokio::time::timeout(Duration::from_secs(6), recommendations_for_seed(seed, direct))
                     .await
                     .unwrap_or_default()
             } else {
-                Vec::new()
+                (Vec::new(), Vec::new())
+            }
+        },
+        async {
+            if let Some(seed) = s3 {
+                tokio::time::timeout(Duration::from_secs(6), recommendations_for_seed(seed, direct))
+                    .await
+                    .unwrap_or_default()
+            } else {
+                (Vec::new(), Vec::new())
             }
         }
     );
 
+    // Build session-wide related-artist consensus counts so artists matching the whole session rise to the top
+    let mut affinity: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for ak in &session_artist_keys {
+        *affinity.entry(ak.clone()).or_insert(0) += 3;
+    }
+    for rels in [&r0.1, &r1.1, &r2.1, &r3.1] {
+        for rk in rels {
+            *affinity.entry(rk.clone()).or_insert(0) += 2;
+        }
+    }
+
+    let score_bucket = |mut items: Vec<Value>| -> Vec<Value> {
+        items.sort_by(|a, b| {
+            let ka = norm_artist_key(s(a, "artist"));
+            let kb = norm_artist_key(s(b, "artist"));
+            let sa = affinity.get(&ka).copied().unwrap_or(0)
+                + usize::from(s(a, "catalogSource") == "deezer");
+            let sb = affinity.get(&kb).copied().unwrap_or(0)
+                + usize::from(s(b, "catalogSource") == "deezer");
+            sb.cmp(&sa)
+        });
+        items
+    };
+
+    let buckets = [
+        score_bucket(r0.0),
+        score_bucket(r1.0),
+        score_bucket(r2.0),
+        score_bucket(r3.0),
+    ];
+
     Ok(interleave_diverse_recommendations(
-        &[b0, b1, b2],
+        &buckets,
         &mut excluded_ids,
         &mut excluded_keys,
         14,
@@ -1425,6 +1673,31 @@ mod tests {
             clean_lyric_snippet("<b>I</b> <b>said</b>:\n<b>Ooh</b>, I'm blinded"),
             "I said: Ooh, I'm blinded"
         );
+    }
+
+    #[test]
+    fn filters_non_music_autoplay_noise_and_matches_verified_artists() {
+        assert!(artist_names_match("The Weeknd, Daft Punk", "The Weeknd"));
+        assert!(artist_names_match("Matuê - Topic", "Matuê"));
+        assert!(!artist_names_match("The Weeknd", "Podcast Aleatório"));
+        assert!(is_generic_artist("Spotify"));
+        assert!(!is_generic_artist("Tame Impala"));
+
+        assert!(is_valid_autoplay_candidate(&json!({
+            "title": "Starboy",
+            "artist": "The Weeknd",
+            "duration": 230.0
+        })));
+        assert!(!is_valid_autoplay_candidate(&json!({
+            "title": "Podcast #42 Entrevista Completa",
+            "artist": "Flow",
+            "duration": 3600.0
+        })));
+        assert!(!is_valid_autoplay_candidate(&json!({
+            "title": "Starboy (Karaoke Version)",
+            "artist": "Karaoke Hits",
+            "duration": 225.0
+        })));
     }
 
     #[test]

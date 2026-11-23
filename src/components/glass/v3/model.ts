@@ -217,7 +217,7 @@ export const glassVisualPresets = {
 
 export function resolveGlassQualityTier(input: {
   requested: OpticalSettings['quality'];
-  uiStyle: 'matte' | 'glass';
+  uiStyle: 'matte' | 'glass' | 'beat';
   performanceMode: boolean;
   prefersContrastMore?: boolean;
   prefersReducedTransparency?: boolean;
@@ -227,8 +227,8 @@ export function resolveGlassQualityTier(input: {
   deviceMemory?: number;
   isMobileTouch?: boolean;
 }): { quality: 'economy' | 'balanced' | 'high'; engine: 'webgl' | 'css'; reason: string } {
-  if (input.uiStyle === 'matte') {
-    return { quality: 'economy', engine: 'css', reason: 'matte' };
+  if (input.uiStyle === 'matte' || input.uiStyle === 'beat') {
+    return { quality: 'economy', engine: 'css', reason: input.uiStyle };
   }
   if (input.performanceMode) {
     return { quality: 'economy', engine: 'css', reason: 'performance' };

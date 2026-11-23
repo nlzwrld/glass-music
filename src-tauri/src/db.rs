@@ -256,7 +256,7 @@ pub fn validate_prefs(p: &Value) -> Result<()> {
     {
         return Err("Preferência inválida.".into());
     }
-    if p.get("uiStyle").is_some() && !["matte", "glass"].contains(&s(p, "uiStyle")) {
+    if p.get("uiStyle").is_some() && !["matte", "glass", "beat"].contains(&s(p, "uiStyle")) {
         return Err("Estilo inválido.".into());
     }
     if p.get("notificationMode").is_some()

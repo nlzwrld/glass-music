@@ -57,6 +57,11 @@
           "PortugueseBR"
         ],
         "installMode": "currentUser",
+        "headerImage": "windows/nsis-header.bmp",
+        "sidebarImage": "windows/nsis-sidebar.bmp",
+        "installerIcon": "../assets/icon.ico",
+        "uninstallerIcon": "../assets/icon.ico",
+        "uninstallerHeaderImage": "windows/nsis-header.bmp",
         "installerHooks": "windows/hooks.nsh"
       },
       "webviewInstallMode": {

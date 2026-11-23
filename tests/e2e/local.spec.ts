@@ -5,7 +5,7 @@ import { mkdir,mkdtemp,writeFile } from 'node:fs/promises';
 import { join,resolve } from 'node:path';
 import { createBroker } from '../../server/broker';
 import { defaults } from '../../shared/types';
-import { activeAudio, navButton, waitForCdp } from './ui';
+import { activeAudio, navButton, openProfileMenuPage, waitForCdp } from './ui';
 
 test('existing local audio remains playable offline with the optical engine',async()=>{
  test.setTimeout(45000);await mkdir('.test-data/profiles',{recursive:true});await mkdir('test-results',{recursive:true});
@@ -42,7 +42,7 @@ test('existing local audio remains playable offline with the optical engine',asy
   await gate.getByLabel('Senha (mínimo 12 caracteres)').fill('LocalOfflinePass!2026');
   await gate.getByRole('button',{name:'Criar conta',exact:true}).click();
   await expect(page.locator('.sidebar .brand')).toBeVisible({timeout:15000});
-  await navButton(page,'Configurações').click();
+  await openProfileMenuPage(page, 'Configurações');
   await page.getByRole('switch',{name:'Acesso online'}).click();
   await expect.poll(async()=>(await page.evaluate(()=>window.glass.bootstrap())).preferences.onlineConsent).toBe(false);
   await expect(page.locator('.welcome-screen')).toHaveCount(0,{timeout:15000});await navButton(page,'Biblioteca').click();await page.getByRole('button',{name:`Reproduzir ${track.title}`,exact:true}).click();

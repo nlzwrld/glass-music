@@ -306,7 +306,7 @@ export function resolveNotificationMode(
 }
 
 export interface Preferences {
-  uiStyle?: 'matte' | 'glass';
+  uiStyle?: 'matte' | 'glass' | 'beat';
   transition: 'off' | 'fade' | 'crossfade';
   transitionSeconds: number;
   volumeBoost: number;
@@ -788,6 +788,7 @@ export interface GlassAPI {
     };
   }>;
   onVisualVisibility(callback: (visible: boolean) => void): () => void;
+  onWindowMaximized?(callback: (maximized: boolean) => void): () => void;
   clearCache(): Promise<void>;
   checkUpdates(): Promise<string>;
   updateMediaMetadata?(track: {

@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Liquid Hub — Baixar para Windows e Android</title>
+    <meta
+      name="description"
+      content="Baixe o Liquid Hub para Windows e Android Beta. Catálogos integrados, reprodução sem anúncios em áudio, tema Pulso reativo à batida e sessões JAM ao vivo."
+    />
+    <meta name="theme-color" content="#090a0c" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="ambient-glow" aria-hidden="true"></div>
+
+    <header class="nav">
+      <div class="container nav-inner">
+        <a href="#top" class="brand" aria-label="Liquid Hub">
+          <svg width="26" height="26" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+            <rect width="64" height="64" rx="18" fill="#14181c" stroke="rgba(255,255,255,0.14)" stroke-width="2" />
+            <path
+              d="M32 13C24 24 19 30.8 19 38.2C19 45.4 24.8 51 32 51C39.2 51 45 45.4 45 38.2C45 30.8 40 24 32 13Z"
+              fill="url(#lh-drop)"
+            />
+            <path
+              d="M25 38.5C27.5 34.5 30.5 42.5 33 38.5C35.2 35 37.5 39.5 39 37.5"
+              stroke="#090a0c"
+              stroke-width="3"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+            <defs>
+              <linearGradient id="lh-drop" x1="20" y1="14" x2="46" y2="52" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#7fe3c4" />
+                <stop offset="1" stop-color="#3ca485" />
+              </linearGradient>
+            </defs>
+          </svg>
+          <span>Liquid Hub</span>
+        </a>
+
+        <nav class="nav-links" aria-label="Navegação">
+          <a href="#recursos">Recursos</a>
+          <a href="#downloads">Downloads</a>
+          <a
+            href="https://github.com/nlzwrld/glass-music"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            GitHub
+          </a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="hero container">
+        <div class="hero-copy">
+          <div class="eyebrow-pill">
+            <span class="dot"></span>
+            <span id="live-version-pill">Windows &amp; Android Beta disponíveis</span>
+          </div>
+
+          <h1>Música no seu ritmo.</h1>
+          <p class="hero-lead">
+            Reúna suas playlists, escute sem anúncios em áudio e compartilhe sessões JAM em tempo
+            real com um visual minimalista feito para foco.
+          </p>
+
+          <div class="hero-actions">
+            <a
+              id="primary-download-btn"
+              class="btn btn-primary"
+              href="https://github.com/nlzwrld/glass-music/releases/latest"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+              <span id="primary-download-label">Baixar para Windows</span>
+            </a>
+
+            <a
+              id="secondary-download-btn"
+              class="btn btn-ghost"
+              href="https://github.com/nlzwrld/glass-music/releases/tag/android-beta"
+            >
+              <span id="secondary-download-label">Android Beta (.apk)</span>
+            </a>
+          </div>
+
+          <p class="hero-meta" id="hero-meta">
+            Gratuito · Atualizações assinadas (Ed25519 + SHA-256) · Windows 10/11 e Android 8+
+          </p>
+        </div>
+
+        <div class="hero-visual" aria-hidden="true">
+          <div class="app-frame">
+            <div class="frame-sidebar">
+              <div class="frame-dot-row">
+                <span></span><span></span><span></span>
+              </div>
+              <div class="frame-nav-item active"></div>
+              <div class="frame-nav-item"></div>
+              <div class="frame-nav-item"></div>
+              <div class="frame-nav-item short"></div>
+              <div class="frame-divider"></div>
+              <div class="frame-pl"></div>
+              <div class="frame-pl"></div>
+              <div class="frame-pl"></div>
+            </div>
+            <div class="frame-main">
+              <div class="frame-top">
+                <div class="frame-search"></div>
+                <div class="frame-avatar"></div>
+              </div>
+              <div class="frame-cards">
+                <div class="frame-card c1"></div>
+                <div class="frame-card c2"></div>
+                <div class="frame-card c3"></div>
+                <div class="frame-card c4"></div>
+              </div>
+              <div class="frame-rows">
+                <div class="frame-row active"></div>
+                <div class="frame-row"></div>
+                <div class="frame-row"></div>
+              </div>
+            </div>
+            <div class="frame-player">
+              <div class="frame-now">
+                <span class="frame-mini-art"></span>
+                <span class="frame-mini-lines"><i></i><b></b></span>
+              </div>
+              <div class="frame-controls">
+                <span class="frame-play"></span>
+                <span class="frame-bar"><i></i></span>
+              </div>
+              <div class="frame-pulse-wave">
+                <i></i><i></i><i></i><i></i>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="recursos" class="features container">
+        <div class="feature-grid">
+          <article class="feature-card">
+            <span class="feature-icon" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 18V5l12-2v13" />
+                <circle cx="6" cy="18" r="3" />
+                <circle cx="18" cy="16" r="3" />
+              </svg>
+            </span>
+            <h2>Sem anúncios em áudio</h2>
+            <p>Suas faixas tocam do começo ao fim, sem cortes e com continuidade inteligente.</p>
+          </article>
+
+          <article class="feature-card">
+            <span class="feature-icon" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9" />
+                <path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5" />
+                <circle cx="12" cy="12" r="2" />
+                <path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5" />
+                <path d="M19.1 4.9C23 8.8 23 15.1 19.1 19" />
+              </svg>
+            </span>
+            <h2>JAM sincronizada</h2>
+            <p>Crie uma sala em segundos e ouça junto com amigos via link ou código.</p>
+          </article>
+
+          <article class="feature-card">
+            <span class="feature-icon" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+              </svg>
+            </span>
+            <h2>Fosco, Glass e Pulso</h2>
+            <p>Alterne entre visual sólido, vidro ótico ou tema Pulso reativo à batida na sua cor.</p>
+          </article>
+
+          <article class="feature-card">
+            <span class="feature-icon" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+              </svg>
+            </span>
+            <h2>Privacidade local</h2>
+            <p>Credenciais criptografadas no cofre nativo do sistema e biblioteca sempre sob seu controle.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="downloads" class="downloads container">
+        <div class="section-head">
+          <h2>Escolha sua plataforma</h2>
+          <p>Pacotes oficiais gerados diretamente do repositório.</p>
+        </div>
+
+        <div class="download-grid">
+          <article class="download-card">
+            <div class="download-card-top">
+              <div>
+                <span class="platform-tag">Desktop</span>
+                <h3>Windows</h3>
+              </div>
+              <span class="version-chip" id="win-version">Estável</span>
+            </div>
+            <p>
+              Instalador personalizado para Windows 10 e 11 (64-bit) com atualização automática
+              verificada e preservação de biblioteca.
+            </p>
+            <div class="download-card-actions">
+              <a
+                id="win-download-btn"
+                class="btn btn-primary"
+                href="https://github.com/nlzwrld/glass-music/releases/latest"
+              >
+                Baixar instalador (.exe)
+              </a>
+              <span class="size-note" id="win-size">64-bit · NSIS</span>
+            </div>
+          </article>
+
+          <article class="download-card">
+            <div class="download-card-top">
+              <div>
+                <span class="platform-tag beta">Mobile Beta</span>
+                <h3>Android</h3>
+              </div>
+              <span class="version-chip" id="android-version">Beta</span>
+            </div>
+            <p>
+              App nativo para Android 8.0+ (arm64-v8a) com áudio em segundo plano, controles na tela
+              de bloqueio, Bluetooth e deep links.
+            </p>
+            <div class="download-card-actions">
+              <a
+                id="android-apk-btn"
+                class="btn btn-primary"
+                href="https://github.com/nlzwrld/glass-music/releases/tag/android-beta"
+              >
+                Baixar APK
+              </a>
+              <a
+                id="android-aab-btn"
+                class="btn btn-ghost"
+                href="https://github.com/nlzwrld/glass-music/releases/tag/android-beta"
+              >
+                Play Bundle (.aab)
+              </a>
+              <span class="size-note" id="android-size">Android 8+ · arm64</span>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer container">
+      <span>Liquid Hub</span>
+      <div class="footer-links">
+        <a href="https://github.com/nlzwrld/glass-music/releases" target="_blank" rel="noopener noreferrer">
+          Todas as versões
+        </a>
+        <a href="https://github.com/nlzwrld/glass-music" target="_blank" rel="noopener noreferrer">
+          Código-fonte
+        </a>
+      </div>
+    </footer>
+
+    <script src="./app.js" defer></script>
+  </body>
+</html>

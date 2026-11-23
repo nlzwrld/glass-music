@@ -173,7 +173,8 @@ export function PlayerEngine() {
       started = false,
       fadingOut = false,
       pausedDuringPreparation = false,
-      retriedStreamFallback = false,
+      retryAttempts = 0,
+      failedIds: string[] = [],
       frameOrigin = '',
       resolvedTrack = track;
     let preparation: ReturnType<typeof preparePlayback> | undefined;
@@ -427,25 +428,28 @@ export function PlayerEngine() {
     const onError = () => {
       if (track) invalidatePlayback(track.id);
       if (!el.hasAttribute('src')) return;
-      // Transparent re-resolution if a cached stream URL expired or was blocked
+      // Transparent multi-candidate re-resolution if a cached stream URL expired or was blocked
       if (
         track &&
         track.source !== 'local' &&
         consent &&
-        !retriedStreamFallback &&
+        retryAttempts < 2 &&
         !cancelled
       ) {
-        retriedStreamFallback = true;
+        retryAttempts += 1;
         const failedId =
           resolvedTrack?.resolvedExternalId ||
           resolvedTrack?.playbackId ||
           track.resolvedExternalId ||
           track.playbackId;
+        if (failedId && !failedIds.includes(failedId)) {
+          failedIds.push(failedId);
+        }
         update({ status: 'Sincronizando fonte de áudio...', error: '' });
         preparation?.release();
         preparation = preparePlayback(track, true, {
           forceRefresh: true,
-          excludeIds: failedId ? [failedId] : [],
+          excludeIds: [...failedIds],
         });
         void preparation.promise
           .then(({ track: rematched, source }) => {

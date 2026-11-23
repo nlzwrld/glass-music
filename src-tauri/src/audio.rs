@@ -34,12 +34,22 @@ pub struct AudioStreams {
 fn http_client() -> &'static reqwest::blocking::Client {
     static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
+        let redirect_policy = reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 3 {
+                return attempt.stop();
+            }
+            if valid_cdn(attempt.url().as_str()) {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        });
         reqwest::blocking::Client::builder()
             .connect_timeout(Duration::from_secs(7))
             .timeout(Duration::from_secs(60))
             .pool_idle_timeout(Duration::from_secs(120))
             .pool_max_idle_per_host(8)
-            .redirect(reqwest::redirect::Policy::none())
+            .redirect(redirect_policy)
             .build()
             .expect("audio HTTP client")
     })
@@ -121,6 +131,18 @@ impl AudioStreams {
     pub fn clear(&self) {
         self.cache.lock().unwrap().clear();
         self.entries.lock().unwrap().clear();
+    }
+    pub fn invalidate(&self, id_or_ticket: &str) {
+        if id_or_ticket.is_empty() {
+            return;
+        }
+        let mut entries = self.entries.lock().unwrap();
+        let mut cache = self.cache.lock().unwrap();
+        entries.remove(id_or_ticket);
+        if let Some((_, ticket, _)) = cache.remove(id_or_ticket) {
+            entries.remove(&ticket);
+        }
+        cache.retain(|_, (_, ticket, _)| ticket != id_or_ticket);
     }
     pub fn register(&self, id: &str, data: &Value) -> Result<(String, f64)> {
         let url = s(data, "url");
@@ -272,6 +294,9 @@ impl AudioStreams {
         };
         let status = upstream.status().as_u16();
         if ![200, 206].contains(&status) {
+            if matches!(status, 403 | 404 | 410) {
+                self.invalidate(token);
+            }
             fail(req, if status == 416 { 416 } else { 502 });
             return;
         }
@@ -313,7 +338,11 @@ pub fn valid_cdn(raw: &str) -> bool {
         let is_soundcloud_cdn = (host == "cf-media.sndcdn.com"
             || host == "playback.media-streaming.soundcloud.cloud"
             || (host.ends_with(".sndcdn.com") && host.len() > ".sndcdn.com".len()))
-            && (u.path().starts_with("/media/") || u.path().contains(".mp3") || u.path().contains(".m4a") || u.path().contains(".opus"));
+            && (u.path().starts_with("/media/")
+                || u.path().contains(".mp3")
+                || u.path().contains(".m4a")
+                || u.path().contains(".opus")
+                || u.path().contains("/playlist"));
         is_youtube_cdn || is_soundcloud_cdn
     })
 }
@@ -394,5 +423,25 @@ mod tests {
                 &serde_json::json!({"url":"https://x.googlevideo.com/videoplayback","vcodec":"h264","acodec":"aac","protocol":"https"})
             )
             .is_err());
+    }
+    #[test]
+    fn invalidate_evicts_dead_stream_ticket_and_cache_entry() {
+        let streams = AudioStreams::new();
+        let (ticket, _) = streams
+            .register(
+                "dQw4w9WgXcQ",
+                &serde_json::json!({
+                    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=9999999999",
+                    "vcodec": "none",
+                    "acodec": "mp4a.40.2",
+                    "protocol": "https",
+                    "ext": "m4a",
+                    "duration": 212.0
+                }),
+            )
+            .unwrap();
+        assert!(streams.cached("dQw4w9WgXcQ").is_some());
+        streams.invalidate(&ticket);
+        assert!(streams.cached("dQw4w9WgXcQ").is_none());
     }
 }

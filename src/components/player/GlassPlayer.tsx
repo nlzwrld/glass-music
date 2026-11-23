@@ -34,6 +34,7 @@ import {
 import { useJam } from '../jam/state';
 import { openJamWindow } from '../../lib/jamWindow';
 import { PlayerEngine, transport } from './engine';
+import { coverMotion, useReducedUI } from '../../lib/motion';
 import Cover from '../glass/Cover';
 import { IconButton, OfflineIndicator, SmartShuffleIcon, SourceBadge } from '../glass/controls';
 import {
@@ -520,7 +521,9 @@ export default function GlassPlayer() {
     active = useApp(s => s.queue[s.index]),
     downloadingIds = useApp(s => s.downloadingIds),
     sideOpen = useApp(s => s.sideOpen),
-    error = useApp(s => s.error);
+    error = useApp(s => s.error),
+    jamActive = useJam(s => Boolean(s.session)),
+    reduced = useReducedUI();
   const isDownloading = !!track && downloadingIds.includes(track.id);
 
   return (
@@ -539,26 +542,45 @@ export default function GlassPlayer() {
           disabled={!active}
           onClick={() => useApp.setState({ expanded: true })}
         >
-          <Cover track={track} />
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={track?.id || 'empty'}
+              className="cover-transition-frame"
+              {...coverMotion(reduced)}
+            >
+              <Cover track={track} />
+            </motion.div>
+          </AnimatePresence>
           <span>
             <Maximize2 size={14} />
           </span>
         </button>
         <div className="now-info">
-          <strong>{track?.title || 'Nenhuma faixa'}</strong>
-          <small className="now-subline">
-            {track && <OfflineIndicator offline={track.offline} downloading={isDownloading} />}
-            <span>{track?.artist || '—'}</span>
-            {track && track.streamProvider && track.source === 'link' && (
-              <SourceBadge
-                source={track.source}
-                url={track.url}
-                catalogSource={track.catalogSource}
-                streamProvider={track.streamProvider}
-                compact
-              />
-            )}
-          </small>
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={track?.id || 'empty-info'}
+              className="now-info-motion"
+              initial={reduced ? false : { opacity: 0, y: 3 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={reduced ? { opacity: 1 } : { opacity: 0, y: -3 }}
+              transition={{ duration: reduced ? 0 : 0.16, ease: [0.22, 1, 0.36, 1] }}
+            >
+              <strong>{track?.title || 'Nenhuma faixa'}</strong>
+              <small className="now-subline">
+                {track && <OfflineIndicator offline={track.offline} downloading={isDownloading} />}
+                <span>{track?.artist || '—'}</span>
+                {track && track.streamProvider && track.source === 'link' && (
+                  <SourceBadge
+                    source={track.source}
+                    url={track.url}
+                    catalogSource={track.catalogSource}
+                    streamProvider={track.streamProvider}
+                    compact
+                  />
+                )}
+              </small>
+            </motion.div>
+          </AnimatePresence>
         </div>
         <Favorite label="Curtir música atual" track={track} />
         <TrackMenu label="Opções da música atual" track={track} />
@@ -571,6 +593,17 @@ export default function GlassPlayer() {
       </div>
       <div className="player-tools">
         <div className="compact-tools">
+          <IconButton
+            label={jamActive ? 'Abrir JAM ao vivo' : 'Iniciar ou entrar em uma JAM'}
+            active={jamActive}
+            className={jamActive ? 'jam-tool-live' : ''}
+            onClick={() => {
+              if (jamActive) void openJamWindow();
+              else useApp.getState().setDialog({ type: 'jam' });
+            }}
+          >
+            <Radio size={16} />
+          </IconButton>
           <AuxiliaryControls />
           <IconButton
             label="Mostrar player lateral"

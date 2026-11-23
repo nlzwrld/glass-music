@@ -4,9 +4,7 @@ import {
   Search,
   Library,
   Heart,
-  History,
   Download,
-  Settings,
   Play,
   Plus,
   ListPlus,
@@ -15,13 +13,10 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Radio,
-  UserRound,
-  ExternalLink,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { MOTION_DURATION, motionTransition } from '../../lib/motion';
 import { useApp, type Page } from '../../stores/app';
-import { useAccounts } from '../../stores/accounts';
 import { useJam } from '../jam/state';
 import { openJamWindow } from '../../lib/jamWindow';
 import { IconButton } from '../glass/controls';
@@ -38,9 +33,7 @@ const nav = [
   ['search', 'Buscar', Search],
   ['library', 'Biblioteca', Library],
   ['likes', 'Curtidas', Heart],
-  ['history', 'Histórico', History],
   ['downloads', 'Downloads', Download],
-  ['settings', 'Configurações', Settings],
 ] as const;
 
 export default function Sidebar() {
@@ -56,7 +49,6 @@ export default function Sidebar() {
     jamSession = useJam(s => s.session),
     jamConnected = useJam(s => s.connected),
     jamMembersCount = useJam(s => s.room?.members.length ?? (s.session ? 1 : 0)),
-    hub = useAccounts(s => s.hub),
     { settings, setSettings, reduced } = useOptics();
   const isGlass = (data.preferences.uiStyle ?? 'matte') === 'glass';
 
@@ -229,52 +221,6 @@ export default function Sidebar() {
           ))
         ) : (
           <p className="recent-empty">Nenhuma playlist.</p>
-        )}
-      </div>
-
-      <div className="sidebar-bottom">
-        <button
-          aria-label={hub.authenticated ? `Conta ${hub.displayName || hub.subject}` : 'Entrar no Liquid Hub'}
-          title={hub.authenticated ? `${hub.displayName || hub.subject} · Conta Liquid Hub` : 'Entrar no Liquid Hub'}
-          className="nav-item sidebar-account-btn"
-          onClick={() => {
-            if (hub.authenticated) {
-              useApp.getState().setSettingsTab('account');
-              setPage('settings');
-              setTimeout(() => {
-                document.getElementById('hub-account-section')?.scrollIntoView({ behavior: 'smooth' });
-              }, 60);
-            } else {
-              useAccounts.getState().openAuthModal({ view: 'choose' });
-            }
-          }}
-        >
-          {hub.authenticated ? (
-            <>
-              <span className="sidebar-account-avatar" aria-hidden="true">
-                {hub.avatarUrl ? (
-                  <img src={hub.avatarUrl} alt="" />
-                ) : (
-                  (hub.displayName || hub.subject || 'L').charAt(0).toUpperCase()
-                )}
-              </span>
-              <span>{hub.displayName || hub.subject}</span>
-            </>
-          ) : (
-            <>
-              <UserRound size={16} />
-              <span>Entrar</span>
-            </>
-          )}
-        </button>
-        {hub.authenticated && hub.publicHandle && !settings.sidebarCompact && (
-          <IconButton
-            label={`Abrir perfil @${hub.publicHandle}`}
-            className={`sidebar-profile-link ${page === `profile:${hub.publicHandle}` ? 'selected' : ''}`}
-            onClick={() => setPage(`profile:${hub.publicHandle}`)}
-          >
-            <ExternalLink size={14} />
-          </IconButton>
         )}
       </div>
     </GlassSidebar>

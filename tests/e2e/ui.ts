@@ -7,11 +7,15 @@ export const sidebar = (page: Page) =>
 export const activeAudio = (page: Page) => page.locator('audio[data-active="true"]');
 
 export function navButton(page: Page, name: string) {
-  const scope =
-    name === 'Configurações'
-      ? sidebar(page)
-      : page.getByRole('navigation', { name: 'Navegação principal', exact: true });
+  const scope = page.getByRole('navigation', { name: 'Navegação principal', exact: true });
   return scope.getByRole('button', { name, exact: true });
+}
+
+export async function openProfileMenuPage(page: Page, name: 'Configurações' | 'Histórico' | 'Perfil') {
+  const trigger = page.getByRole('button', { name: 'Perfil e configurações', exact: true });
+  await expect(trigger).toBeVisible();
+  await trigger.click();
+  await page.getByRole('menuitem', { name, exact: true }).click();
 }
 
 export function sidebarPlaylist(page: Page, name: string) {

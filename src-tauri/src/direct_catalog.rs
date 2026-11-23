@@ -18,6 +18,8 @@ const MAX_OFFSET: usize = 180;
 const PLUGIN: &str = "plugins/liquid_hub/yt_dlp_plugins/extractor/liquid_hub_soundcloud.py";
 const VISIONOS_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
 const IOS_UA: &str = "com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_2_1 like Mac OS X;)";
+const ANDROID_VR_UA: &str = "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip";
+const TV_EMBED_UA: &str = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version";
 
 static VISITOR_CACHE: OnceLock<Mutex<Option<(Instant, String)>>> = OnceLock::new();
 
@@ -84,49 +86,132 @@ fn extract_visitor_token(text: &str) -> Option<String> {
     None
 }
 
-async fn innertube_player(id: &str, visitor: &str, use_ios: bool) -> Result<Value> {
-    let ua = if use_ios { IOS_UA } else { VISIONOS_UA };
+#[derive(Clone, Copy)]
+enum InnerTubeClient {
+    AndroidVr,
+    Ios,
+    VisionOs,
+    TvEmbedded,
+}
+
+async fn probe_stream_url(url: &str, ua: &str) -> bool {
+    if !crate::audio::valid_cdn(url) {
+        return false;
+    }
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(4))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 3 {
+                return attempt.stop();
+            }
+            if crate::audio::valid_cdn(attempt.url().as_str()) {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
+        .build();
+    let Ok(client) = client else {
+        return true;
+    };
+    let mut req = client.get(url).header("Range", "bytes=0-1");
+    if !ua.is_empty() {
+        req = req.header("User-Agent", ua);
+    }
+    match req.send().await {
+        Ok(resp) => matches!(resp.status().as_u16(), 200 | 206),
+        Err(_) => false,
+    }
+}
+
+async fn innertube_player(id: &str, visitor: &str, profile: InnerTubeClient) -> Result<Value> {
+    let (ua, client_id, client_ctx, third_party) = match profile {
+        InnerTubeClient::AndroidVr => (
+            ANDROID_VR_UA,
+            "28",
+            json!({
+                "clientName": "ANDROID_VR",
+                "clientVersion": "1.60.19",
+                "deviceMake": "Oculus",
+                "deviceModel": "Quest 3",
+                "osName": "Android",
+                "osVersion": "12L",
+                "androidSdkVersion": 32,
+                "hl": "pt-BR",
+                "timeZone": "UTC",
+                "utcOffsetMinutes": 0,
+                "visitorData": visitor
+            }),
+            None,
+        ),
+        InnerTubeClient::Ios => (
+            IOS_UA,
+            "5",
+            json!({
+                "clientName": "IOS",
+                "clientVersion": "20.03.02",
+                "deviceMake": "Apple",
+                "deviceModel": "iPhone16,2",
+                "osName": "iPhone",
+                "osVersion": "18.2.1.22C161",
+                "hl": "pt-BR",
+                "timeZone": "UTC",
+                "utcOffsetMinutes": 0,
+                "visitorData": visitor
+            }),
+            None,
+        ),
+        InnerTubeClient::VisionOs => (
+            VISIONOS_UA,
+            "1",
+            json!({
+                "clientName": "VISIONOS",
+                "clientVersion": "0.1",
+                "deviceMake": "Apple",
+                "deviceModel": "RealityDevice14,1",
+                "osName": "visionOS",
+                "osVersion": "1.3.21O771",
+                "hl": "en",
+                "timeZone": "UTC",
+                "utcOffsetMinutes": 0,
+                "visitorData": visitor
+            }),
+            None,
+        ),
+        InnerTubeClient::TvEmbedded => (
+            TV_EMBED_UA,
+            "85",
+            json!({
+                "clientName": "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
+                "clientVersion": "2.0",
+                "hl": "pt-BR",
+                "timeZone": "UTC",
+                "utcOffsetMinutes": 0,
+                "visitorData": visitor
+            }),
+            Some(json!({ "embedUrl": "https://www.youtube.com" })),
+        ),
+    };
     let mut req = crate::providers::client()
         .post("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
         .header("Content-Type", "application/json")
         .header("Origin", "https://www.youtube.com")
+        .header("X-YouTube-Client-Name", client_id)
         .header("User-Agent", ua)
         .timeout(Duration::from_secs(6));
     if !visitor.is_empty() {
         req = req.header("X-Goog-Visitor-Id", visitor);
     }
-    let client_ctx = if use_ios {
-        json!({
-            "clientName": "IOS",
-            "clientVersion": "20.03.02",
-            "deviceMake": "Apple",
-            "deviceModel": "iPhone16,2",
-            "osName": "iPhone",
-            "osVersion": "18.2.1.22C161",
-            "hl": "pt-BR",
-            "timeZone": "UTC",
-            "utcOffsetMinutes": 0,
-            "visitorData": visitor
-        })
-    } else {
-        json!({
-            "clientName": "VISIONOS",
-            "clientVersion": "0.1",
-            "deviceMake": "Apple",
-            "deviceModel": "RealityDevice14,1",
-            "osName": "visionOS",
-            "osVersion": "1.3.21O771",
-            "hl": "en",
-            "timeZone": "UTC",
-            "utcOffsetMinutes": 0,
-            "visitorData": visitor
-        })
-    };
+    let mut context = json!({ "client": client_ctx });
+    if let Some(tp) = third_party {
+        context["thirdParty"] = tp;
+    }
     let body = json!({
         "videoId": id,
         "contentCheckOk": true,
         "racyCheckOk": true,
-        "context": { "client": client_ctx }
+        "context": context
     });
     let mut res = req
         .json(&body)
@@ -156,67 +241,77 @@ async fn innertube_player(id: &str, visitor: &str, use_ios: bool) -> Result<Valu
         .pointer("/streamingData/adaptiveFormats")
         .and_then(Value::as_array)
         .ok_or("Formatos adaptativos ausentes.")?;
-    let best = formats
+    let mut audio_candidates: Vec<&Value> = formats
         .iter()
         .filter(|f| {
             let mime = s(f, "mimeType");
             (mime.starts_with("audio/mp4") || mime.starts_with("audio/webm"))
                 && crate::audio::valid_cdn(s(f, "url"))
         })
-        .max_by_key(|f| {
-            let itag = f["itag"].as_i64().unwrap_or(0);
-            let mp4_bonus = if s(f, "mimeType").starts_with("audio/mp4") {
-                500_000
-            } else {
-                0
-            };
-            let itag140_bonus = if itag == 140 { 250_000 } else { 0 };
-            let br = f["averageBitrate"]
-                .as_i64()
-                .or_else(|| f["bitrate"].as_i64())
-                .unwrap_or(0);
-            mp4_bonus + itag140_bonus + br
-        })
-        .ok_or("Nenhum fluxo de áudio direto compatível.")?;
-    let mime = s(best, "mimeType");
-    let ext = if mime.starts_with("audio/mp4") {
-        "m4a"
-    } else {
-        "webm"
-    };
-    let filesize = best["contentLength"]
-        .as_str()
-        .and_then(|v| v.parse::<u64>().ok());
-    let mut out = json!({
-        "url": s(best, "url"),
-        "vcodec": "none",
-        "acodec": if ext == "m4a" { "mp4a.40.2" } else { "opus" },
-        "protocol": "https",
-        "ext": ext,
-        "duration": duration,
-        "http_headers": { "User-Agent": ua }
+        .collect();
+    audio_candidates.sort_by_key(|f| {
+        let itag = f["itag"].as_i64().unwrap_or(0);
+        let mp4_bonus = if s(f, "mimeType").starts_with("audio/mp4") {
+            500_000
+        } else {
+            0
+        };
+        let itag140_bonus = if itag == 140 { 250_000 } else { 0 };
+        let br = f["averageBitrate"]
+            .as_i64()
+            .or_else(|| f["bitrate"].as_i64())
+            .unwrap_or(0);
+        std::cmp::Reverse(mp4_bonus + itag140_bonus + br)
     });
-    if let Some(len) = filesize {
-        out["filesize"] = json!(len);
+    for best in audio_candidates.into_iter().take(2) {
+        let stream_url = s(best, "url");
+        if !probe_stream_url(stream_url, ua).await {
+            continue;
+        }
+        let mime = s(best, "mimeType");
+        let ext = if mime.starts_with("audio/mp4") {
+            "m4a"
+        } else {
+            "webm"
+        };
+        let filesize = best["contentLength"]
+            .as_str()
+            .and_then(|v| v.parse::<u64>().ok());
+        let mut out = json!({
+            "url": stream_url,
+            "vcodec": "none",
+            "acodec": if ext == "m4a" { "mp4a.40.2" } else { "opus" },
+            "protocol": "https",
+            "ext": ext,
+            "duration": duration,
+            "http_headers": { "User-Agent": ua }
+        });
+        if let Some(len) = filesize {
+            out["filesize"] = json!(len);
+        }
+        return Ok(out);
     }
-    Ok(out)
+    Err("Nenhum fluxo de áudio direto acessível.".into())
 }
 
 async fn innertube_audio(id: &str) -> Result<Value> {
     let visitor = visitor_data(false).await;
-    if let Ok(stream) = innertube_player(id, &visitor, false).await {
-        return Ok(stream);
-    }
-    if let Ok(stream) = innertube_player(id, &visitor, true).await {
-        return Ok(stream);
+    for profile in [
+        InnerTubeClient::AndroidVr,
+        InnerTubeClient::Ios,
+        InnerTubeClient::VisionOs,
+        InnerTubeClient::TvEmbedded,
+    ] {
+        if let Ok(stream) = innertube_player(id, &visitor, profile).await {
+            return Ok(stream);
+        }
     }
     let refreshed = visitor_data(true).await;
     if !refreshed.is_empty() && refreshed != visitor {
-        if let Ok(stream) = innertube_player(id, &refreshed, false).await {
-            return Ok(stream);
-        }
-        if let Ok(stream) = innertube_player(id, &refreshed, true).await {
-            return Ok(stream);
+        for profile in [InnerTubeClient::AndroidVr, InnerTubeClient::Ios] {
+            if let Ok(stream) = innertube_player(id, &refreshed, profile).await {
+                return Ok(stream);
+            }
         }
     }
     Err("Fallback para extrator auxiliar.".into())

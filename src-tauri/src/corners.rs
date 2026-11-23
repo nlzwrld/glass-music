@@ -45,15 +45,20 @@ pub fn apply(hwnd:HWND,scale:f64){
   let _=DwmSetWindowAttribute(hwnd,DWMWA_WINDOW_CORNER_PREFERENCE as u32,&rounded as *const _ as _,4);
   let mut rect:RECT=std::mem::zeroed();if GetWindowRect(hwnd,&mut rect)==0{return;}
   let w=rect.right-rect.left;let h=rect.bottom-rect.top;if w<2||h<2{return;}
-  // Standard crisp desktop window corner radius (10px logical).
-  let diameter=(20.0*scale).round() as i32;
   // Maximized HWND bounds can extend past the monitor by a resize inset.
-  // Clip to the CLIENT rectangle, or the outer rounded corners remain offscreen.
+  // Clip to the CLIENT rectangle; when maximized, remove corner rounding completely.
   let mut client:RECT=std::mem::zeroed();let mut origin=POINT{x:0,y:0};
   if GetClientRect(hwnd,&mut client)==0||ClientToScreen(hwnd,&mut origin)==0{return;}
   let x=origin.x-rect.left;let y=origin.y-rect.top;
+  let zoomed=IsZoomed(hwnd)!=0;
+  let diameter=if zoomed { 0 } else { (20.0*scale).round() as i32 };
   crate::desktop_backdrop::clip(hwnd,client.right,client.bottom,diameter);
-  let desired=CreateRoundRectRgn(x,y,x+client.right+1,y+client.bottom+1,diameter,diameter);if desired.is_null(){return;}
+  let desired=if zoomed {
+   CreateRectRgn(x,y,x+client.right+1,y+client.bottom+1)
+  } else {
+   CreateRoundRectRgn(x,y,x+client.right+1,y+client.bottom+1,diameter,diameter)
+  };
+  if desired.is_null(){return;}
   let actual=CreateRectRgn(0,0,0,0);
   let equal=!actual.is_null()&&GetWindowRgn(hwnd,actual)>1&&EqualRgn(actual,desired)!=0;
   if !actual.is_null(){DeleteObject(actual);}

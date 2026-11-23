@@ -91,6 +91,27 @@ export function toastMotion(reduced: boolean) {
   };
 }
 
+export function coverMotion(reduced: boolean) {
+  return {
+    initial: reduced ? (false as const) : { opacity: 0, scale: 0.96 },
+    animate: { opacity: 1, scale: 1 },
+    exit: reduced ? { opacity: 1 } : { opacity: 0, scale: 1.02 },
+    transition: motionTransition(reduced, MOTION_DURATION.base, MOTION_EASE.decelerate),
+  };
+}
+
+export function cardRevealMotion(reduced: boolean, index = 0) {
+  const delay = reduced ? 0 : Math.min(index, 8) * 0.022;
+  return {
+    initial: reduced ? (false as const) : { opacity: 0, y: 6 },
+    animate: { opacity: 1, y: 0 },
+    transition: {
+      ...motionTransition(reduced, MOTION_DURATION.base, MOTION_EASE.standard),
+      delay,
+    },
+  };
+}
+
 export function useReducedUI(): boolean {
   const sys = useReducedMotion();
   const userOrPerf = useApp(
