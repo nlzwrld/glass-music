@@ -327,7 +327,7 @@ export default function Search() {
               </div>
             </section>
           )}
-          {tracksOnly.length > 0 && <TrackList tracks={tracksOnly} />}
+          {tracksOnly.length > 0 && <TrackList tracks={tracksOnly} contextId="search" />}
           {!combined.length && !users.length && !loading && (
             <div className="empty-state">
               <SearchIcon size={20} />

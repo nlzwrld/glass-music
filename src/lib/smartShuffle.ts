@@ -4,6 +4,8 @@ export interface SmartShuffleContext {
   history: Snapshot['history'];
   likes: string[];
   libraryTracks: Track[];
+  /** When provided, taste, artist affinity, likes and history cooldown are strictly scoped to this active playlist/queue. */
+  playlistTracks?: readonly Track[];
   currentTrack?: Track;
   recentQueueTracks?: Track[];
   now?: number;
@@ -102,12 +104,21 @@ export function inferStyleTags(
 
 export function buildSmartShuffleProfile(ctx: SmartShuffleContext): SmartShuffleProfile {
   const now = ctx.now ?? Date.now();
+  const scopedPlaylist =
+    ctx.playlistTracks && ctx.playlistTracks.length > 0 ? ctx.playlistTracks : null;
+  const playlistIdSet = scopedPlaylist
+    ? new Set(scopedPlaylist.map(t => t.id).filter(Boolean))
+    : null;
+
   const byId = new Map<string, Track>();
-  for (const t of ctx.libraryTracks) {
+  for (const t of scopedPlaylist ?? ctx.libraryTracks) {
     if (t?.id) byId.set(t.id, t);
   }
 
-  const likeSet = new Set(ctx.likes || []);
+  const rawLikes = ctx.likes || [];
+  const likeSet = new Set(
+    playlistIdSet ? rawLikes.filter(id => playlistIdSet.has(id)) : rawLikes,
+  );
   const lastPlayIndex = new Map<string, number>();
   const recentPlayCounts = new Map<string, number>();
   const recentTenIds = new Set<string>();
@@ -117,8 +128,21 @@ export function buildSmartShuffleProfile(ctx: SmartShuffleContext): SmartShuffle
   const likedArtistWeights = new Map<string, number>();
   const styleWeights = new Map<string, number>();
 
-  const history = ctx.history || [];
+  // When scoped to an active playlist, ignore listening history from other playlists / previous taste
+  const history = playlistIdSet
+    ? (ctx.history || []).filter(entry => entry?.id && playlistIdSet.has(entry.id))
+    : ctx.history || [];
   const sevenDaysMs = 7 * 86_400_000;
+
+  if (scopedPlaylist) {
+    // Anchor style & artist profile strictly to the currently playing playlist's own tracks
+    for (const track of scopedPlaylist) {
+      if (!track || track.kind !== 'track' || track.recommended) continue;
+      for (const tag of inferStyleTags(track)) {
+        styleWeights.set(tag, (styleWeights.get(tag) || 0) + 0.55);
+      }
+    }
+  }
 
   history.forEach((entry, idx) => {
     if (!entry?.id) return;
@@ -153,8 +177,10 @@ export function buildSmartShuffleProfile(ctx: SmartShuffleContext): SmartShuffle
       }
     }
 
-    for (const tag of inferStyleTags(track)) {
-      styleWeights.set(tag, (styleWeights.get(tag) || 0) + weight * (idx < 25 ? 1 : 0.45));
+    if (!scopedPlaylist) {
+      for (const tag of inferStyleTags(track)) {
+        styleWeights.set(tag, (styleWeights.get(tag) || 0) + weight * (idx < 25 ? 1 : 0.45));
+      }
     }
   });
 
@@ -166,7 +192,7 @@ export function buildSmartShuffleProfile(ctx: SmartShuffleContext): SmartShuffle
       likedArtistWeights.set(artist, (likedArtistWeights.get(artist) || 0) + 0.8);
     }
     for (const tag of inferStyleTags(track)) {
-      styleWeights.set(tag, (styleWeights.get(tag) || 0) + 0.6);
+      styleWeights.set(tag, (styleWeights.get(tag) || 0) + 0.4);
     }
   }
 
@@ -277,9 +303,10 @@ export function scoreSmartShuffleCandidate(
       reasons.push('alternar-artistas');
     } else if (current) {
       const sharesStyle = styles.some(s => currentStyles.has(s));
-      if (!sharesStyle) {
-        diversityFactor *= 1.25;
-        reasons.push('diversidade-musical');
+      if (sharesStyle) {
+        // Reward cohesive style continuity inside the active playlist while alternating artists
+        diversityFactor *= 1.15;
+        reasons.push('coesao-playlist');
       }
     }
   }
@@ -361,6 +388,7 @@ export function pickSmartShuffleIndex(
 
   const effectiveCtx: SmartShuffleContext = {
     ...ctx,
+    playlistTracks: ctx.playlistTracks ?? queue,
     currentTrack: ctx.currentTrack ?? queue[currentIndex],
   };
   const profile = buildSmartShuffleProfile(effectiveCtx);
@@ -392,13 +420,17 @@ export function orderSmartShuffleTracks(
   if (remaining.length <= 1) return remaining;
 
   const ordered: Track[] = [];
-  const profile = buildSmartShuffleProfile({ ...ctx, libraryTracks: ctx.libraryTracks });
+  const scopedCtx = {
+    ...ctx,
+    playlistTracks: ctx.playlistTracks ?? tracks,
+  };
+  const profile = buildSmartShuffleProfile(scopedCtx);
 
   while (remaining.length > 0) {
     const current = ordered[ordered.length - 1];
     const recentQueueTracks = ordered.slice(Math.max(0, ordered.length - 3), -1);
     const stepCtx: SmartShuffleContext = {
-      ...ctx,
+      ...scopedCtx,
       currentTrack: current,
       recentQueueTracks,
     };

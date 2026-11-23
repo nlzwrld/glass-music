@@ -27,7 +27,9 @@ export default function Home() {
                 className="quick-tile"
                 onPointerEnter={() => warmTrack(track)}
                 onPointerLeave={cancelWarmTrack}
-                onClick={() => useApp.getState().play(track, recent)}
+                onClick={() =>
+                  useApp.getState().play(track, recent, { contextId: 'home:recent' })
+                }
               >
                 <span className="quick-tile-art">
                   <Cover track={track} />
@@ -60,7 +62,12 @@ export default function Home() {
           </div>
           <div className="catalog-grid">
             {data.tracks.slice(0, 6).map(track => (
-              <TrackCard key={track.id} track={track} list={data.tracks} />
+              <TrackCard
+                key={track.id}
+                track={track}
+                list={data.tracks}
+                contextId="home:library"
+              />
             ))}
           </div>
         </section>

@@ -39,6 +39,7 @@ export default function SharedPlaylist({ shareId }: { shareId: string }) {
   const preferredBrokerUrl = useAccounts(s => s.preferredBrokerUrl);
   const onlineConsent = useApp(s => s.data.preferences.onlineConsent);
   const current = useApp(s => s.queue[s.index]);
+  const queueContext = useApp(s => s.queueContext);
   const playing = useApp(s => s.playing);
   const localTracks = useApp(s => s.data.tracks);
 
@@ -220,7 +221,9 @@ export default function SharedPlaylist({ shareId }: { shareId: string }) {
         c => c.handle === myHandle && c.role === 'editor' && c.status === 'accepted',
       ),
   );
-  const activeHere = !!current && detail.tracks.some(t => t.id === current.id);
+  const contextId = `shared-playlist:${detail.id}`;
+  const activeHere =
+    !!current && queueContext === contextId && detail.tracks.some(t => t.id === current.id);
   const { label: visLabel, Icon: VisIcon } = visibilityBadge(detail.visibility);
   const shareUrl = detail.shareUrl || `${brokerUrl}/p/${encodeURIComponent(detail.id)}`;
 
@@ -474,6 +477,7 @@ export default function SharedPlaylist({ shareId }: { shareId: string }) {
             activeHere={activeHere}
             playing={playing}
             isPlaylist
+            contextId={contextId}
           />
           {canEdit && (
             <button
@@ -542,6 +546,7 @@ export default function SharedPlaylist({ shareId }: { shareId: string }) {
 
       <TrackList
         tracks={detail.tracks}
+        contextId={contextId}
         showHeaderShuffle={false}
         canReorder={canEdit}
         onReorder={canEdit ? handleReorderRemote : undefined}

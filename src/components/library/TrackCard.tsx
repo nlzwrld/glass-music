@@ -7,7 +7,15 @@ import Cover from '../glass/Cover';
 import { GlassCard, GlassContextMenu } from '../glass/materials';
 import { OfflineIndicator, SourceBadge } from '../glass/controls';
 
-export default function TrackCard({ track, list }: { track: Track; list?: Track[] }) {
+export default function TrackCard({
+  track,
+  list,
+  contextId,
+}: {
+  track: Track;
+  list?: Track[];
+  contextId?: string | null;
+}) {
   const downloading = useApp(s => s.downloadingIds.includes(track.id));
   const savedOffline = useApp(
     s => Boolean(track.offline || s.data.tracks.find(t => t.id === track.id)?.offline),
@@ -20,7 +28,9 @@ export default function TrackCard({ track, list }: { track: Track; list?: Track[
           onPointerEnter={() => warmTrack(track)}
           onPointerLeave={cancelWarmTrack}
           className="card-cover"
-          onClick={() => useApp.getState().play(track, list)}
+          onClick={() =>
+            useApp.getState().play(track, list, contextId ? { contextId } : undefined)
+          }
           aria-label={`${!canPlay(track) ? 'Abrir' : 'Reproduzir'} ${track.title}`}
         >
           <Cover track={track} />

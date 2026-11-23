@@ -435,15 +435,6 @@ html[data-fullscreen='true'] .titlebar,
 .accent-swatch{width:18px;height:18px;border-radius:999px;border:2px solid transparent;padding:0;transition:transform 150ms ease,border-color 150ms ease,box-shadow 150ms ease}
 .accent-swatch:hover{transform:scale(1.14)}
 .accent-swatch.selected{border-color:#fff;box-shadow:0 0 0 2px rgba(255,255,255,.22)}
-html[data-ui-style='beat']{--m-frame:#090a0c;--m-bg:#0c0d10;--m-sidebar:#111317;--m-surface:#16181e;--m-card:#13151a;--m-elevated:#1b1e25;--m-hover:#222630;--m-active:#2a2f3b;--m-border-subtle:#1e2128;--m-border:#272b34}
-html[data-ui-style='beat'][data-theme='light']{--m-frame:#eef1f4;--m-bg:#f5f7f9;--m-sidebar:#ebeff3;--m-surface:#ffffff;--m-card:#ffffff;--m-elevated:#ffffff;--m-hover:#e6ebf0;--m-active:#dce3ea}
-.beat-pulse-layer{position:absolute;inset:0;pointer-events:none;z-index:2;overflow:hidden;border-radius:inherit}
-.beat-pulse-bloom{position:absolute;pointer-events:none;will-change:opacity,transform;transition:opacity 45ms linear}
-.beat-pulse-top{top:-28%;right:-14%;width:66%;height:62%;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--user-accent,#52b79a) 72%,transparent) 0%,transparent 68%);opacity:calc(0.05 + var(--beat-glow,0) * 0.14 + var(--beat-flash,0) * 0.28);transform:scale(calc(0.96 + var(--beat-flash,0) * 0.12))}
-.beat-pulse-bottom{bottom:-32%;left:18%;width:64%;height:56%;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--user-accent,#52b79a) 66%,transparent) 0%,transparent 70%);opacity:calc(0.06 + var(--beat-glow,0) * 0.16 + var(--beat-flash,0) * 0.30);transform:scale(calc(0.95 + var(--beat-flash,0) * 0.14))}
-.beat-pulse-edge{position:absolute;inset:0;box-shadow:inset 0 0 calc(28px + var(--beat-flash,0) * 52px) color-mix(in srgb,var(--user-accent,#52b79a) calc(6% + var(--beat-flash,0) * 34%),transparent);opacity:calc(0.25 + var(--beat-flash,0) * 0.75);will-change:opacity}
-html[data-ui-style='beat'] .player{border-top-color:color-mix(in srgb,var(--user-accent,#52b79a) calc(16% + var(--beat-flash,0) * 62%),var(--m-border-subtle))!important;box-shadow:0 -4px calc(18px + var(--beat-flash,0) * 28px) color-mix(in srgb,var(--user-accent,#52b79a) calc(var(--beat-flash,0) * 22%),transparent)!important}
-html[data-ui-style='beat'] .play-main{background:color-mix(in srgb,var(--user-accent,#52b79a) calc(82% + var(--beat-flash,0) * 18%),#fff)!important;color:#0a0d0c!important;box-shadow:0 0 calc(10px + var(--beat-flash,0) * 22px) color-mix(in srgb,var(--user-accent,#52b79a) calc(30% + var(--beat-flash,0) * 45%),transparent)!important}
 
 /* Refined Minimalist Transitions & Micro-interactions */
 .cover-transition-frame{width:100%;height:100%;display:block;border-radius:inherit;overflow:hidden}
@@ -462,6 +453,25 @@ html[data-ui-style='beat'] .play-main{background:color-mix(in srgb,var(--user-ac
 .settings-nav button{transition:background 160ms ease,color 160ms ease,transform 160ms var(--ease-glass,cubic-bezier(.22,1,.36,1))}
 .settings-nav button:hover{transform:translateX(2px)}
 .main-scroll{scroll-behavior:smooth}
+
+/* Custom Playlist Cover Photo Picker (Desktop & Mobile) */
+.playlist-cover-editable{position:relative;padding:0;border:0;background:transparent;cursor:pointer;display:block;overflow:hidden}
+.playlist-cover-editable:focus-visible{outline:2px solid var(--user-accent,#52b79a);outline-offset:2px}
+.playlist-cover-edit-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:rgba(0,0,0,.58);color:#fff;font-size:12px;font-weight:500;opacity:0;transition:opacity 180ms ease;pointer-events:none;backdrop-filter:blur(2px)}
+.playlist-cover-editable:hover .playlist-cover-edit-overlay,.playlist-cover-editable:focus-visible .playlist-cover-edit-overlay,.playlist-dialog-cover:hover .playlist-cover-edit-overlay,.playlist-dialog-cover:focus-visible .playlist-cover-edit-overlay{opacity:1}
+.playlist-dialog-layout{display:flex;align-items:flex-start;gap:16px;margin-top:12px}
+.playlist-dialog-cover-col{display:flex;flex-direction:column;align-items:center;gap:6px;flex:none}
+.playlist-dialog-cover{position:relative;width:108px;height:108px;border-radius:12px;overflow:hidden;border:1px solid var(--line,rgba(255,255,255,.12));background:var(--surface,rgba(255,255,255,.06));color:var(--muted);display:grid;place-items:center;padding:0;cursor:pointer}
+.playlist-dialog-cover>img{width:100%;height:100%;object-fit:cover;display:block}
+.playlist-dialog-remove-art{font-size:11px;display:inline-flex;align-items:center;gap:4px;opacity:.82}
+html[data-platform='android'] .playlist-cover-editable .playlist-cover-edit-overlay,
+html[data-mobile='true'] .playlist-cover-editable .playlist-cover-edit-overlay{inset:auto 8px 8px auto;width:34px;height:34px;border-radius:999px;background:rgba(0,0,0,.72);opacity:1;padding:0}
+html[data-platform='android'] .playlist-cover-editable .playlist-cover-edit-overlay>span,
+html[data-mobile='true'] .playlist-cover-editable .playlist-cover-edit-overlay>span{display:none}
+html[data-platform='android'] .playlist-dialog-layout,
+html[data-mobile='true'] .playlist-dialog-layout{flex-direction:column;align-items:stretch}
+html[data-platform='android'] .playlist-dialog-cover-col,
+html[data-mobile='true'] .playlist-dialog-cover-col{align-self:center}
 
 
 

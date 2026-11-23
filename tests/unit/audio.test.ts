@@ -42,6 +42,14 @@ it('modulates audio-reactive WebGL bass uniform from sub-bass/bass FFT bins whil
   expect(frame.bass).toBeGreaterThan(0.7);
   expect(frame.bass).toBeLessThanOrEqual(1);
   expect(frame.energy).toBeGreaterThan(0.5);
+
+  // High-resolution 2048 FFT (~23.4 Hz/bin at 48 kHz) resolves tight 47-70 Hz 808 kicks cleanly
+  const sub808 = new Uint8Array(1024).fill(0);
+  sub808[2] = 240; // ~47 Hz
+  sub808[3] = 225; // ~70 Hz
+  const hiRes = computeBassModulation(sub808, 48000, 2048);
+  expect(hiRes.subBass).toBeGreaterThan(0.5);
+  expect(hiRes.bass).toBeGreaterThan(0.45);
 });
 
 it('detects Spotify, Deezer, Apple Music, YT Music, Bandcamp and Tidal badges from track URLs', () => {

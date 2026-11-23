@@ -5,7 +5,7 @@ import {
   shufflePlay,
   shuffleTracks,
 } from '../../src/lib/playback';
-import { useApp } from '../../src/stores/app';
+import { isCollectionActive, upcomingIndex, useApp } from '../../src/stores/app';
 import { defaults, type Track } from '../../shared/types';
 
 const track = (id: string): Track => ({
@@ -79,7 +79,7 @@ it('shuffles tracks with Fisher-Yates without mutating original order', () => {
   expect(out).not.toEqual(original);
 });
 
-it('activates shuffle mode and starts playback on a random track via shufflePlay', async () => {
+it('starts playlist shufflePlay independently without mutating player shuffle preference', () => {
   const preferences = vi.fn(async (p: any) => p);
   vi.stubGlobal('window', {
     glass: {
@@ -99,6 +99,9 @@ it('activates shuffle mode and starts playback on a random track via shufflePlay
   useApp.setState({
     queue: [],
     index: -1,
+    queueContext: null,
+    queueShuffled: false,
+    queueShuffleMode: null,
     playing: false,
     data: {
       tracks: collection,
@@ -109,16 +112,63 @@ it('activates shuffle mode and starts playback on a random track via shufflePlay
     },
   });
 
-  const started = shufflePlay(collection, () => 0.25);
+  const started = shufflePlay(collection, () => 0.25, { contextId: 'playlist:pl-1' });
   expect(started).not.toBeNull();
   const state = useApp.getState();
   expect(state.status).toBe('Carregando');
   expect(state.index).toBe(0);
-  expect(state.shufflePlayed).toEqual([0]);
+  expect(state.queueContext).toBe('playlist:pl-1');
+  expect(state.queueShuffled).toBe(true);
   expect(state.queue).toHaveLength(4);
   expect(state.queue[0]?.id).toBe(started!.id);
-  expect(state.data.preferences.shuffle).toBe(true);
-  await vi.waitFor(() => expect(preferences).toHaveBeenCalledOnce());
+  // Player's global shuffle toggle MUST remain untouched (isolated from playlist Shuffle Play)
+  expect(state.data.preferences.shuffle).toBe(false);
+  expect(preferences).not.toHaveBeenCalled();
+
+  // Toggling player shuffle ON must NOT scramble or override the playlist-shuffled sequence
+  useApp.setState(s => ({
+    data: { ...s.data, preferences: { ...s.data.preferences, shuffle: true } },
+  }));
+  expect(upcomingIndex(useApp.getState(), true)).toBe(1);
+});
+
+it('tracks active playlist context so playing another playlist with overlapping songs never pauses the old one', () => {
+  const shared = track('shared_0001');
+  const a2 = track('plA_0002');
+  const b2 = track('plB_0002');
+  const playlistA = [shared, a2];
+  const playlistB = [shared, b2];
+
+  useApp.setState({
+    queue: [],
+    index: -1,
+    queueContext: null,
+    queueShuffled: false,
+    queueShuffleMode: null,
+    playing: false,
+    data: {
+      tracks: [shared, a2, b2],
+      playlists: [],
+      likes: [],
+      history: [],
+      preferences: { ...defaults, onlineConsent: true, onboardingDone: true },
+    },
+  });
+
+  // Start playing Playlist A on the shared song
+  useApp.getState().play(shared, playlistA, { contextId: 'playlist:A' });
+  const afterA = useApp.getState();
+  expect(isCollectionActive(afterA, 'playlist:A', playlistA)).toBe(true);
+  // Playlist B ALSO contains `shared`, yet must NOT be considered active!
+  expect(isCollectionActive(afterA, 'playlist:B', playlistB)).toBe(false);
+
+  // Starting Playlist B replaces the queue and sets context to playlist:B
+  useApp.getState().play(playlistB[0]!, playlistB, { contextId: 'playlist:B' });
+  const afterB = useApp.getState();
+  expect(afterB.queueContext).toBe('playlist:B');
+  expect(afterB.queue.map(t => t.id)).toEqual([shared.id, b2.id]);
+  expect(isCollectionActive(afterB, 'playlist:A', playlistA)).toBe(false);
+  expect(isCollectionActive(afterB, 'playlist:B', playlistB)).toBe(true);
 });
 
 it('displays "Sincronizando fonte de áudio..." for unresolved Spotify tracks and resolves via window.glass.resolveStream', async () => {

@@ -1,5 +1,5 @@
 import { Pause, Play, Shuffle } from 'lucide-react';
-import type { Track } from '../../../shared/types';
+import { canPlay, type Track } from '../../../shared/types';
 import { shufflePlay } from '../../lib/playback';
 import { useApp } from '../../stores/app';
 import { SmartShuffleIcon } from '../glass/controls';
@@ -7,21 +7,30 @@ import { transport } from '../player/engine';
 
 /**
  * Shared Play + Shuffle control pair for playlists and collections with identical geometry,
- * surface, border and interaction feedback, differentiated only by icon and active state.
+ * surface, border and interaction feedback.
+ * - Play always starts THIS playlist/collection when another playlist or track context is playing.
+ * - Playlist Shuffle Play is strictly isolated from the player's global shuffle toggle.
  */
 export function CollectionPlaybackActions({
   tracks,
   activeHere,
   playing,
   isPlaylist = false,
+  contextId,
 }: {
   tracks: Track[];
   activeHere: boolean;
   playing: boolean;
   isPlaylist?: boolean;
+  contextId?: string | null;
 }) {
-  const shuffle = useApp(s => s.data.preferences.shuffle);
-  const shuffleMode = useApp(s => s.data.preferences.shuffleMode ?? 'smart');
+  const queueShuffled = useApp(s => s.queueShuffled);
+  const queueShuffleMode = useApp(s => s.queueShuffleMode);
+  const preferredMode = useApp(s => s.data.preferences.shuffleMode ?? 'smart');
+
+  const playlistShuffleActive = activeHere && queueShuffled;
+  const activeMode = playlistShuffleActive ? (queueShuffleMode ?? preferredMode) : preferredMode;
+
   const playLabel = isPlaylist
     ? activeHere && playing
       ? 'Pausar playlist'
@@ -32,9 +41,9 @@ export function CollectionPlaybackActions({
   const shuffleLabel = isPlaylist
     ? 'Reproduzir playlist no aleatório'
     : 'Reproduzir coleção no aleatório';
-  const shuffleTitle = shuffle
-    ? `${shuffleLabel} (${shuffleMode === 'smart' ? 'Inteligente' : 'Tradicional'})`
-    : `${shuffleLabel} (${shuffleMode === 'smart' ? 'Inteligente' : 'Tradicional'})`;
+  const shuffleTitle = `${shuffleLabel} (${activeMode === 'smart' ? 'Inteligente' : 'Tradicional'})`;
+
+  const firstPlayable = tracks.find(t => canPlay(t) && t.available !== false) ?? tracks[0];
 
   return (
     <div
@@ -50,7 +59,12 @@ export function CollectionPlaybackActions({
         title={playLabel}
         onClick={() => {
           if (activeHere) transport.toggle();
-          else if (tracks[0]) useApp.getState().play(tracks[0], tracks);
+          else if (firstPlayable) {
+            useApp.getState().play(firstPlayable, tracks, {
+              contextId: contextId ?? null,
+              playlistShuffled: false,
+            });
+          }
         }}
       >
         {activeHere && playing ? (
@@ -61,23 +75,23 @@ export function CollectionPlaybackActions({
       </button>
       <button
         type="button"
-        className={`collection-action-btn playlist-shuffle-play ${shuffle ? 'is-active' : ''} ${shuffle && shuffleMode === 'smart' ? 'is-smart' : ''}`}
+        className={`collection-action-btn playlist-shuffle-play ${playlistShuffleActive ? 'is-active' : ''} ${playlistShuffleActive && activeMode === 'smart' ? 'is-smart' : ''}`}
         disabled={!tracks.length}
         aria-label={shuffleLabel}
         title={shuffleTitle}
-        aria-pressed={shuffle}
-        data-active={shuffle ? 'true' : 'false'}
-        data-shuffle-mode={shuffle ? shuffleMode : 'off'}
-        onClick={() => shufflePlay(tracks)}
+        aria-pressed={playlistShuffleActive}
+        data-active={playlistShuffleActive ? 'true' : 'false'}
+        data-shuffle-mode={playlistShuffleActive ? activeMode : 'off'}
+        onClick={() => shufflePlay(tracks, undefined, { contextId: contextId ?? null })}
       >
-        {shuffle && shuffleMode === 'smart' ? (
+        {playlistShuffleActive && activeMode === 'smart' ? (
           <SmartShuffleIcon size={16} />
         ) : (
           <Shuffle size={15} />
         )}
-        {shuffle && (
+        {playlistShuffleActive && (
           <span
-            className={`action-active-dot ${shuffleMode === 'smart' ? 'is-smart' : ''}`}
+            className={`action-active-dot ${activeMode === 'smart' ? 'is-smart' : ''}`}
             aria-hidden="true"
           />
         )}

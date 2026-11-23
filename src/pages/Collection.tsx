@@ -18,6 +18,7 @@ export default function Collection() {
   const preview = useApp(s => s.preview),
     busy = useApp(s => s.previewBusy),
     current = useApp(s => s.queue[s.index]),
+    queueContext = useApp(s => s.queueContext),
     playing = useApp(s => s.playing);
   const [saving, setSaving] = useState(false);
 
@@ -40,7 +41,9 @@ export default function Collection() {
   }
 
   const tracks = preview.tracks;
-  const activeHere = !!current && tracks.some(t => t.id === current.id);
+  const contextId = `collection:${preview.url || preview.name}`;
+  const activeHere =
+    !!current && queueContext === contextId && tracks.some(t => t.id === current.id);
   const isVerifiedArtist = inspectMusicLink(preview.url).kind === 'artist';
 
   const importToLibrary = async () => {
@@ -119,6 +122,7 @@ export default function Collection() {
             tracks={tracks}
             activeHere={activeHere}
             playing={playing}
+            contextId={contextId}
           />
           {tracks.some(t => ['youtube', 'link'].includes(t.source)) && (
             <button
@@ -136,7 +140,7 @@ export default function Collection() {
         </button>
       </div>
 
-      <TrackList tracks={tracks} showHeaderShuffle={false} />
+      <TrackList tracks={tracks} contextId={contextId} showHeaderShuffle={false} />
     </div>
   );
 }

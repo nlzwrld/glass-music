@@ -511,8 +511,9 @@ export type LibraryCommand =
   | { action: 'like'; track: Track }
   | { action: 'save'; track: Track }
   | { action: 'history'; track: Track }
-  | { action: 'create'; name: string }
+  | { action: 'create'; name: string; artwork?: string }
   | { action: 'rename'; id: string; name: string }
+  | { action: 'setArtwork'; id: string; artwork: string }
   | { action: 'delete'; id: string }
   | { action: 'add'; id: string; track: Track }
   | { action: 'remove'; id: string; trackId: string }

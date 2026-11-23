@@ -6,7 +6,6 @@ import {
   LoaderCircle,
   Mail,
   Radio,
-  RefreshCw,
   ShieldCheck,
   X,
 } from 'lucide-react';
@@ -17,9 +16,8 @@ import {
   hasAcceptedCurrentLegal,
 } from '../../../shared/auth';
 import type { HubOAuthProvider } from '../../../shared/types';
-import { AutoUpdates, useUpdateNotice } from '../../lib/updates';
+import { AutoUpdates } from '../../lib/updates';
 import {
-  DEFAULT_HUB_BROKER_URL,
   oauthProviderLabel,
   useAccounts,
 } from '../../stores/accounts';
@@ -40,7 +38,6 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
     busy = useAccounts(s => s.busy),
     closeAuthModal = useAccounts(s => s.closeAuthModal),
     setView = useAccounts(s => s.setAuthModalView),
-    setPreferredBrokerUrl = useAccounts(s => s.setPreferredBrokerUrl),
     loadHubProviders = useAccounts(s => s.loadHubProviders),
     ensureLegalConsent = useAccounts(s => s.ensureLegalConsent),
     loginHub = useAccounts(s => s.loginHub),
@@ -68,8 +65,6 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
   const [password, setPassword] = useState('');
   const [token, setToken] = useState('');
   const [newPassword, setNewPassword] = useState('');
-  const [checkingUpdate, setCheckingUpdate] = useState(false);
-  const [updateMsg, setUpdateMsg] = useState('');
 
   useEffect(() => {
     if (effectiveOpen) {
@@ -223,11 +218,6 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
 
         {view === 'choose' && (
           <>
-            <p className="auth-modal-subtitle">
-              Conecte uma identidade unificada para entrar em salas JAM protegidas e sincronizar seu
-              perfil entre dispositivos.
-            </p>
-
             <div className="auth-provider-stack">
               <button
                 type="button"
@@ -287,111 +277,37 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
               </button>
             </div>
 
-            <div className="auth-legal-box">
-              <label className="auth-legal-check">
-                <input
-                  type="checkbox"
-                  checked={termsChecked}
-                  onChange={e => {
-                    setTermsChecked(e.target.checked);
-                    if (e.target.checked) setLocalError('');
-                  }}
-                />
-                <span>
-                  Li e aceito os <strong>Termos de Uso</strong> e a{' '}
-                  <strong>Política de Privacidade</strong> (v. {CURRENT_TERMS_VERSION})
-                  {!prefs.onlineConsent && ' e autorizo o acesso online para autenticar.'}
-                </span>
-              </label>
-
-              <details className="auth-legal-details">
-                <summary>Ver resumo dos Termos e Privacidade</summary>
-                <ul>
-                  {LEGAL_SUMMARY.termsHighlights.map(item => (
-                    <li key={item}>{item}</li>
-                  ))}
-                  {LEGAL_SUMMARY.privacyHighlights.map(item => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              </details>
-            </div>
+            <label className="auth-legal-check auth-legal-compact">
+              <input
+                type="checkbox"
+                checked={termsChecked}
+                onChange={e => {
+                  setTermsChecked(e.target.checked);
+                  if (e.target.checked) setLocalError('');
+                }}
+              />
+              <span>Aceito os Termos e Privacidade</span>
+            </label>
 
             {mandatory && (
-              <>
-                <details className="auth-legal-details auth-server-details">
-                  <summary>Servidor de autenticação</summary>
-                  <label className="field-label" style={{ marginTop: 4 }}>
-                    URL do servidor HTTPS (ou loopback)
-                    <input
-                      type="url"
-                      className="input"
-                      aria-label="Servidor de autenticação"
-                      placeholder={DEFAULT_HUB_BROKER_URL}
-                      value={preferredBrokerUrl}
-                      onChange={e => setPreferredBrokerUrl(e.target.value)}
-                    />
-                  </label>
-                </details>
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    gap: 8,
-                    paddingTop: 2,
-                  }}
-                >
-                  <button
-                    type="button"
-                    className="button ghost"
-                    disabled={!!busy}
-                    onClick={() => {
-                      if (!termsChecked) {
-                        setLocalError(
-                          'Para continuar, confirme que leu e aceita os Termos de Uso e a Política de Privacidade.',
-                        );
-                        return;
-                      }
-                      void ensureLegalConsent()
-                        .then(() => {
-                          useAccounts.getState().enterVisitorMode();
-                        })
-                        .catch(e => setLocalError(cleanError(e)));
-                    }}
-                  >
-                    Continuar como visitante (modo limitado)
-                  </button>
-                  <button
-                    type="button"
-                    className="text-button"
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
-                    disabled={checkingUpdate || !!busy}
-                    onClick={() => {
-                      setCheckingUpdate(true);
-                      setUpdateMsg('');
-                      void ensureLegalConsent()
-                        .then(() => window.glass.updateStatus(false))
-                        .then(v => {
-                          setUpdateMsg(v.message);
-                          if (v.available && v.version) {
-                            useUpdateNotice.getState().setAvailable(v.version);
-                          }
-                        })
-                        .catch(e => setUpdateMsg(cleanError(e)))
-                        .finally(() => setCheckingUpdate(false));
-                    }}
-                  >
-                    <RefreshCw size={12} className={checkingUpdate ? 'auth-spin' : ''} />
-                    {checkingUpdate ? 'Verificando atualizações…' : 'Verificar atualizações'}
-                  </button>
-                  {updateMsg && (
-                    <span className="fine-print" role="status">
-                      {updateMsg}
-                    </span>
-                  )}
-                </div>
-              </>
+              <button
+                type="button"
+                className="auth-visitor-btn"
+                disabled={!!busy}
+                onClick={() => {
+                  if (!termsChecked) {
+                    setLocalError('Aceite os Termos e Privacidade para continuar.');
+                    return;
+                  }
+                  void ensureLegalConsent()
+                    .then(() => {
+                      useAccounts.getState().enterVisitorMode();
+                    })
+                    .catch(e => setLocalError(cleanError(e)));
+                }}
+              >
+                Modo visitante
+              </button>
             )}
           </>
         )}

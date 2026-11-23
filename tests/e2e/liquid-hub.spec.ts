@@ -263,9 +263,8 @@ test('Liquid Hub rebranding, Zero-Trust PKCE+Ed25519+DPAPI login, Shuffle Play a
     });
     await expect(shuffleBtn).toBeVisible();
     await shuffleBtn.click();
-    await expect
-      .poll(async () => (await page.evaluate(() => window.glass.bootstrap())).preferences.shuffle)
-      .toBe(true);
+    await expect(shuffleBtn).toHaveAttribute('aria-pressed', 'true');
+    expect((await page.evaluate(() => window.glass.bootstrap())).preferences.shuffle).toBe(false);
     await expect(page.locator('footer.player .queue-count-dot')).toHaveText('2');
     await page.locator('footer.player').getByRole('button', { name: 'Pausar', exact: true }).click();
 

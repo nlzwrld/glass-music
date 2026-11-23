@@ -28,6 +28,7 @@ import { IconButton, OfflineIndicator, SourceBadge } from '../glass/controls';
 export default function TrackList({
   tracks,
   playlistId,
+  contextId,
   empty = 'Nenhuma música.',
   showHeaderShuffle = true,
   canReorder,
@@ -36,6 +37,7 @@ export default function TrackList({
 }: {
   tracks: Track[];
   playlistId?: string;
+  contextId?: string | null;
   empty?: string;
   showHeaderShuffle?: boolean;
   canReorder?: boolean;
@@ -51,7 +53,9 @@ export default function TrackList({
   const likes = useApp(s => s.data.likes),
     downloadingIds = useApp(s => s.downloadingIds),
     current = useApp(s => s.queue[s.index]),
+    queueContext = useApp(s => s.queueContext),
     playing = useApp(s => s.playing);
+  const effectiveContextId = contextId !== undefined ? contextId : playlistId ? `playlist:${playlistId}` : null;
 
   const reorderEnabled = Boolean(canReorder ?? playlistId);
   const reorderHandler =
@@ -121,7 +125,7 @@ export default function TrackList({
               className="tracklist-shuffle-btn"
               aria-label="Embaralhar e reproduzir lista"
               title="Shuffle Play"
-              onClick={() => shufflePlay(tracks)}
+              onClick={() => shufflePlay(tracks, undefined, { contextId: effectiveContextId })}
             >
               <Shuffle size={12} />
               <span>Aleatório</span>
@@ -282,9 +286,9 @@ export default function TrackList({
                 <button
                   className="track-identity"
                   onClick={() =>
-                    active && playable
+                    active && playable && (!effectiveContextId || queueContext === effectiveContextId)
                       ? transport.toggle()
-                      : useApp.getState().play(track, tracks)
+                      : useApp.getState().play(track, tracks, { contextId: effectiveContextId })
                   }
                   aria-label={`${playable ? 'Reproduzir' : 'Abrir'} ${track.title}`}
                 >

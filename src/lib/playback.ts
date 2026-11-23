@@ -6,7 +6,7 @@ import {
   type StreamProvider,
   type Track,
 } from '../../shared/types';
-import { setPreferencesFromUI, useApp } from '../stores/app';
+import { useApp } from '../stores/app';
 import { orderSmartShuffleTracks } from './smartShuffle';
 
 export const NOW_PLAYING_NOTIFICATION_TAG = 'liquid-hub-now-playing';
@@ -167,13 +167,14 @@ export function shuffleTracks<T>(items: readonly T[], rng: () => number = Math.r
 }
 
 /**
- * Shuffles an entire playlist/collection using Smart Shuffle (relevance + diversity)
- * or classic Fisher-Yates, activates shuffle preference, and starts playback immediately.
+ * Shuffles a playlist/collection independently using Smart Shuffle (strictly scoped to the
+ * active playlist) or classic Fisher-Yates, and starts playback immediately WITHOUT mutating
+ * the player's global shuffle preference.
  */
 export function shufflePlay(
   tracks: readonly Track[],
   rng: () => number = Math.random,
-  options?: { mode?: ShuffleMode },
+  options?: { mode?: ShuffleMode; contextId?: string | null },
 ): Track | null {
   const playable = tracks.filter(t => canPlay(t) && t.available !== false);
   if (!playable.length) return null;
@@ -187,18 +188,17 @@ export function shufflePlay(
           {
             history: app.data.history,
             likes: app.data.likes,
-            libraryTracks: app.data.tracks,
+            libraryTracks: playable,
+            playlistTracks: playable,
           },
           rng,
         );
   const first = shuffled[0]!;
-  if (!app.data.preferences.shuffle || (options?.mode && app.data.preferences.shuffleMode !== mode)) {
-    setPreferencesFromUI({
-      shuffle: true,
-      ...(options?.mode ? { shuffleMode: mode } : {}),
-    });
-  }
-  app.play(first, shuffled);
+  app.play(first, shuffled, {
+    contextId: options?.contextId ?? null,
+    playlistShuffled: true,
+    playlistShuffleMode: mode,
+  });
   return first;
 }
 

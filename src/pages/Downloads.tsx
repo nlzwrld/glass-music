@@ -35,6 +35,7 @@ export default function Downloads() {
   const downloadItems = useApp(s => s.downloadItems);
   const downloadsPaused = useApp(s => s.downloadsPaused);
   const current = useApp(s => s.queue[s.index]);
+  const queueContext = useApp(s => s.queueContext);
   const playing = useApp(s => s.playing);
 
   const [query, setQuery] = useState('');
@@ -101,7 +102,8 @@ export default function Downloads() {
 
   const totalBytes = summary?.totalBytes ?? integrations?.offlineBytes ?? 0;
   const totalCount = summary?.totalTracks ?? offlineTracks.length;
-  const activeHere = !!current && filteredOffline.some(t => t.id === current.id);
+  const activeHere =
+    !!current && queueContext === 'downloads' && filteredOffline.some(t => t.id === current.id);
   const canPauseAny = inProgressItems.some(i => i.status === 'downloading' || i.status === 'queued');
   const canResumeAny = inProgressItems.some(i => i.status === 'paused' || i.status === 'failed');
 
@@ -258,6 +260,7 @@ export default function Downloads() {
             tracks={filteredOffline}
             activeHere={activeHere}
             playing={playing}
+            contextId="downloads"
           />
           <div className="pills" role="group" aria-label="Filtrar downloads por origem">
             {(
@@ -320,7 +323,9 @@ export default function Downloads() {
                   type="button"
                   className="track-identity"
                   aria-label={`Reproduzir offline ${track.title}`}
-                  onClick={() => useApp.getState().play(track, filteredOffline)}
+                  onClick={() =>
+                    useApp.getState().play(track, filteredOffline, { contextId: 'downloads' })
+                  }
                 >
                   <div className="row-cover">
                     <Cover track={track} />

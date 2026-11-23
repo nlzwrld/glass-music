@@ -1,10 +1,11 @@
 import { Input } from '../ui/input';
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { X, ListMusic, Plus, LoaderCircle, Check, Sparkles } from 'lucide-react';
+import { X, ListMusic, Plus, LoaderCircle, Check, Sparkles, Camera, Trash2 } from 'lucide-react';
 import { useApp, cleanError, formatTime } from '../../stores/app';
 import { backdropMotion, modalMotion, useReducedUI } from '../../lib/motion';
 import { invalidatePlayback } from '../../lib/playback';
+import { encodePlaylistCoverFile } from '../../lib/playlistCover';
 import type { StreamCandidate, Track } from '../../../shared/types';
 import { CreateJamDialog } from '../jam/CreateJamDialog';
 import { IconButton, SourceBadge } from './controls';
@@ -139,13 +140,18 @@ export default function Dialogs() {
     playlists = useApp(s => s.data.playlists),
     consent = useApp(s => s.data.preferences.onlineConsent);
   const [value, setValue] = useState(''),
+    [artwork, setArtwork] = useState(''),
+    [artworkChanged, setArtworkChanged] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState('');
   const box = useRef<HTMLDivElement>(null);
+  const coverInput = useRef<HTMLInputElement>(null);
   const reduced = useReducedUI();
 
   useEffect(() => {
     setValue(dialog?.type === 'playlist' ? dialog.name || '' : '');
+    setArtwork(dialog?.type === 'playlist' ? dialog.artwork || '' : '');
+    setArtworkChanged(false);
     setError('');
     setBusy(false);
     if (!dialog) return;
@@ -227,32 +233,92 @@ export default function Dialogs() {
             onSubmit={e => {
               e.preventDefault();
               void run(async () => {
-                await useApp
-                  .getState()
-                  .mutate(
-                    dialog.id
-                      ? { action: 'rename', id: dialog.id, name: value }
-                      : { action: 'create', name: value },
-                  );
-                useApp
-                  .getState()
-                  .message(dialog.id ? 'Playlist renomeada.' : 'Playlist criada.');
+                if (dialog.id) {
+                  await useApp.getState().mutate({ action: 'rename', id: dialog.id, name: value });
+                  if (artworkChanged) {
+                    await useApp
+                      .getState()
+                      .mutate({ action: 'setArtwork', id: dialog.id, artwork });
+                  }
+                  useApp.getState().message('Playlist atualizada.');
+                } else {
+                  await useApp.getState().mutate({
+                    action: 'create',
+                    name: value,
+                    ...(artwork ? { artwork } : {}),
+                  });
+                  useApp.getState().message('Playlist criada.');
+                }
               });
             }}
           >
-            <h2 id="dialog-title">{dialog.id ? 'Renomear playlist' : 'Nova playlist'}</h2>
-            <label className="field-label">
-              Nome
-              <Input
-                autoFocus
-                aria-label="Nome da playlist"
-                value={value}
-                maxLength={100}
-                onChange={e => setValue(e.target.value)}
-                placeholder="Nome da playlist"
-                required
-              />
-            </label>
+            <h2 id="dialog-title">{dialog.id ? 'Editar playlist' : 'Nova playlist'}</h2>
+            <div className="playlist-dialog-layout">
+              <div className="playlist-dialog-cover-col">
+                <input
+                  ref={coverInput}
+                  type="file"
+                  accept="image/*"
+                  hidden
+                  onChange={async e => {
+                    const file = e.target.files?.[0];
+                    e.target.value = '';
+                    if (!file) return;
+                    setError('');
+                    try {
+                      const encoded = await encodePlaylistCoverFile(file);
+                      setArtwork(encoded);
+                      setArtworkChanged(true);
+                    } catch (err) {
+                      setError(cleanError(err));
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="playlist-dialog-cover"
+                  onClick={() => coverInput.current?.click()}
+                  aria-label="Escolher foto da playlist"
+                  disabled={busy}
+                >
+                  {artwork ? (
+                    <img src={artwork} alt="" />
+                  ) : (
+                    <ListMusic size={28} />
+                  )}
+                  <span className="playlist-cover-edit-overlay">
+                    <Camera size={18} />
+                    <span>{artwork ? 'Trocar foto' : 'Escolher foto'}</span>
+                  </span>
+                </button>
+                {artwork && (
+                  <button
+                    type="button"
+                    className="text-button playlist-dialog-remove-art"
+                    disabled={busy}
+                    onClick={() => {
+                      setArtwork('');
+                      setArtworkChanged(true);
+                    }}
+                  >
+                    <Trash2 size={12} />
+                    Remover foto
+                  </button>
+                )}
+              </div>
+              <label className="field-label" style={{ flex: 1 }}>
+                Nome
+                <Input
+                  autoFocus
+                  aria-label="Nome da playlist"
+                  value={value}
+                  maxLength={100}
+                  onChange={e => setValue(e.target.value)}
+                  placeholder="Nome da playlist"
+                  required
+                />
+              </label>
+            </div>
             <div className="modal-actions">
               <button type="button" className="button secondary" disabled={busy} onClick={close}>
                 Cancelar

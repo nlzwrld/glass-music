@@ -12,6 +12,7 @@ import './styles/playlists.css';
 import './styles/settings-topics.css';
 import './styles/liquid-glass-ios.css';
 import './styles/matte-design-system.css';
+import './styles/beat-pulse.css';
 import './styles/mobile.css';
 
 const view = new URLSearchParams(location.search).get('view');

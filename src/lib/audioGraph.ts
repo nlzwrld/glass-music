@@ -145,28 +145,55 @@ export function boostedGain(volume: number, boost: number) {
   );
 }
 
+export interface AudioReactiveFrame {
+  bass: number;
+  subBass: number;
+  mid: number;
+  energy: number;
+}
+
 /**
- * Computes normalized sub-bass & bass energy (0..1) from FFT byte bins (0..255).
- * Targets ~20 Hz – 185 Hz so kick drums and basslines modulate optical refraction cleanly.
+ * Computes normalized sub-bass & kick-bass energy (0..1) from FFT byte bins (0..255).
+ * Targets ~20 Hz – 175 Hz with sub-bass weighting and peak-bin blending so tight 808 kicks
+ * and deep basslines hit crisply even at high FFT resolution (fftSize = 2048).
  */
 export function computeBassModulation(
   bins: ArrayLike<number>,
   sampleRate = 48000,
-  fftSize = 256,
-): { bass: number; mid: number; energy: number } {
+  fftSize = 2048,
+): AudioReactiveFrame {
   const count = bins.length;
-  if (!count) return { bass: 0, mid: 0, energy: 0 };
+  if (!count) return { bass: 0, subBass: 0, mid: 0, energy: 0 };
   const hzPerBin = sampleRate / Math.max(32, fftSize);
   const bassStart = Math.max(1, Math.floor(20 / hzPerBin));
-  const bassEnd = Math.min(count - 1, Math.max(bassStart, Math.ceil(185 / hzPerBin)));
+  const subEnd = Math.min(count - 1, Math.max(bassStart, Math.ceil(95 / hzPerBin)));
+  const bassEnd = Math.min(count - 1, Math.max(subEnd, Math.ceil(175 / hzPerBin)));
   const midEnd = Math.min(count - 1, Math.max(bassEnd + 1, Math.ceil(2000 / hzPerBin)));
+
+  let subSum = 0;
+  let subPeak = 0;
+  const subCount = Math.max(1, subEnd - bassStart + 1);
+  for (let i = bassStart; i <= subEnd; i++) {
+    const v = Math.max(0, Math.min(255, bins[i] || 0));
+    subSum += v;
+    if (v > subPeak) subPeak = v;
+  }
 
   let bassSum = 0;
   let bassWeight = 0;
+  let top1 = 0;
+  let top2 = 0;
   for (let i = bassStart; i <= bassEnd; i++) {
-    const w = i <= bassStart + 2 ? 1.35 : 1.0;
-    bassSum += Math.max(0, Math.min(255, bins[i] || 0)) * w;
+    const v = Math.max(0, Math.min(255, bins[i] || 0));
+    const w = i <= subEnd ? 1.65 : 1.1;
+    bassSum += v * w;
     bassWeight += 255 * w;
+    if (v >= top1) {
+      top2 = top1;
+      top1 = v;
+    } else if (v > top2) {
+      top2 = v;
+    }
   }
 
   let midSum = 0;
@@ -175,19 +202,27 @@ export function computeBassModulation(
     midSum += Math.max(0, Math.min(255, bins[i] || 0));
   }
 
-  const rawBass = bassWeight > 0 ? bassSum / bassWeight : 0;
-  // Noise-floor gate + smooth perceptual curve so quiet passages stay calm
-  const gatedBass = Math.max(0, (rawBass - 0.12) / 0.88);
-  const bass = Math.min(1, Math.pow(gatedBass, 1.35));
+  const weightedBass = bassWeight > 0 ? bassSum / bassWeight : 0;
+  const peakBass = (top1 + (bassEnd > bassStart ? top2 : top1)) / (2 * 255);
+  const rawSub = (subSum / (subCount * 255)) * 0.45 + (subPeak / 255) * 0.55;
+  const rawBass = Math.max(weightedBass * 0.48 + peakBass * 0.52, rawSub * 0.92);
+
+  // Noise-floor gate + musical curve so silence stays calm while real kicks/808s punch
+  const gatedBass = Math.max(0, (rawBass - 0.1) / 0.9);
+  const bass = Math.min(1, Math.pow(gatedBass, 1.2));
+
+  const gatedSub = Math.max(0, (rawSub - 0.1) / 0.9);
+  const subBass = Math.min(1, Math.pow(gatedSub, 1.15));
+
   const mid = Math.min(1, midSum / (midCount * 255));
-  const energy = Math.min(1, bass * 0.7 + mid * 0.3);
-  return { bass, mid, energy };
+  const energy = Math.min(1, bass * 0.65 + subBass * 0.15 + mid * 0.2);
+  return { bass, subBass, mid, energy };
 }
 
 let activeAudioGraph: AudioGraph | null = null;
 
-export function getAudioReactiveFrame(): { bass: number; mid: number; energy: number } {
-  if (!activeAudioGraph) return { bass: 0, mid: 0, energy: 0 };
+export function getAudioReactiveFrame(): AudioReactiveFrame {
+  if (!activeAudioGraph) return { bass: 0, subBass: 0, mid: 0, energy: 0 };
   return activeAudioGraph.sampleFrequencyEnergy();
 }
 
@@ -200,6 +235,7 @@ export class AudioGraph {
   private analyser: AnalyserNode | null = null;
   private freqBins: Uint8Array<ArrayBuffer> | null = null;
   private limited = false;
+  private silent = false;
   private sink = 'default';
 
   constructor() {
@@ -224,9 +260,14 @@ export class AudioGraph {
     if (typeof this.context.createAnalyser === 'function') {
       try {
         const analyser = this.context.createAnalyser();
-        analyser.fftSize = 256;
-        analyser.smoothingTimeConstant = 0.78;
-        this.boost.connect(analyser);
+        // 2048 FFT gives ~23.4 Hz/bin at 48 kHz so 30–120 Hz sub-bass & 808 kicks resolve cleanly
+        analyser.fftSize = 2048;
+        analyser.smoothingTimeConstant = 0.36;
+        analyser.minDecibels = -82;
+        analyser.maxDecibels = -10;
+        // Tap PRE-volume (after EQ, before boost) so bass analysis works identically at any volume
+        const preVolumeNode = this.filters[this.filters.length - 1] || this.boost;
+        preVolumeNode.connect(analyser);
         this.analyser = analyser;
         this.freqBins = new Uint8Array(analyser.frequencyBinCount);
       } catch {
@@ -236,9 +277,9 @@ export class AudioGraph {
     activeAudioGraph = this;
   }
 
-  sampleFrequencyEnergy(): { bass: number; mid: number; energy: number } {
-    if (!this.analyser || !this.freqBins || this.context.state !== 'running') {
-      return { bass: 0, mid: 0, energy: 0 };
+  sampleFrequencyEnergy(): AudioReactiveFrame {
+    if (!this.analyser || !this.freqBins || this.silent || this.context.state !== 'running') {
+      return { bass: 0, subBass: 0, mid: 0, energy: 0 };
     }
     this.analyser.getByteFrequencyData(this.freqBins);
     return computeBassModulation(this.freqBins, this.context.sampleRate, this.analyser.fftSize);
@@ -289,13 +330,13 @@ export class AudioGraph {
 
   async configure(p: Preferences) {
     const time = this.context.currentTime;
+    this.silent = (p.volume ?? 0) <= 0;
     this.filters.forEach((f, i) => f.gain.setTargetAtTime(p.eq[i] || 0, time, 0.025));
     this.boost.gain.setTargetAtTime(boostedGain(p.volume, p.volumeBoost), time, 0.025);
     if (p.limiter !== this.limited) {
       this.boost.disconnect();
       this.limiter.disconnect();
       this.limited = p.limiter;
-      if (this.analyser) this.boost.connect(this.analyser);
       if (this.limited) {
         this.boost.connect(this.limiter);
         this.limiter.connect(this.context.destination);

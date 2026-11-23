@@ -304,8 +304,7 @@ export const useAccounts = create<State>((set, get) => ({
       authModalOpen: false,
       authError: '',
       plusStatus: defaultFreePlusStatus(false),
-      notice:
-        'Modo visitante ativo: reprodução e busca liberadas. Entre com uma conta para participar de JAMs, editar playlists colaborativas e sincronizar na nuvem.',
+      notice: '',
     }),
   exitVisitorMode: () =>
     set({

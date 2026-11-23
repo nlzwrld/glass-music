@@ -87,6 +87,9 @@ afterEach(() => {
   useApp.setState({
     queue: [],
     index: -1,
+    queueContext: null,
+    queueShuffled: false,
+    queueShuffleMode: null,
     shufflePlayed: [],
     shuffleNext: null,
     smartShuffleSteps: 0,
@@ -263,6 +266,51 @@ describe('Phase 2: Smart Shuffle engine and playlist fidelity', () => {
     const state = useApp.getState();
     expect(state.queue.some(t => t.id === discoveryTrack.id && t.recommended === true)).toBe(true);
     expect(state.data.playlists[0]!.trackIds).toEqual(playlistTracks.map(t => t.id));
+  });
+
+  it('scopes Smart Shuffle strictly to the active playlist instead of bleeding old global taste', () => {
+    const oldFunkA = makeTrack('yt:old-funk-1', {
+      title: 'Baile Funk Mandelão 1',
+      artist: 'MC Antigo',
+    });
+    const oldFunkB = makeTrack('yt:old-funk-2', {
+      title: 'Montagem Funk Proibidão 2',
+      artist: 'DJ Passado',
+    });
+    const rockA = makeTrack('yt:rock-a', {
+      title: 'Alternative Rock Drive',
+      artist: 'Band Alpha',
+    });
+    const rockB = makeTrack('yt:rock-b', {
+      title: 'Post-Rock Horizon',
+      artist: 'Band Beta',
+    });
+    const rockC = makeTrack('yt:rock-c', {
+      title: 'Hard Rock Pulse',
+      artist: 'Band Gamma',
+    });
+    const activeRockPlaylist = [rockA, rockB, rockC];
+
+    // Heavy old Funk history + likes from completely unrelated past listening
+    const globalHistory = Array.from({ length: 40 }, (_, i) => ({
+      id: i % 2 === 0 ? oldFunkA.id : oldFunkB.id,
+      playedAt: 10_000 - i * 50,
+    }));
+
+    const scopedProfile = buildSmartShuffleProfile({
+      history: globalHistory,
+      likes: [oldFunkA.id, oldFunkB.id],
+      libraryTracks: [oldFunkA, oldFunkB, ...activeRockPlaylist],
+      playlistTracks: activeRockPlaylist,
+    });
+
+    // Global Funk taste MUST NOT leak into the active Rock playlist's profile
+    expect(scopedProfile.styleWeights.get('funk')).toBeUndefined();
+    expect(scopedProfile.styleWeights.get('rock')).toBeGreaterThan(0);
+    expect(scopedProfile.recentArtistWeights.has('mc antigo')).toBe(false);
+    expect(scopedProfile.likedArtistWeights.has('mc antigo')).toBe(false);
+    expect(scopedProfile.likeSet.size).toBe(0);
+    expect(scopedProfile.olderPlayIds.size).toBe(0);
   });
 });
 

@@ -1,5 +1,6 @@
 import { preparePlayback } from '../lib/playback';
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { encodePlaylistCoverFile } from '../lib/playlistCover';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { GlassContextMenu } from '../components/glass/materials';
 import {
   Search,
@@ -17,6 +18,7 @@ import {
   Lock,
   Plus,
   History,
+  Camera,
 } from 'lucide-react';
 import type { MySharedPlaylistsResponse } from '../../shared/types';
 import { resolveEffectiveBroker, useAccounts } from '../stores/accounts';
@@ -47,6 +49,26 @@ export default function Library() {
     [tab, setTab] = useState<LibTab>('all'),
     [myShared, setMyShared] = useState<MySharedPlaylistsResponse | null>(null),
     [inviteBusy, setInviteBusy] = useState('');
+  const coverPickerRef = useRef<HTMLInputElement>(null);
+  const coverTargetPlaylistRef = useRef<string | null>(null);
+
+  const openCoverPicker = useCallback((playlistId: string) => {
+    coverTargetPlaylistRef.current = playlistId;
+    coverPickerRef.current?.click();
+  }, []);
+
+  const handleCoverFileSelected = useCallback(async (file?: File) => {
+    const targetId = coverTargetPlaylistRef.current;
+    coverTargetPlaylistRef.current = null;
+    if (!file || !targetId) return;
+    try {
+      const encoded = await encodePlaylistCoverFile(file);
+      await useApp.getState().mutate({ action: 'setArtwork', id: targetId, artwork: encoded });
+      useApp.getState().message('Foto da playlist atualizada.');
+    } catch (err) {
+      useApp.getState().message(cleanError(err));
+    }
+  }, []);
 
   const brokerUrl = resolveEffectiveBroker(undefined, { preferredBrokerUrl, hub });
 
@@ -89,6 +111,7 @@ export default function Library() {
   }, [playlist?.id, data.preferences.onlineConsent]);
 
   const current = useApp(s => s.queue[s.index]),
+    queueContext = useApp(s => s.queueContext),
     playing = useApp(s => s.playing);
 
   const q = query.trim().toLocaleLowerCase('pt-BR');
@@ -136,6 +159,17 @@ export default function Library() {
 
     return (
       <div className="collection-page">
+        <input
+          ref={coverPickerRef}
+          type="file"
+          accept="image/*"
+          hidden
+          onChange={e => {
+            const file = e.target.files?.[0];
+            e.target.value = '';
+            void handleCoverFileSelected(file);
+          }}
+        />
         <div className="page-heading">
           <div className="heading-title-group">
             <h1>Biblioteca</h1>
@@ -359,12 +393,35 @@ export default function Library() {
                             .setDialog({ type: 'sharePlaylist', playlistId: p.id }),
                       },
                       {
-                        label: 'Renomear',
+                        label: 'Alterar foto',
+                        icon: <Camera size={15} />,
+                        action: () => openCoverPicker(p.id),
+                      },
+                      ...(p.artwork
+                        ? [
+                            {
+                              label: 'Remover foto',
+                              icon: <X size={15} />,
+                              action: () =>
+                                void useApp
+                                  .getState()
+                                  .mutate({ action: 'setArtwork', id: p.id, artwork: '' })
+                                  .then(() =>
+                                    useApp.getState().message('Foto da playlist removida.'),
+                                  ),
+                            },
+                          ]
+                        : []),
+                      {
+                        label: 'Editar',
                         icon: <Pencil size={15} />,
                         action: () =>
-                          useApp
-                            .getState()
-                            .setDialog({ type: 'playlist', id: p.id, name: p.name }),
+                          useApp.getState().setDialog({
+                            type: 'playlist',
+                            id: p.id,
+                            name: p.name,
+                            artwork: p.artwork,
+                          }),
                       },
                       {
                         label: 'Exportar playlist',
@@ -413,7 +470,10 @@ export default function Library() {
                   <article className="library-playlist-card" key={album}>
                     <button
                       className="playlist-card-open"
-                      onClick={() => items[0] && useApp.getState().play(items[0], items)}
+                      onClick={() =>
+                        items[0] &&
+                        useApp.getState().play(items[0], items, { contextId: `album:${album}` })
+                      }
                     >
                       <Cover track={items[0]} />
                       <span>
@@ -442,7 +502,10 @@ export default function Library() {
                   <article className="library-playlist-card" key={artist}>
                     <button
                       className="playlist-card-open"
-                      onClick={() => items[0] && useApp.getState().play(items[0], items)}
+                      onClick={() =>
+                        items[0] &&
+                        useApp.getState().play(items[0], items, { contextId: `artist:${artist}` })
+                      }
                     >
                       <Cover track={items[0]} />
                       <span>
@@ -470,6 +533,7 @@ export default function Library() {
             )}
             <TrackList
               tracks={filteredTracks}
+              contextId={tab === 'downloads' ? 'library:downloads' : 'library:all'}
               empty={
                 tab === 'downloads'
                   ? 'Nenhuma faixa salva offline.'
@@ -506,15 +570,38 @@ export default function Library() {
   );
 
   const totalDur = formatTotalDuration(tracks.reduce((sum, t) => sum + (t.duration || 0), 0));
-  const activeHere = !!current && tracks.some(t => t.id === current.id);
+  const contextId = playlist ? `playlist:${playlist.id}` : `library:${page}`;
+  const activeHere =
+    !!current && queueContext === contextId && tracks.some(t => t.id === current.id);
 
   return (
     <div className={playlist ? 'playlist-page' : 'collection-page'}>
+      <input
+        ref={coverPickerRef}
+        type="file"
+        accept="image/*"
+        hidden
+        onChange={e => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          void handleCoverFileSelected(file);
+        }}
+      />
       <div className="page-heading collection-hero">
         {playlist && (
-          <div className="playlist-hero-art">
+          <button
+            type="button"
+            className="playlist-hero-art playlist-cover-editable"
+            aria-label="Alterar foto da playlist"
+            title="Alterar foto da playlist"
+            onClick={() => openCoverPicker(playlist.id)}
+          >
             <PlaylistCover playlist={playlist} />
-          </div>
+            <span className="playlist-cover-edit-overlay" aria-hidden="true">
+              <Camera size={22} />
+              <span>Alterar foto</span>
+            </span>
+          </button>
         )}
         <div>
           {playlist && (
@@ -559,6 +646,7 @@ export default function Library() {
             activeHere={activeHere}
             playing={playing}
             isPlaylist={!!playlist}
+            contextId={contextId}
           />
 
           {playlist &&
@@ -597,11 +685,20 @@ export default function Library() {
                 </button>
               )}
               <IconButton
-                label="Renomear playlist"
+                label="Alterar foto da playlist"
+                onClick={() => openCoverPicker(playlist.id)}
+              >
+                <Camera size={15} />
+              </IconButton>
+              <IconButton
+                label="Editar playlist"
                 onClick={() =>
-                  useApp
-                    .getState()
-                    .setDialog({ type: 'playlist', id: playlist.id, name: playlist.name })
+                  useApp.getState().setDialog({
+                    type: 'playlist',
+                    id: playlist.id,
+                    name: playlist.name,
+                    artwork: playlist.artwork,
+                  })
                 }
               >
                 <Pencil size={15} />
@@ -656,7 +753,12 @@ export default function Library() {
         </label>
       </div>
 
-      <TrackList tracks={tracks} playlistId={playlist?.id} showHeaderShuffle={false} />
+      <TrackList
+        tracks={tracks}
+        playlistId={playlist?.id}
+        contextId={contextId}
+        showHeaderShuffle={false}
+      />
     </div>
   );
 }

@@ -1,8 +1,7 @@
 import { useState } from 'react';
-import { Sparkles, VolumeX, UserPlus, X } from 'lucide-react';
+import { UserPlus, X } from 'lucide-react';
 import { AUDIO_ADS_POLICY, type LiquidPlusStatus } from '../../../shared/plus';
 import { useAccounts } from '../../stores/accounts';
-import { useApp } from '../../stores/app';
 
 export const VISITOR_VISUAL_AD_SPEC = {
   label: 'Patrocinado · Somente visual (sem áudio)',
@@ -67,8 +66,6 @@ export function VisitorVisualAdBanner() {
   const authenticated = useAccounts(s => s.hub.authenticated);
   const plusStatus = useAccounts(s => s.plusStatus);
   const openAuthModal = useAccounts(s => s.openAuthModal);
-  const setPage = useApp(s => s.setPage);
-  const setSettingsTab = useApp(s => s.setSettingsTab);
   const [dismissed, setDismissed] = useState(false);
 
   if (
@@ -85,44 +82,27 @@ export function VisitorVisualAdBanner() {
   return (
     <aside
       className="visitor-visual-ad-banner"
-      aria-label="Banner informativo de modo visitante e destaque visual patrocinado sem áudio"
+      aria-label="Modo visitante"
     >
       <div className="visitor-visual-ad-info">
-        <span className="visitor-visual-ad-badge">
-          <VolumeX size={12} />
-          {VISITOR_VISUAL_AD_SPEC.label}
-        </span>
         <span className="visitor-visual-ad-text">
-          <strong>Modo Visitante:</strong> você pode buscar e ouvir músicas livremente. Crie sua
-          conta gratuita para usar JAM ao vivo, playlists colaborativas e sincronização na nuvem —
-          ou conheça o <strong>Liquid Plus</strong> sem banners visuais.
+          <strong>Modo visitante</strong>
         </span>
       </div>
 
       <div className="visitor-visual-ad-actions">
         <button
           type="button"
-          className="button secondary"
-          onClick={() => {
-            setSettingsTab('plus');
-            setPage('settings');
-          }}
-        >
-          <Sparkles size={13} />
-          Liquid Plus
-        </button>
-        <button
-          type="button"
           className="button primary"
           onClick={() => openAuthModal({ view: 'choose' })}
         >
           <UserPlus size={13} />
-          Criar conta ou entrar
+          Entrar
         </button>
         <button
           type="button"
           className="icon-button"
-          aria-label="Ocultar banner visual"
+          aria-label="Ocultar aviso"
           onClick={() => setDismissed(true)}
         >
           <X size={14} />

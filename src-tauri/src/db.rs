@@ -800,9 +800,35 @@ impl Library {
         "save"=>{validate_track(&c["track"])?;},
         "like"=>{let tid=s(&c["track"],"id"); if q("DELETE FROM likes WHERE track_id=?",&[&tid])?==0{q("INSERT INTO likes VALUES(?)",&[&tid])?;}},
         "history"=>{q("INSERT INTO history VALUES(?,?)",&[&s(&c["track"],"id"),&now()])?;q("DELETE FROM history WHERE rowid NOT IN (SELECT rowid FROM history ORDER BY played DESC,rowid DESC LIMIT 500)",&[])?;},
-        "create"=>{q("INSERT INTO playlists VALUES(?,?,?)",&[&uuid::Uuid::new_v4().to_string(),&name,&now()])?;},
+        "create"=>{
+          let new_id = uuid::Uuid::new_v4().to_string();
+          q("INSERT INTO playlists VALUES(?,?,?)",&[&new_id,&name,&now()])?;
+          let art = s(c,"artwork").trim();
+          if !art.is_empty() {
+            if !playlist_artwork_url(art) { return Err("Escolha uma imagem válida (JPG, PNG ou WebP).".into()); }
+            q("INSERT OR REPLACE INTO settings VALUES(?,?)",&[&format!("playlist-artwork:{new_id}"),&art])?;
+          }
+        },
         "rename"=>{q("UPDATE playlists SET name=? WHERE id=?",&[&name,&id])?;},
-        "delete"=>{q("DELETE FROM playlists WHERE id=?",&[&id])?;},
+        "setArtwork"=>{
+          if !valid_id(id) || self.query("SELECT json_quote(id) FROM playlists WHERE id=?",[id])?.is_empty() {
+            return Err("Playlist não encontrada.".into());
+          }
+          let art = s(c,"artwork").trim();
+          let key = format!("playlist-artwork:{id}");
+          if art.is_empty() {
+            q("DELETE FROM settings WHERE key=?",&[&key])?;
+          } else {
+            if !playlist_artwork_url(art) {
+              return Err("Escolha uma imagem válida (JPG, PNG ou WebP).".into());
+            }
+            q("INSERT OR REPLACE INTO settings VALUES(?,?)",&[&key,&art])?;
+          }
+        },
+        "delete"=>{
+          q("DELETE FROM playlists WHERE id=?",&[&id])?;
+          let _ = q("DELETE FROM settings WHERE key=?",&[&format!("playlist-artwork:{id}")]);
+        },
         "add"=>{q("INSERT OR IGNORE INTO playlist_tracks SELECT ?,?,COALESCE(MAX(position),-1)+1 FROM playlist_tracks WHERE playlist_id=?",&[&id,&s(&c["track"],"id"),&id])?;},
         "move"=>{let target=s(c,"targetId");if target==id||self.query("SELECT json_quote(id) FROM playlists WHERE id=?",[target])?.is_empty()||self.query("SELECT json_quote(track_id) FROM playlist_tracks WHERE playlist_id=? AND track_id=?",[id,tid])?.is_empty(){return Err("Escolha outra playlist válida para mover a faixa.".into());}q("INSERT OR IGNORE INTO playlist_tracks SELECT ?,?,COALESCE(MAX(position),-1)+1 FROM playlist_tracks WHERE playlist_id=?",&[&target,&tid,&target])?;q("DELETE FROM playlist_tracks WHERE playlist_id=? AND track_id=?",&[&id,&tid])?;},
         "remove"=>{q("DELETE FROM playlist_tracks WHERE playlist_id=? AND track_id=?",&[&id,&tid])?;},
@@ -1362,6 +1388,56 @@ mod tests {
         assert_eq!(pl["collaborative"], true);
         assert_eq!(pl["remoteVersion"], 4);
         assert_eq!(pl["ownerHandle"], "dj-tester");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sets_validates_and_clears_custom_playlist_artwork() {
+        let dir = std::env::temp_dir().join(format!("glass-pl-art-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Library::open(&dir.join("library.sqlite")).unwrap();
+
+        let valid_data_url = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/";
+        let created = db
+            .command(&json!({
+                "action": "create",
+                "name": "Capa Custom",
+                "artwork": valid_data_url
+            }))
+            .unwrap();
+        let pid = created["playlists"][0]["id"].as_str().unwrap().to_string();
+        assert_eq!(created["playlists"][0]["artwork"], valid_data_url);
+
+        // Rejects unsafe / invalid schemes
+        assert!(db
+            .command(&json!({
+                "action": "setArtwork",
+                "id": pid,
+                "artwork": "javascript:alert(1)"
+            }))
+            .is_err());
+
+        // Updates to another valid data URL
+        let png_data_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ";
+        let updated = db
+            .command(&json!({
+                "action": "setArtwork",
+                "id": pid,
+                "artwork": png_data_url
+            }))
+            .unwrap();
+        assert_eq!(updated["playlists"][0]["artwork"], png_data_url);
+
+        // Empty artwork clears custom cover cleanly
+        let cleared = db
+            .command(&json!({
+                "action": "setArtwork",
+                "id": pid,
+                "artwork": ""
+            }))
+            .unwrap();
+        assert!(cleared["playlists"][0]["artwork"].is_null());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

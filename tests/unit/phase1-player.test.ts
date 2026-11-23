@@ -298,16 +298,19 @@ describe('Phase 1: AudioGraph click-free ramping & volume preservation', () => {
 });
 
 describe('Phase 1: Unified Play & Shuffle buttons and duplicate-control removal', () => {
-  it('renders CollectionPlaybackActions with shared circle identity and active shuffle state', () => {
+  it('renders CollectionPlaybackActions with shared circle identity and keeps playlist shuffle isolated from player shuffle', () => {
     const t1 = makeTrack('a', 'Faixa A');
     const t2 = makeTrack('b', 'Faixa B');
     useApp.setState({
+      queueShuffled: false,
+      queueShuffleMode: null,
       data: {
         tracks: [t1, t2],
         playlists: [],
         likes: [],
         history: [],
-        preferences: { ...defaults, shuffle: false },
+        // Even with PLAYER shuffle ON, playlist Shuffle Play must NOT falsely light up
+        preferences: { ...defaults, shuffle: true },
       },
     });
 
@@ -317,6 +320,7 @@ describe('Phase 1: Unified Play & Shuffle buttons and duplicate-control removal'
         activeHere: false,
         playing: false,
         isPlaylist: true,
+        contextId: 'playlist:p1',
       }),
     );
     expect(inactiveHtml).toContain('aria-label="Reproduzir playlist"');
@@ -326,13 +330,16 @@ describe('Phase 1: Unified Play & Shuffle buttons and duplicate-control removal'
     expect(inactiveHtml).toContain('aria-pressed="false"');
     expect(inactiveHtml).not.toContain('action-active-dot');
 
+    // Only when THIS collection is actively running in playlist-shuffled mode does the button activate
     useApp.setState({
+      queueShuffled: true,
+      queueShuffleMode: 'smart',
       data: {
         tracks: [t1, t2],
         playlists: [],
         likes: [],
         history: [],
-        preferences: { ...defaults, shuffle: true },
+        preferences: { ...defaults, shuffle: false },
       },
     });
 
@@ -342,6 +349,7 @@ describe('Phase 1: Unified Play & Shuffle buttons and duplicate-control removal'
         activeHere: true,
         playing: true,
         isPlaylist: false,
+        contextId: 'collection:demo',
       }),
     );
     expect(activeHtml).toContain('aria-label="Pausar coleção"');

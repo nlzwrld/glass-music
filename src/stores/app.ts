@@ -11,9 +11,10 @@ import {
   type CollectionPreview,
   type DownloadProgressEvent,
   type LyricsResult,
+  type ShuffleMode,
 } from '../../shared/types';
 import { hasValidLyrics, resolveTrackLyrics } from '../lib/lyrics';
-import { pickSmartShuffleIndex } from '../lib/smartShuffle';
+import { normalizePrimaryArtist, pickSmartShuffleIndex } from '../lib/smartShuffle';
 import { clearDiscoveryCache } from '../lib/discovery';
 import { clearRecommendationsCache } from '../lib/recommendations';
 import { inspectMusicLink, parseLiquidHubLink } from '../lib/playlist';
@@ -89,6 +90,9 @@ interface State {
   toast: string;
   queue: Track[];
   index: number;
+  queueContext: string | null;
+  queueShuffled: boolean;
+  queueShuffleMode: ShuffleMode | null;
   shufflePlayed: number[];
   shuffleNext: number | null;
   smartShuffleSteps: number;
@@ -135,7 +139,15 @@ interface State {
   clearAllOffline(): Promise<void>;
   probeLyrics(track?: Track | null): Promise<boolean>;
   applyResolvedTrack(updated: Track, reloadIfActive?: boolean): void;
-  play(t: Track, list?: Track[]): void;
+  play(
+    t: Track,
+    list?: Track[],
+    options?: {
+      contextId?: string | null;
+      playlistShuffled?: boolean;
+      playlistShuffleMode?: ShuffleMode | null;
+    },
+  ): void;
   playNext(t: Track): void;
   jumpQueue(index: number): void;
   next(manual?: boolean): void;
@@ -202,14 +214,29 @@ function computeShuffleStep(
     history: data?.history ?? [],
     likes: data?.likes ?? [],
     libraryTracks: data?.tracks ?? [],
+    playlistTracks: queue,
     currentTrack: queue[current],
     recentQueueTracks,
   });
   return { played: uniquePlayed, next: smart.next };
 }
 
+export function isCollectionActive(
+  state: Pick<State, 'queue' | 'index' | 'queueContext'>,
+  contextId: string | undefined | null,
+  tracks: readonly Track[],
+): boolean {
+  const current = state.queue[state.index];
+  if (!current) return false;
+  if (contextId) {
+    return state.queueContext === contextId && tracks.some(t => t.id === current.id);
+  }
+  return tracks.some(t => t.id === current.id);
+}
+
 export function upcomingIndex(
   s: Pick<State, 'queue' | 'index' | 'shufflePlayed' | 'shuffleNext'> & {
+    queueShuffled?: boolean;
     data: Pick<Snapshot, 'tracks' | 'likes' | 'history' | 'preferences'>;
   },
   manual = false,
@@ -217,7 +244,8 @@ export function upcomingIndex(
   if (!s.queue.length || s.index < 0) return -1;
   const p = s.data.preferences;
   if (!manual && p.repeat === 'one') return s.index;
-  if (p.shuffle) {
+  // Playlist-shuffled queues follow their own pre-shuffled order independently of the player shuffle toggle
+  if (!s.queueShuffled && p.shuffle) {
     const playable = s.queue
       .map((_, i) => i)
       .filter(i => s.queue[i]?.available !== false);
@@ -281,13 +309,15 @@ type AutoplayContext = {
   revision: number;
   index: number;
   trackId: string | undefined;
+  queueContext: string | null;
 };
 
 function sameAutoplaySelection(s: State, context: AutoplayContext): boolean {
   return (
     s.revision === context.revision &&
     s.index === context.index &&
-    s.queue[s.index]?.id === context.trackId
+    s.queue[s.index]?.id === context.trackId &&
+    s.queueContext === context.queueContext
   );
 }
 
@@ -311,6 +341,9 @@ export const useApp = create<State>((set, get) => ({
   sideOpen: false,
   queue: [],
   index: -1,
+  queueContext: null,
+  queueShuffled: false,
+  queueShuffleMode: null,
   shufflePlayed: [],
   shuffleNext: null,
   smartShuffleSteps: 0,
@@ -428,7 +461,10 @@ export const useApp = create<State>((set, get) => ({
       'shuffle' in patch || 'repeat' in patch || 'shuffleMode' in patch;
     const shufflePatch = needShuffleRecompute
       ? (() => {
-          if (!next.shuffle) return { shufflePlayed: [] as number[], shuffleNext: null };
+          // Never let player shuffle changes overwrite or scramble a playlist-shuffled queue
+          if (prev.queueShuffled || !next.shuffle) {
+            return { shufflePlayed: [] as number[], shuffleNext: null };
+          }
           const nextData = { ...prev.data, preferences: next };
           const step = computeShuffleStep(
             prev.queue,
@@ -927,7 +963,7 @@ export const useApp = create<State>((set, get) => ({
       return false;
     }
   },
-  play: (incoming, list = [incoming]) => {
+  play: (incoming, list = [incoming], options) => {
     const enrich = (t: Track) => {
       const saved = get().data.tracks.find(v => v.id === t.id);
       return {
@@ -959,23 +995,35 @@ export const useApp = create<State>((set, get) => ({
     const finalQueue = found >= 0 ? queue : [track];
     const finalIndex = found >= 0 ? found : 0;
     const prev = get();
+    const playlistShuffled = Boolean(options?.playlistShuffled);
+    const playlistShuffleMode = playlistShuffled
+      ? (options?.playlistShuffleMode ?? prev.data.preferences.shuffleMode ?? 'smart')
+      : null;
+    const nextContext = options?.contextId ?? null;
     const sameTrack = prev.queue[prev.index]?.id === track.id;
     const sameQueue =
       prev.status !== 'Fim da fila' &&
+      !playlistShuffled &&
+      !prev.queueShuffled &&
+      prev.queueContext === nextContext &&
       prev.queue.length === finalQueue.length &&
       prev.queue.every((t, i) => t.id === finalQueue[i]?.id);
-    const step = prev.data.preferences.shuffle
-      ? computeShuffleStep(
-          finalQueue,
-          finalIndex,
-          sameQueue ? prev.shufflePlayed : [],
-          prev.data.preferences.repeat === 'all',
-          prev.data,
-        )
-      : { played: [] as number[], next: null };
+    const step =
+      !playlistShuffled && prev.data.preferences.shuffle
+        ? computeShuffleStep(
+            finalQueue,
+            finalIndex,
+            sameQueue ? prev.shufflePlayed : [],
+            prev.data.preferences.repeat === 'all',
+            prev.data,
+          )
+        : { played: [] as number[], next: null };
     set({
       queue: finalQueue,
       index: finalIndex,
+      queueContext: nextContext,
+      queueShuffled: playlistShuffled,
+      queueShuffleMode: playlistShuffleMode,
       shufflePlayed: step.played,
       shuffleNext: step.next,
       smartShuffleSteps: 0,
@@ -1034,7 +1082,7 @@ export const useApp = create<State>((set, get) => ({
     set({
       queue: nextQueue,
       shufflePlayed: shiftedPlayed,
-      shuffleNext: s.data.preferences.shuffle ? insertAt : null,
+      shuffleNext: !s.queueShuffled && s.data.preferences.shuffle ? insertAt : null,
     });
     s.message(`“${incoming.title}” tocará a seguir.`);
   },
@@ -1044,15 +1092,16 @@ export const useApp = create<State>((set, get) => ({
     const target = s.queue[targetIndex];
     if (!target || target.available === false) return;
     const sameTrack = s.queue[s.index]?.id === target.id;
-    const step = s.data.preferences.shuffle
-      ? computeShuffleStep(
-          s.queue,
-          targetIndex,
-          s.shufflePlayed,
-          s.data.preferences.repeat === 'all',
-          s.data,
-        )
-      : { played: [] as number[], next: null };
+    const step =
+      !s.queueShuffled && s.data.preferences.shuffle
+        ? computeShuffleStep(
+            s.queue,
+            targetIndex,
+            s.shufflePlayed,
+            s.data.preferences.repeat === 'all',
+            s.data,
+          )
+        : { played: [] as number[], next: null };
     set({
       index: targetIndex,
       shufflePlayed: step.played,
@@ -1090,6 +1139,7 @@ export const useApp = create<State>((set, get) => ({
           revision: s.revision,
           index: s.index,
           trackId: s.queue[s.index]?.id,
+          queueContext: s.queueContext,
         };
         const flight = get().extendWithRecommendations();
         if (autoplayContinuation !== flight) {
@@ -1123,17 +1173,20 @@ export const useApp = create<State>((set, get) => ({
     }
     const nextTrack = s.queue[index]!;
     const sameTrack = s.queue[s.index]?.id === nextTrack.id;
-    const isSmartActive = p.shuffle && (p.shuffleMode ?? 'smart') === 'smart';
+    const isSmartActive = s.queueShuffled
+      ? s.queueShuffleMode === 'smart'
+      : p.shuffle && (p.shuffleMode ?? 'smart') === 'smart';
     const nextSteps = isSmartActive && !nextTrack.recommended ? s.smartShuffleSteps + 1 : s.smartShuffleSteps;
-    const step = p.shuffle
-      ? computeShuffleStep(
-          s.queue,
-          index,
-          s.shufflePlayed.includes(index) ? [] : s.shufflePlayed,
-          p.repeat === 'all',
-          s.data,
-        )
-      : { played: [] as number[], next: null };
+    const step =
+      !s.queueShuffled && p.shuffle
+        ? computeShuffleStep(
+            s.queue,
+            index,
+            s.shufflePlayed.includes(index) ? [] : s.shufflePlayed,
+            p.repeat === 'all',
+            s.data,
+          )
+        : { played: [] as number[], next: null };
     set({
       index,
       shufflePlayed: step.played,
@@ -1168,10 +1221,28 @@ export const useApp = create<State>((set, get) => ({
         revision: latestAfterAdvance.revision,
         index: latestAfterAdvance.index,
         trackId: nextTrack.id,
+        queueContext: latestAfterAdvance.queueContext,
       };
-      const playlistSeeds = latestAfterAdvance.queue
-        .filter(t => !t.recommended && t.kind === 'track')
-        .slice(0, 4);
+      // Anchor Smart Shuffle discoveries strictly to the active playlist's tracks (current track first + distinct artists)
+      const playlistPool = latestAfterAdvance.queue.filter(
+        t => !t.recommended && t.kind === 'track' && t.id !== nextTrack.id,
+      );
+      const playlistSeeds: Track[] = [nextTrack];
+      const seenArtists = new Set<string>();
+      const curArtist = normalizePrimaryArtist(nextTrack.artist);
+      if (curArtist) seenArtists.add(curArtist);
+      for (const cand of playlistPool) {
+        if (playlistSeeds.length >= 4) break;
+        const a = normalizePrimaryArtist(cand.artist);
+        if (!a || !seenArtists.has(a)) {
+          if (a) seenArtists.add(a);
+          playlistSeeds.push(cand);
+        }
+      }
+      for (const cand of playlistPool) {
+        if (playlistSeeds.length >= 4) break;
+        if (!playlistSeeds.some(t => t.id === cand.id)) playlistSeeds.push(cand);
+      }
       const excludeIds = Array.from(
         new Set([
           ...latestAfterAdvance.queue.map(t => t.id),
@@ -1183,10 +1254,13 @@ export const useApp = create<State>((set, get) => ({
           .recommendations(playlistSeeds, excludeIds)
           .then(recs => {
             const curr = get();
+            const stillSmart = curr.queueShuffled
+              ? curr.queueShuffleMode === 'smart'
+              : curr.data.preferences.shuffle &&
+                (curr.data.preferences.shuffleMode ?? 'smart') === 'smart';
             if (
               !sameAutoplaySelection(curr, discoveryContext) ||
-              !curr.data.preferences.shuffle ||
-              (curr.data.preferences.shuffleMode ?? 'smart') !== 'smart' ||
+              !stillSmart ||
               !curr.data.preferences.smartShuffleDiscoveries
             ) {
               return;
@@ -1205,7 +1279,7 @@ export const useApp = create<State>((set, get) => ({
             set({
               queue: nextQueue,
               shufflePlayed: shiftedPlayed,
-              shuffleNext: insertAt,
+              shuffleNext: curr.queueShuffled ? null : insertAt,
             });
           })
           .catch(() => {});
@@ -1225,7 +1299,7 @@ export const useApp = create<State>((set, get) => ({
       });
       return;
     }
-    if (s.data.preferences.shuffle && s.shufflePlayed.length > 1) {
+    if (!s.queueShuffled && s.data.preferences.shuffle && s.shufflePlayed.length > 1) {
       const prevPlayed = s.shufflePlayed.slice(0, -1);
       const prevIndex = prevPlayed[prevPlayed.length - 1]!;
       if (prevIndex >= 0 && prevIndex < s.queue.length) {
@@ -1251,15 +1325,16 @@ export const useApp = create<State>((set, get) => ({
     const index = Math.max(0, s.index - 1);
     const targetTrack = s.queue[index]!;
     const sameTrack = s.queue[s.index]?.id === targetTrack.id;
-    const step = s.data.preferences.shuffle
-      ? computeShuffleStep(
-          s.queue,
-          index,
-          s.shufflePlayed,
-          s.data.preferences.repeat === 'all',
-          s.data,
-        )
-      : { played: [] as number[], next: null };
+    const step =
+      !s.queueShuffled && s.data.preferences.shuffle
+        ? computeShuffleStep(
+            s.queue,
+            index,
+            s.shufflePlayed,
+            s.data.preferences.repeat === 'all',
+            s.data,
+          )
+        : { played: [] as number[], next: null };
     set({
       index,
       shufflePlayed: step.played,
@@ -1287,7 +1362,7 @@ export const useApp = create<State>((set, get) => ({
     }
     const nextQueue = [...s.queue, t];
     const step =
-      s.data.preferences.shuffle && s.shuffleNext === null
+      !s.queueShuffled && s.data.preferences.shuffle && s.shuffleNext === null
         ? computeShuffleStep(
             nextQueue,
             s.index,
@@ -1320,7 +1395,7 @@ export const useApp = create<State>((set, get) => ({
             ? s.shuffleNext - 1
             : s.shuffleNext;
     let finalPlayed = adjustedPlayed;
-    if (s.data.preferences.shuffle && nextShuffle === null) {
+    if (!s.queueShuffled && s.data.preferences.shuffle && nextShuffle === null) {
       const step = computeShuffleStep(
         nextQueue,
         nextIdx,
@@ -1370,6 +1445,9 @@ export const useApp = create<State>((set, get) => ({
       set({
         queue: [],
         index: -1,
+        queueContext: null,
+        queueShuffled: false,
+        queueShuffleMode: null,
         playing: false,
         playbackIntent: false,
         shufflePlayed: [],
@@ -1384,7 +1462,7 @@ export const useApp = create<State>((set, get) => ({
     set({
       queue: [active],
       index: 0,
-      shufflePlayed: s.data.preferences.shuffle ? [0] : [],
+      shufflePlayed: !s.queueShuffled && s.data.preferences.shuffle ? [0] : [],
       shuffleNext: null,
       smartShuffleSteps: 0,
     });
@@ -1400,6 +1478,7 @@ export const useApp = create<State>((set, get) => ({
       revision: s.revision,
       index: s.index,
       trackId: s.queue[s.index]?.id,
+      queueContext: s.queueContext,
     };
     if (autoplayFlight && sameAutoplaySelection(s, autoplayFlight.context)) {
       return autoplayFlight.promise;
@@ -1454,7 +1533,7 @@ export const useApp = create<State>((set, get) => ({
         set({
           queue: nextQueue,
           shuffleNext:
-            latest.data.preferences.shuffle && latest.shuffleNext === null
+            !latest.queueShuffled && latest.data.preferences.shuffle && latest.shuffleNext === null
               ? firstNewIdx
               : latest.shuffleNext,
         });

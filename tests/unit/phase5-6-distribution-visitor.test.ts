@@ -159,16 +159,23 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
     state = stepBeatDetector(state, { bass: 0.05, mid: 0.05, energy: 0.05 }, 16.6);
     expect(state.flash).toBe(0);
 
-    // Kick drum transient spikes flash cleanly
-    state = stepBeatDetector(state, { bass: 0.82, mid: 0.4, energy: 0.7 }, 16.6);
+    // Kick drum transient spikes flash cleanly and advances fluid orbital phase
+    const phaseBefore = state.phase;
+    state = stepBeatDetector(state, { bass: 0.82, subBass: 0.88, mid: 0.4, energy: 0.7 }, 16.6);
     expect(state.flash).toBeGreaterThan(0.5);
+    expect(state.bass).toBeGreaterThan(0.3);
+    expect(state.phase).toBeGreaterThan(phaseBefore);
     expect(state.cooldownMs).toBeGreaterThan(0);
 
     // Silence decays flash smoothly
-    const afterDecay = stepBeatDetector(state, { bass: 0, mid: 0, energy: 0 }, 200);
+    const afterDecay = stepBeatDetector(state, { bass: 0, subBass: 0, mid: 0, energy: 0 }, 200);
     expect(afterDecay.flash).toBeLessThan(state.flash);
 
     const root = process.cwd();
+    // Beat Pulse layer MUST sit strictly underneath the UI (.beat-pulse-layer z-index: 0, .optical-root z-index: 1)
+    const pulseCss = readFileSync(resolve(root, 'src', 'styles', 'beat-pulse.css'), 'utf8');
+    expect(pulseCss).toMatch(/\.beat-pulse-layer\s*\{[^}]*z-index:\s*0/);
+    expect(pulseCss).toMatch(/html\[data-ui-style='beat'\]\s+\.optical-root\s*\{[^}]*z-index:\s*1/);
     const sidebarSrc = readFileSync(resolve(root, 'src', 'components', 'sidebar', 'Sidebar.tsx'), 'utf8');
     expect(sidebarSrc).not.toContain("['history', 'Histórico'");
     expect(sidebarSrc).not.toContain("['settings', 'Configurações'");
