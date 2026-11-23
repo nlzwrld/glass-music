@@ -44,7 +44,7 @@ fn http_client() -> &'static reqwest::blocking::Client {
                 attempt.stop()
             }
         });
-        reqwest::blocking::Client::builder()
+        crate::providers::blocking_http_client_builder()
             .connect_timeout(Duration::from_secs(7))
             .timeout(Duration::from_secs(60))
             .pool_idle_timeout(Duration::from_secs(20))

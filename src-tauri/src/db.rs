@@ -64,35 +64,39 @@ pub fn artwork_url(raw: &str) -> bool {
         });
     }
     url::Url::parse(raw).is_ok_and(|u| {
-        u.scheme() == "https"
-            && u.username().is_empty()
-            && u.password().is_none()
-            && u.port().is_none()
-            && matches!(
-                u.host_str(),
-                Some(
-                    "i.ytimg.com"
-                        | "i9.ytimg.com"
-                        | "lh3.googleusercontent.com"
-                        | "i1.sndcdn.com"
-                        | "i2.sndcdn.com"
-                        | "i.scdn.co"
-                        | "mosaic.scdn.co"
-                        | "image-cdn-fa.spotifycdn.com"
-                        | "image-cdn-ak.spotifycdn.com"
-                        | "cdn-images.dzcdn.net"
-                        | "e-cdns-images.dzcdn.net"
-                        | "cdns-images.dzcdn.net"
-                        | "is1-ssl.mzstatic.com"
-                        | "is2-ssl.mzstatic.com"
-                        | "is3-ssl.mzstatic.com"
-                        | "is4-ssl.mzstatic.com"
-                        | "is5-ssl.mzstatic.com"
-                        | "f4.bcbits.com"
-                        | "resources.tidal.com"
-                        | "akamai.sscdn.co"
-                )
-            )
+        if u.scheme() != "https"
+            || !u.username().is_empty()
+            || u.password().is_some()
+            || u.port().is_some()
+        {
+            return false;
+        }
+        let Some(host) = u.host_str().map(|h| h.to_ascii_lowercase()) else {
+            return false;
+        };
+        const EXACT: &[&str] = &[
+            "img.youtube.com",
+            "api.deezer.com",
+            "f4.bcbits.com",
+            "resources.tidal.com",
+            "akamai.sscdn.co",
+            "cdn.discordapp.com",
+            "avatars.githubusercontent.com",
+        ];
+        const SUFFIXES: &[&str] = &[
+            ".scdn.co",
+            ".spotifycdn.com",
+            ".ytimg.com",
+            ".ggpht.com",
+            ".googleusercontent.com",
+            ".sndcdn.com",
+            ".dzcdn.net",
+            ".mzstatic.com",
+        ];
+        EXACT.contains(&host.as_str())
+            || SUFFIXES
+                .iter()
+                .any(|suffix| host.len() > suffix.len() && host.ends_with(suffix))
     })
 }
 pub fn playlist_artwork_url(raw: &str) -> bool {
@@ -1149,6 +1153,15 @@ mod tests {
         assert!(!official_url("https://user@youtube.com/a"));
         assert!(!artwork_url("file:///C:/secret"));
         assert!(!artwork_url("/covers/../secrets.svg"));
+        assert!(!artwork_url("https://evilscdn.co/cover.jpg"));
+        assert!(!artwork_url("http://i.scdn.co/image/abc"));
+        assert!(artwork_url("https://i.scdn.co/image/ab67616d0000b273abc"));
+        assert!(artwork_url("https://seeded-session-images.scdn.co/v2/img/540/r/artist/abc/en"));
+        assert!(artwork_url("https://pickasso.spotifycdn.com/image/ab67c0de0000deef"));
+        assert!(artwork_url("https://img.youtube.com/vi/dQw4w9WgXcQ/mqdefault.jpg"));
+        assert!(artwork_url("https://yt3.ggpht.com/abc=s256"));
+        assert!(artwork_url("https://i3.sndcdn.com/artworks-abc-t500x500.jpg"));
+        assert!(artwork_url("https://e-cdn-images.dzcdn.net/images/cover/abc/500x500.jpg"));
         assert!(official_url("https://www.youtube.com/watch?v=M7lc1UVf-VE"));
     }
     #[test]

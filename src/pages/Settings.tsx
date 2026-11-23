@@ -241,10 +241,7 @@ function BrandPreviewGallery() {
       <div className="setting-row" style={{ borderBottom: 0 }}>
         <span style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <LiquidHubLogo size={38} variant="adaptive" />
-          <span>
-            <strong>Liquid Hub</strong>
-            <small>Plataforma musical unificada com catálogos, letras sincronizadas e JAM ao vivo.</small>
-          </span>
+          <strong>Liquid Hub</strong>
         </span>
       </div>
     </section>
@@ -372,15 +369,11 @@ export default function Settings() {
               )}
               <Toggle
                 label="Continuar ouvindo automaticamente"
-                description="Reproduz faixas semelhantes ao terminar a fila"
                 checked={p.autoplay !== false}
                 onChange={autoplay => prefUI({ autoplay })}
               />
               <label className="setting-row">
-                <span>
-                  <strong>Modo do aleatório</strong>
-                  <small>Inteligente considera histórico recente, curtidas e diversidade musical</small>
-                </span>
+                <strong>Modo do aleatório</strong>
                 <select
                   aria-label="Modo do aleatório"
                   value={p.shuffleMode ?? 'smart'}
@@ -391,8 +384,7 @@ export default function Settings() {
                 </select>
               </label>
               <Toggle
-                label="Descobertas ocasionais no aleatório inteligente"
-                description="Intercala descobertas contextuais sem alterar suas playlists"
+                label="Descobertas no aleatório inteligente"
                 checked={!!p.smartShuffleDiscoveries}
                 onChange={smartShuffleDiscoveries => prefUI({ smartShuffleDiscoveries })}
               />
@@ -405,10 +397,7 @@ export default function Settings() {
             <section className="settings-section" aria-label="Notificações e Sistema">
               <h2>Notificações e Sistema</h2>
               <label className="setting-row">
-                <span>
-                  <strong>Notificações ao trocar de faixa</strong>
-                  <small>Controles de mídia do sistema continuam ativos em tempo real</small>
-                </span>
+                <strong>Notificações ao trocar de faixa</strong>
                 <select
                   aria-label="Notificações ao trocar de faixa"
                   value={resolveNotificationMode(p)}
@@ -420,20 +409,15 @@ export default function Settings() {
                     });
                   }}
                 >
-                  <option value="off">Desativado (Silencioso)</option>
-                  <option value="background">Apenas em segundo plano (Sem spam)</option>
+                  <option value="off">Desativado</option>
+                  <option value="background">Em segundo plano</option>
                   <option value="always">Sempre</option>
                 </select>
               </label>
               {isAndroidPlatform() ? (
                 <div className="setting-row">
-                  <span>
-                    <strong>Reprodução em segundo plano e Bluetooth (Android)</strong>
-                    <small>
-                      Serviço de mídia ativo com MediaSession, tela de bloqueio, controles de fones
-                      Bluetooth e recuperação automática de foco de áudio.
-                    </small>
-                  </span>
+                  <strong>Reprodução em segundo plano e Bluetooth</strong>
+                  <small>Ativo</small>
                 </div>
               ) : (
                 <>
@@ -444,7 +428,6 @@ export default function Settings() {
                   />
                   <Toggle
                     label="Fechar janela para a bandeja"
-                    description="Minimizar ou recolher para a bandeja mantém a reprodução e a JAM ativas"
                     checked={p.tray}
                     onChange={v => prefUI({ tray: v })}
                   />
@@ -463,13 +446,12 @@ export default function Settings() {
               <h2>Privacidade e Acesso Online</h2>
               <Toggle
                 label="Acesso online"
-                description="Permite pesquisas remotas, descobertas, letras, perfis e sessões JAM"
                 checked={p.onlineConsent}
                 onChange={v => prefUI({ onlineConsent: v, catalogConsent: v })}
               />
               <div className="settings-actions-row">
                 <button className="text-button" onClick={() => prefUI({ onboardingDone: false })}>
-                  Revisar Termos e Política de Privacidade
+                  Termos e Privacidade
                 </button>
               </div>
             </section>
@@ -551,13 +533,8 @@ export default function Settings() {
                 <h2>Sobre o Liquid Hub</h2>
                 <div className="setting-row">
                   <span>
-                    <strong>Versão instalada</strong>
-                    <small>
-                      Liquid Hub v{integration?.version || '2.2.0'} · Canal estável ·{' '}
-                      {isAndroidPlatform()
-                        ? 'APK Assinado + SHA-256'
-                        : 'Minisign-Ed25519 + SHA-256'}
-                    </small>
+                    <strong>Versão</strong>
+                    <small>v{integration?.version || '2.2.0'}</small>
                   </span>
                   <button
                     className="button secondary"
@@ -642,10 +619,6 @@ function InstallationMaintenanceSection() {
       aria-label="Manutenção, integridade e reparo da instalação"
     >
       <h2>Diagnóstico e Reparo</h2>
-      <p className="fine-print">
-        Verifica a integridade da biblioteca local, limpa arquivos temporários incompletos e cria um
-        ponto de restauração seguro sem afetar suas playlists.
-      </p>
       <div className="settings-actions-row">
         <button
           type="button"

@@ -72,7 +72,7 @@ pub fn validate_endpoint(raw: &str) -> Result<String> {
 fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
+        crate::providers::http_client_builder()
             .timeout(Duration::from_secs(7))
             .connect_timeout(Duration::from_secs(4))
             .redirect(reqwest::redirect::Policy::none())
@@ -85,7 +85,7 @@ fn client() -> &'static reqwest::Client {
 fn sse_client() -> &'static reqwest::Client {
     static SSE_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     SSE_CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
+        crate::providers::http_client_builder()
             .connect_timeout(Duration::from_secs(5))
             .read_timeout(Duration::from_secs(45))
             .redirect(reqwest::redirect::Policy::none())

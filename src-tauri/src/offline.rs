@@ -444,7 +444,7 @@ where
         stream["duration"].as_f64().unwrap_or(0.0),
     )?;
     let temporary = pending.temporary.clone();
-    let client = reqwest::Client::builder()
+    let client = crate::providers::http_client_builder()
         .timeout(std::time::Duration::from_secs(60))
         .redirect(reqwest::redirect::Policy::none())
         .build()

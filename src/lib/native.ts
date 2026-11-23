@@ -10,8 +10,20 @@ import type {
 } from '../../shared/types';
 
 let resourceBase = '';
+const resourceBaseListeners = new Set<() => void>();
 const call = <T>(action: string, payload?: unknown) =>
   invoke<T>('call', { action, payload: payload ?? null });
+
+export function hasResourceBase() {
+  return resourceBase.length > 0;
+}
+
+export function onResourceBaseReady(listener: () => void) {
+  resourceBaseListeners.add(listener);
+  return () => {
+    resourceBaseListeners.delete(listener);
+  };
+}
 
 export function nativeResource(path: string) {
   return `${resourceBase}/${path.replace(/^\//, '')}`;
@@ -66,7 +78,12 @@ export const glass: GlassAPI = {
   playlistArtwork: id => call('playlistArtwork', id),
   bootstrap: async () => {
     const data = await call<Snapshot & { _resourceBase: string }>('bootstrap');
-    resourceBase = data._resourceBase;
+    if (data._resourceBase && data._resourceBase !== resourceBase) {
+      resourceBase = data._resourceBase;
+      resourceBaseListeners.forEach(fn => fn());
+    } else {
+      resourceBase = data._resourceBase;
+    }
     return data;
   },
   library: payload => call('library', payload),

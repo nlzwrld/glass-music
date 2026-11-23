@@ -92,7 +92,6 @@ export default function AccountConnections() {
       <h2>Conta e Integrações</h2>
       <Toggle
         label="Acesso online"
-        description="Permite conexões com contas, pesquisas remotas, descobertas, letras, perfis e sessões JAM"
         checked={p.onlineConsent}
         onChange={v => setPreferencesFromUI({ onlineConsent: v, catalogConsent: v })}
       />
@@ -638,9 +637,6 @@ export default function AccountConnections() {
           })()
         ) : (
           <div className="hub-profile-card">
-            <p className="fine-print">
-              Entre com Google, Discord, GitHub ou e-mail para manter um único perfil verificado no Liquid Hub.
-            </p>
             <div className="settings-actions-row">
               <button
                 type="button"

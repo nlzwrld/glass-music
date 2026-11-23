@@ -1,0 +1,977 @@
+/* ==========================================================================
+   LIQUID HUB — DEDICATED MOBILE & ANDROID UI/UX SYSTEM
+   Imported LAST in main.tsx so it cleanly overrides ALL desktop styles
+   (matte, glass, beat, dark, light) strictly on mobile / Android viewports.
+   Desktop (data-platform="desktop" + data-mobile="false") is 100% untouched.
+   ========================================================================== */
+
+/* ---------- 1. App Shell & Full-Bleed Frame ---------- */
+html[data-platform='android'] .app,
+html[data-mobile='true'] .app,
+html[data-platform='android']:not([data-ui-style='glass']) .app,
+html[data-mobile='true']:not([data-ui-style='glass']) .app {
+  padding: 0 !important;
+  gap: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  clip-path: none !important;
+  background: var(--m-bg, #0b0e11) !important;
+}
+
+html[data-platform='android'][data-ui-style='glass'] .app,
+html[data-mobile='true'][data-ui-style='glass'] .app {
+  background: radial-gradient(
+      115% 65% at 50% -10%,
+      color-mix(in srgb, var(--user-accent, #52b79a) 18%, transparent) 0%,
+      transparent 60%
+    ),
+    #0b0e11 !important;
+}
+
+html[data-platform='android'][data-theme='light'] .app,
+html[data-mobile='true'][data-theme='light'] .app {
+  background: var(--m-bg, #f4f6f8) !important;
+}
+
+html[data-platform='android'] .app:before,
+html[data-mobile='true'] .app:before,
+html[data-platform='android'] .optical-window-material,
+html[data-mobile='true'] .optical-window-material {
+  display: none !important;
+}
+
+/* Hide desktop-only chrome */
+html[data-platform='android'] .titlebar,
+html[data-mobile='true'] .titlebar,
+html[data-platform='android'] .app-body > .sidebar,
+html[data-mobile='true'] .app-body > .sidebar,
+html[data-platform='android'] .side-player,
+html[data-mobile='true'] .side-player,
+html[data-platform='android'] .navigation-controls,
+html[data-mobile='true'] .navigation-controls,
+html[data-platform='android'] .global-search kbd,
+html[data-mobile='true'] .global-search kbd {
+  display: none !important;
+}
+
+html[data-platform='android'] .app-body,
+html[data-mobile='true'] .app-body,
+html[data-platform='android']:not([data-ui-style='glass']) .app-body,
+html[data-mobile='true']:not([data-ui-style='glass']) .app-body {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  gap: 0 !important;
+  overflow: hidden !important;
+}
+
+html[data-platform='android'] .main-shell,
+html[data-mobile='true'] .main-shell,
+html[data-platform='android']:not([data-ui-style='glass']) .main-shell,
+html[data-mobile='true']:not([data-ui-style='glass']) .main-shell {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  gap: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* ---------- 2. Sleek Mobile Topbar ---------- */
+html[data-platform='android'] .topbar,
+html[data-mobile='true'] .topbar,
+html[data-platform='android']:not([data-ui-style='glass']) .topbar,
+html[data-mobile='true']:not([data-ui-style='glass']) .topbar {
+  height: auto !important;
+  min-height: 56px !important;
+  padding: 10px 14px 8px !important;
+  gap: 10px !important;
+  border: 0 !important;
+  background: transparent !important;
+  align-items: center !important;
+}
+
+html[data-platform='android'] .global-search,
+html[data-mobile='true'] .global-search,
+html[data-platform='android']:not([data-ui-style='glass']) .global-search,
+html[data-mobile='true']:not([data-ui-style='glass']) .global-search {
+  flex: 1 1 auto !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  height: 42px !important;
+  padding: 0 14px !important;
+  border-radius: 999px !important;
+  background: color-mix(in srgb, var(--m-surface, rgba(255, 255, 255, 0.08)) 92%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--line, rgba(255, 255, 255, 0.12)) 85%, transparent) !important;
+  box-shadow: none !important;
+}
+
+html[data-platform='android'] .global-search input,
+html[data-mobile='true'] .global-search input {
+  font-size: 14.5px !important;
+}
+
+html[data-platform='android'] .topbar-avatar-btn,
+html[data-mobile='true'] .topbar-avatar-btn {
+  width: 38px !important;
+  height: 38px !important;
+  flex: none !important;
+}
+
+html[data-platform='android'] .topbar-profile-menu,
+html[data-mobile='true'] .topbar-profile-menu {
+  right: 0 !important;
+  max-width: calc(100vw - 28px) !important;
+  border-radius: 16px !important;
+  z-index: 160 !important;
+}
+
+/* ---------- 3. Scrollable Main Canvas & Typography ---------- */
+html[data-platform='android'] .main-scroll,
+html[data-mobile='true'] .main-scroll,
+html[data-platform='android']:not([data-ui-style='glass']) .main-scroll,
+html[data-mobile='true']:not([data-ui-style='glass']) .main-scroll {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  padding: 6px 14px 28px !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  scrollbar-gutter: auto !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+html[data-platform='android'] .page-heading,
+html[data-mobile='true'] .page-heading {
+  margin-bottom: 14px !important;
+  gap: 10px !important;
+  flex-wrap: wrap !important;
+}
+
+html[data-platform='android'] .page-heading h1,
+html[data-mobile='true'] .page-heading h1 {
+  font-size: 24px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.03em !important;
+  line-height: 1.15 !important;
+}
+
+html[data-platform='android'] .section-heading,
+html[data-mobile='true'] .section-heading {
+  margin-top: 20px !important;
+  margin-bottom: 12px !important;
+}
+
+html[data-platform='android'] .section-heading h2,
+html[data-mobile='true'] .section-heading h2 {
+  font-size: 17.5px !important;
+  font-weight: 650 !important;
+  letter-spacing: -0.02em !important;
+}
+
+/* ---------- 4. Home Quick-Access Grid & Cards ---------- */
+html[data-platform='android'] .quick-grid,
+html[data-mobile='true'] .quick-grid {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 8px !important;
+  margin-bottom: 16px !important;
+}
+
+html[data-platform='android'] .quick-tile,
+html[data-mobile='true'] .quick-tile {
+  height: 54px !important;
+  padding: 0 8px 0 0 !important;
+  gap: 8px !important;
+  border-radius: 10px !important;
+  overflow: hidden !important;
+  background: color-mix(in srgb, var(--m-surface, rgba(255, 255, 255, 0.08)) 94%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--line, rgba(255, 255, 255, 0.1)) 65%, transparent) !important;
+}
+
+html[data-platform='android'] .quick-tile-art,
+html[data-mobile='true'] .quick-tile-art {
+  width: 54px !important;
+  height: 54px !important;
+  border-radius: 0 !important;
+  flex: none !important;
+}
+
+html[data-platform='android'] .quick-tile-text strong,
+html[data-mobile='true'] .quick-tile-text strong {
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  line-height: 1.25 !important;
+  display: -webkit-box !important;
+  -webkit-line-clamp: 2 !important;
+  -webkit-box-orient: vertical !important;
+  white-space: normal !important;
+  overflow: hidden !important;
+}
+
+html[data-platform='android'] .quick-tile-text small,
+html[data-mobile='true'] .quick-tile-text small,
+html[data-platform='android'] .quick-tile-play,
+html[data-mobile='true'] .quick-tile-play {
+  display: none !important;
+}
+
+/* 2-column crisp album/track cards */
+html[data-platform='android'] .catalog-grid,
+html[data-mobile='true'] .catalog-grid,
+html[data-platform='android'] .compact-grid,
+html[data-mobile='true'] .compact-grid,
+html[data-platform='android']:not([data-ui-style='glass']) .catalog-grid,
+html[data-mobile='true']:not([data-ui-style='glass']) .catalog-grid,
+html[data-platform='android']:not([data-ui-style='glass']) .side-open .catalog-grid,
+html[data-mobile='true']:not([data-ui-style='glass']) .side-open .catalog-grid {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 14px 12px !important;
+}
+
+html[data-platform='android'] .track-card,
+html[data-mobile='true'] .track-card {
+  padding: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+html[data-platform='android'] .card-art,
+html[data-mobile='true'] .card-art,
+html[data-platform='android'] .card-cover,
+html[data-mobile='true'] .card-cover {
+  border-radius: 14px !important;
+  overflow: hidden !important;
+}
+
+html[data-platform='android'] .card-caption,
+html[data-mobile='true'] .card-caption {
+  margin-top: 8px !important;
+  gap: 6px !important;
+}
+
+html[data-platform='android'] .card-caption h3,
+html[data-mobile='true'] .card-caption h3 {
+  font-size: 13.5px !important;
+  font-weight: 600 !important;
+  line-height: 1.3 !important;
+}
+
+html[data-platform='android'] .card-caption p,
+html[data-mobile='true'] .card-caption p {
+  font-size: 12px !important;
+  margin-top: 2px !important;
+}
+
+html[data-platform='android'] .card-play,
+html[data-mobile='true'] .card-play {
+  width: 36px !important;
+  height: 36px !important;
+  right: 8px !important;
+  bottom: 8px !important;
+  opacity: 0.92 !important;
+  transform: none !important;
+}
+
+/* ---------- 5. Search & Track Rows (Spotify Mobile Style) ---------- */
+html[data-platform='android'] .search-filters,
+html[data-mobile='true'] .search-filters {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: stretch !important;
+  flex-wrap: nowrap !important;
+  overflow: visible !important;
+  gap: 8px !important;
+  margin-bottom: 12px !important;
+}
+
+html[data-platform='android'] .search-filters > .pills,
+html[data-mobile='true'] .search-filters > .pills,
+html[data-platform='android'] .source-filters,
+html[data-mobile='true'] .source-filters {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  overflow-x: auto !important;
+  gap: 8px !important;
+  padding-bottom: 2px !important;
+  scrollbar-width: none !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+html[data-platform='android'] .search-filters > .pills::-webkit-scrollbar,
+html[data-mobile='true'] .search-filters > .pills::-webkit-scrollbar,
+html[data-platform='android'] .source-filters::-webkit-scrollbar,
+html[data-mobile='true'] .source-filters::-webkit-scrollbar {
+  display: none;
+}
+
+html[data-platform='android'] .search-filters button,
+html[data-mobile='true'] .search-filters button,
+html[data-platform='android'] .source-filters button,
+html[data-mobile='true'] .source-filters button {
+  flex: none !important;
+  white-space: nowrap !important;
+  min-height: 34px !important;
+  padding: 6px 14px !important;
+  border-radius: 999px !important;
+  font-size: 12.5px !important;
+}
+
+html[data-platform='android'] .track-table-heading,
+html[data-mobile='true'] .track-table-heading {
+  display: none !important;
+}
+
+html[data-platform='android'] .track-row,
+html[data-mobile='true'] .track-row,
+html[data-platform='android']:not([data-ui-style='glass']) .track-row,
+html[data-mobile='true']:not([data-ui-style='glass']) .track-row,
+html[data-platform='android'] .playlist-page .track-row,
+html[data-mobile='true'] .playlist-page .track-row {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 6px 8px !important;
+  min-height: 0 !important;
+  border-radius: 12px !important;
+  overflow: hidden !important;
+}
+
+html[data-platform='android'] .track-row > .row-number,
+html[data-mobile='true'] .track-row > .row-number,
+html[data-platform='android'] .track-row > .drag-handle,
+html[data-mobile='true'] .track-row > .drag-handle,
+html[data-platform='android'] .track-row > .track-meta-col,
+html[data-mobile='true'] .track-row > .track-meta-col,
+html[data-platform='android'] .track-row > .source-badge,
+html[data-mobile='true'] .track-row > .source-badge,
+html[data-platform='android'] .track-row > time,
+html[data-mobile='true'] .track-row > time,
+html[data-platform='android']:not([data-ui-style='glass']) .track-row > time,
+html[data-mobile='true']:not([data-ui-style='glass']) .track-row > time {
+  display: none !important;
+}
+
+html[data-platform='android'] .track-identity,
+html[data-mobile='true'] .track-identity {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+}
+
+html[data-platform='android'] .row-cover,
+html[data-mobile='true'] .row-cover {
+  width: 46px !important;
+  height: 46px !important;
+  border-radius: 10px !important;
+  flex: none !important;
+}
+
+html[data-platform='android'] .track-text,
+html[data-mobile='true'] .track-text {
+  min-width: 0 !important;
+  flex: 1 1 auto !important;
+}
+
+html[data-platform='android'] .track-title strong,
+html[data-mobile='true'] .track-title strong,
+html[data-platform='android'] .track-text strong,
+html[data-mobile='true'] .track-text strong {
+  font-size: 14px !important;
+  font-weight: 560 !important;
+}
+
+html[data-platform='android'] .track-title small,
+html[data-mobile='true'] .track-title small,
+html[data-platform='android'] .track-text small,
+html[data-mobile='true'] .track-text small {
+  font-size: 12px !important;
+}
+
+html[data-platform='android'] .row-actions,
+html[data-mobile='true'] .row-actions,
+html[data-platform='android']:not([data-ui-style='glass']) .row-actions,
+html[data-mobile='true']:not([data-ui-style='glass']) .row-actions {
+  position: static !important;
+  flex: none !important;
+  display: flex !important;
+  align-items: center !important;
+  opacity: 1 !important;
+  gap: 0 !important;
+}
+
+html[data-platform='android'] .row-actions .icon-button,
+html[data-mobile='true'] .row-actions .icon-button {
+  width: 34px !important;
+  height: 34px !important;
+}
+
+/* ---------- 6. Library, Playlists & Hero Headers ---------- */
+html[data-platform='android'] .library-toolbar,
+html[data-mobile='true'] .library-toolbar {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: stretch !important;
+  gap: 10px !important;
+  margin-bottom: 14px !important;
+}
+
+html[data-platform='android'] .library-toolbar > .pills,
+html[data-mobile='true'] .library-toolbar > .pills {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  overflow-x: auto !important;
+  gap: 8px !important;
+  padding-bottom: 2px !important;
+  scrollbar-width: none !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+html[data-platform='android'] .library-toolbar > .pills::-webkit-scrollbar,
+html[data-mobile='true'] .library-toolbar > .pills::-webkit-scrollbar {
+  display: none;
+}
+
+html[data-platform='android'] .library-toolbar > .pills > button,
+html[data-mobile='true'] .library-toolbar > .pills > button {
+  flex: none !important;
+  white-space: nowrap !important;
+  min-height: 34px !important;
+  padding: 6px 14px !important;
+  border-radius: 999px !important;
+}
+
+html[data-platform='android'] .library-toolbar .library-search,
+html[data-mobile='true'] .library-toolbar .library-search {
+  width: 100% !important;
+  max-width: none !important;
+}
+html[data-platform='android'] .library-quick-actions,
+html[data-mobile='true'] .library-quick-actions {
+  display: flex !important;
+  width: 100% !important;
+  overflow-x: auto !important;
+  flex-wrap: nowrap !important;
+  gap: 8px !important;
+  padding-bottom: 4px !important;
+  scrollbar-width: none !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+html[data-platform='android'] .library-quick-actions::-webkit-scrollbar,
+html[data-mobile='true'] .library-quick-actions::-webkit-scrollbar {
+  display: none;
+}
+
+html[data-platform='android'] .library-quick-actions > button,
+html[data-mobile='true'] .library-quick-actions > button {
+  flex: none !important;
+  white-space: nowrap !important;
+  min-height: 36px !important;
+  padding: 6px 14px !important;
+  border-radius: 999px !important;
+  font-size: 12.5px !important;
+}
+
+html[data-platform='android'] .playlist-grid,
+html[data-mobile='true'] .playlist-grid {
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 10px !important;
+}
+
+html[data-platform='android'] .library-playlist-card,
+html[data-mobile='true'] .library-playlist-card {
+  border-radius: 14px !important;
+}
+
+html[data-platform='android'] .playlist-card-open,
+html[data-mobile='true'] .playlist-card-open {
+  padding: 10px 12px !important;
+}
+
+html[data-platform='android'] .playlist-hero,
+html[data-mobile='true'] .playlist-hero,
+html[data-platform='android'] .collection-hero,
+html[data-mobile='true'] .collection-hero,
+html[data-platform='android'] .shared-hero,
+html[data-mobile='true'] .shared-hero {
+  flex-direction: column !important;
+  align-items: center !important;
+  text-align: center !important;
+  gap: 14px !important;
+  padding: 12px 0 18px !important;
+}
+
+html[data-platform='android'] .playlist-hero .cover,
+html[data-mobile='true'] .playlist-hero .cover,
+html[data-platform='android'] .collection-hero .cover,
+html[data-mobile='true'] .collection-hero .cover {
+  width: 176px !important;
+  height: 176px !important;
+  border-radius: 18px !important;
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.42) !important;
+}
+
+html[data-platform='android'] .playlist-hero-actions,
+html[data-mobile='true'] .playlist-hero-actions {
+  justify-content: center !important;
+  flex-wrap: wrap !important;
+  width: 100% !important;
+}
+
+/* ---------- 7. Settings, Profile, JAM & Modals ---------- */
+html[data-platform='android'] .settings-page,
+html[data-mobile='true'] .settings-page,
+html[data-platform='android']:not([data-ui-style='glass']) .settings-page,
+html[data-mobile='true']:not([data-ui-style='glass']) .settings-page {
+  max-width: none !important;
+  padding: 0 0 18px !important;
+}
+
+html[data-platform='android'] .settings-header-row,
+html[data-mobile='true'] .settings-header-row {
+  flex-direction: column !important;
+  align-items: stretch !important;
+  gap: 10px !important;
+}
+
+html[data-platform='android'] .settings-filter,
+html[data-mobile='true'] .settings-filter {
+  width: 100% !important;
+  max-width: none !important;
+}
+
+html[data-platform='android'] .settings-layout,
+html[data-mobile='true'] .settings-layout {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 12px !important;
+}
+
+html[data-platform='android'] .settings-tabs,
+html[data-mobile='true'] .settings-tabs {
+  display: flex !important;
+  flex-direction: row !important;
+  position: static !important;
+  overflow-x: auto !important;
+  gap: 6px !important;
+  padding: 2px 0 6px !important;
+  scrollbar-width: none !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+html[data-platform='android'] .settings-tabs::-webkit-scrollbar,
+html[data-mobile='true'] .settings-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+html[data-platform='android'] .settings-tabs button,
+html[data-mobile='true'] .settings-tabs button {
+  flex: none !important;
+  white-space: nowrap !important;
+  padding: 8px 13px !important;
+  border-radius: 999px !important;
+  font-size: 12.5px !important;
+  min-height: 36px !important;
+}
+
+html[data-platform='android'] .settings-section,
+html[data-mobile='true'] .settings-section,
+html[data-platform='android']:not([data-ui-style='glass']) .settings-section,
+html[data-mobile='true']:not([data-ui-style='glass']) .settings-section {
+  padding: 16px 14px !important;
+  border-radius: 18px !important;
+  margin-bottom: 14px !important;
+}
+
+html[data-platform='android'] .settings-section h2,
+html[data-mobile='true'] .settings-section h2 {
+  font-size: 16px !important;
+  margin-bottom: 10px !important;
+}
+
+html[data-platform='android'] .setting-row,
+html[data-mobile='true'] .setting-row {
+  min-height: 50px !important;
+  padding: 10px 0 !important;
+  gap: 10px !important;
+  flex-wrap: wrap !important;
+}
+
+html[data-platform='android'] .setting-row select,
+html[data-mobile='true'] .setting-row select {
+  min-width: 120px !important;
+  max-width: 100% !important;
+  min-height: 38px !important;
+}
+
+html[data-platform='android'] .setting-range,
+html[data-mobile='true'] .setting-range {
+  width: 100% !important;
+  justify-content: space-between !important;
+}
+
+html[data-platform='android'] .setting-range input,
+html[data-mobile='true'] .setting-range input {
+  flex: 1 1 auto !important;
+  width: auto !important;
+}
+
+html[data-platform='android'] .equalizer-bands,
+html[data-mobile='true'] .equalizer-bands {
+  grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+  gap: 8px !important;
+}
+
+html[data-platform='android'] .equalizer-bands label,
+html[data-mobile='true'] .equalizer-bands label {
+  font-size: 10.5px !important;
+  gap: 8px !important;
+}
+
+html[data-platform='android'] .background-options,
+html[data-mobile='true'] .background-options {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 8px !important;
+  margin: 14px 0 !important;
+}
+
+html[data-platform='android'] .hub-form-grid,
+html[data-mobile='true'] .hub-form-grid,
+html[data-platform='android'] .plus-plan-grid,
+html[data-mobile='true'] .plus-plan-grid,
+html[data-platform='android'] .jam-grid,
+html[data-mobile='true'] .jam-grid {
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 10px !important;
+}
+
+html[data-platform='android'] .hub-profile-head,
+html[data-mobile='true'] .hub-profile-head,
+html[data-platform='android'] .hub-identity-row,
+html[data-mobile='true'] .hub-identity-row,
+html[data-platform='android'] .account-row,
+html[data-mobile='true'] .account-row {
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  gap: 10px !important;
+}
+
+html[data-platform='android'] .settings-actions-row,
+html[data-mobile='true'] .settings-actions-row {
+  flex-wrap: wrap !important;
+  gap: 8px !important;
+}
+
+html[data-platform='android'] .settings-actions-row > button,
+html[data-mobile='true'] .settings-actions-row > button {
+  min-height: 40px !important;
+}
+
+/* Auth Modal & Dialogs on Mobile */
+html[data-platform='android'] .auth-gate,
+html[data-mobile='true'] .auth-gate,
+html[data-platform='android'] .modal-backdrop,
+html[data-mobile='true'] .modal-backdrop {
+  padding: 14px !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+html[data-platform='android'] .auth-card,
+html[data-mobile='true'] .auth-card,
+html[data-platform='android'] .modal,
+html[data-mobile='true'] .modal,
+html[data-platform='android']:not([data-ui-style='glass']) .modal,
+html[data-mobile='true']:not([data-ui-style='glass']) .modal {
+  width: 100% !important;
+  max-width: 420px !important;
+  max-height: calc(100dvh - 28px) !important;
+  overflow-y: auto !important;
+  padding: 20px 18px !important;
+  border-radius: 22px !important;
+}
+
+/* ---------- 8. Floating Liquid Glass Mini Player ---------- */
+html[data-platform='android'] .player.mobile-mini-player,
+html[data-mobile='true'] .player.mobile-mini-player,
+html[data-platform='android']:not([data-ui-style='glass']) .player.mobile-mini-player,
+html[data-mobile='true']:not([data-ui-style='glass']) .player.mobile-mini-player {
+  position: relative !important;
+  display: flex !important;
+  grid-template-columns: none !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  height: 62px !important;
+  min-height: 62px !important;
+  margin: 4px 10px 6px !important;
+  padding: 6px 10px 8px !important;
+  gap: 10px !important;
+  border-radius: 16px !important;
+  border: 1px solid color-mix(in srgb, var(--user-accent, #52b79a) 22%, var(--line, rgba(255, 255, 255, 0.14))) !important;
+  background: color-mix(in srgb, var(--m-elevated, #1a1f25) 92%, transparent) !important;
+  backdrop-filter: blur(22px) saturate(1.35) !important;
+  -webkit-backdrop-filter: blur(22px) saturate(1.35) !important;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+  overflow: hidden !important;
+  flex: none !important;
+}
+
+html[data-platform='android'] .mobile-mini-cover,
+html[data-mobile='true'] .mobile-mini-cover {
+  width: 44px !important;
+  height: 44px !important;
+  border-radius: 10px !important;
+  flex: none !important;
+}
+
+html[data-platform='android'] .mobile-mini-meta strong,
+html[data-mobile='true'] .mobile-mini-meta strong {
+  font-size: 13.5px !important;
+  font-weight: 600 !important;
+}
+
+html[data-platform='android'] .mobile-mini-meta small,
+html[data-mobile='true'] .mobile-mini-meta small {
+  font-size: 11.5px !important;
+}
+
+html[data-platform='android'] .mobile-mini-play,
+html[data-mobile='true'] .mobile-mini-play {
+  width: 38px !important;
+  height: 38px !important;
+  background: var(--text, #f2f5f5) !important;
+  color: #0b0e11 !important;
+}
+
+/* ---------- 9. Frosted 5-Tab Mobile Bottom Navigation ---------- */
+html[data-platform='android'] .mobile-bottom-nav,
+html[data-mobile='true'] .mobile-bottom-nav {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-around !important;
+  min-height: 60px !important;
+  padding: 6px 8px 8px !important;
+  gap: 2px !important;
+  border-top: 1px solid color-mix(in srgb, var(--line, rgba(255, 255, 255, 0.1)) 75%, transparent) !important;
+  background: color-mix(in srgb, var(--m-bg, #0d1115) 92%, transparent) !important;
+  backdrop-filter: blur(24px) saturate(1.35) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(1.35) !important;
+  flex: none !important;
+  z-index: 50 !important;
+}
+
+html[data-platform='android'] .mobile-bottom-nav-item,
+html[data-mobile='true'] .mobile-bottom-nav-item {
+  min-height: 46px !important;
+  padding: 5px 4px !important;
+  gap: 3px !important;
+  border-radius: 12px !important;
+  font-size: 10.5px !important;
+}
+
+/* ---------- 10. Full-Screen Immersive Expanded Player ---------- */
+html[data-platform='android'] .expanded-player,
+html[data-mobile='true'] .expanded-player,
+html[data-platform='android']:not([data-ui-style='glass']) .expanded-player,
+html[data-mobile='true']:not([data-ui-style='glass']) .expanded-player {
+  position: fixed !important;
+  inset: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  padding: 12px 20px 22px !important;
+  background: radial-gradient(
+      100% 55% at 50% 15%,
+      color-mix(in srgb, var(--user-accent, #52b79a) 22%, transparent) 0%,
+      transparent 70%
+    ),
+    var(--m-bg, #0b0e11) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow-y: auto !important;
+  z-index: 90 !important;
+}
+
+html[data-platform='android'][data-theme='light'] .expanded-player,
+html[data-mobile='true'][data-theme='light'] .expanded-player {
+  background: radial-gradient(
+      100% 55% at 50% 15%,
+      color-mix(in srgb, var(--user-accent, #52b79a) 16%, transparent) 0%,
+      transparent 70%
+    ),
+    #f4f6f8 !important;
+}
+
+html[data-platform='android'] .expanded-grabber,
+html[data-mobile='true'] .expanded-grabber {
+  display: block !important;
+  margin: 0 auto 10px !important;
+}
+
+html[data-platform='android'] .expanded-header,
+html[data-mobile='true'] .expanded-header {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 8px !important;
+  margin-bottom: 14px !important;
+  flex: none !important;
+}
+
+html[data-platform='android'] .expanded-content,
+html[data-mobile='true'] .expanded-content {
+  flex: 1 1 auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: space-evenly !important;
+  align-items: center !important;
+  width: 100% !important;
+  max-width: 440px !important;
+  margin: 0 auto !important;
+  gap: 18px !important;
+}
+
+html[data-platform='android'] .expanded-art,
+html[data-mobile='true'] .expanded-art {
+  width: min(80vw, 310px) !important;
+  height: min(80vw, 310px) !important;
+  border-radius: 20px !important;
+  box-shadow: 0 24px 56px rgba(0, 0, 0, 0.5) !important;
+  overflow: hidden !important;
+  flex: none !important;
+}
+
+html[data-platform='android'] .expanded-title,
+html[data-mobile='true'] .expanded-title {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 12px !important;
+  width: 100% !important;
+}
+
+html[data-platform='android'] .expanded-title > div:first-child,
+html[data-mobile='true'] .expanded-title > div:first-child {
+  min-width: 0 !important;
+  flex: 1 1 auto !important;
+}
+
+html[data-platform='android'] .expanded-title h1,
+html[data-mobile='true'] .expanded-title h1 {
+  font-size: 20px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.025em !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+html[data-platform='android'] .expanded-title p,
+html[data-mobile='true'] .expanded-title p {
+  font-size: 14px !important;
+  margin-top: 3px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+html[data-platform='android'] .expanded-player .transport.large,
+html[data-mobile='true'] .expanded-player .transport.large {
+  width: 100% !important;
+  justify-content: space-between !important;
+  padding: 2px 6px !important;
+}
+
+html[data-platform='android'] .expanded-player .play-main,
+html[data-mobile='true'] .expanded-player .play-main {
+  width: 58px !important;
+  height: 58px !important;
+  background: var(--text, #f2f5f5) !important;
+  color: #0b0e11 !important;
+  border: 0 !important;
+}
+
+/* ---------- 11. Mobile Queue & Lyrics Sheets ---------- */
+html[data-platform='android'] .queue-panel,
+html[data-mobile='true'] .queue-panel,
+html[data-platform='android']:not([data-ui-style='glass']) .queue-panel,
+html[data-mobile='true']:not([data-ui-style='glass']) .queue-panel,
+html[data-platform='android'] .lyrics-panel,
+html[data-mobile='true'] .lyrics-panel,
+html[data-platform='android']:not([data-ui-style='glass']) .lyrics-panel,
+html[data-mobile='true']:not([data-ui-style='glass']) .lyrics-panel {
+  position: fixed !important;
+  inset: 10px 10px 10px 10px !important;
+  width: auto !important;
+  max-width: none !important;
+  height: auto !important;
+  border-radius: 22px !important;
+  z-index: 105 !important;
+  padding: 16px !important;
+}
+
+html[data-platform='android'] .toast,
+html[data-mobile='true'] .toast {
+  bottom: 138px !important;
+  left: 12px !important;
+  right: 12px !important;
+  transform: none !important;
+  max-width: none !important;
+  border-radius: 14px !important;
+  z-index: 140 !important;
+}
+
+/* Small phones (360px wide) */
+@media (max-width: 375px) {
+  html[data-platform='android'] .expanded-art,
+  html[data-mobile='true'] .expanded-art {
+    width: min(72vw, 248px) !important;
+    height: min(72vw, 248px) !important;
+  }
+  html[data-platform='android'] .mobile-bottom-nav-item,
+  html[data-mobile='true'] .mobile-bottom-nav-item {
+    font-size: 9.5px !important;
+  }
+}
+
+/* Mobile landscape orientation */
+@media (orientation: landscape) and (max-height: 540px) {
+  html[data-platform='android'] .expanded-content,
+  html[data-mobile='true'] .expanded-content {
+    max-width: none !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    gap: 24px !important;
+  }
+  html[data-platform='android'] .expanded-art,
+  html[data-mobile='true'] .expanded-art {
+    width: min(56vh, 210px) !important;
+    height: min(56vh, 210px) !important;
+  }
+  html[data-platform='android'] .catalog-grid,
+  html[data-mobile='true'] .catalog-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  }
+  html[data-platform='android'] .mobile-bottom-nav,
+  html[data-mobile='true'] .mobile-bottom-nav {
+    min-height: 48px !important;
+    padding: 3px 8px !important;
+  }
+}

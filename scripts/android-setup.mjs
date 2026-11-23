@@ -13,7 +13,8 @@ const NETWORK_SECURITY_CONFIG_XML = `<?xml version="1.0" encoding="utf-8"?>
 `;
 
 const PROGUARD_RULES = `
-# Liquid Hub Android Beta — preserve WebView JavascriptInterface & Media Service
+# Liquid Hub Android — preserve Activity, WebView JavascriptInterface & Media Service
+-keep class com.nlzwrld.liquidhub.MainActivity { *; }
 -keepclassmembers class com.nlzwrld.liquidhub.** {
   @android.webkit.JavascriptInterface <methods>;
 }
@@ -510,24 +511,31 @@ class LiquidHubMediaPlaybackService : Service() {
 
         val notification = buildNotification()
         if (currentPlaying) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-                )
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(
+                        NOTIFICATION_ID,
+                        notification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                    )
+                } else {
+                    startForeground(NOTIFICATION_ID, notification)
+                }
+            } catch (_: Throwable) {
+                // Android 14/15 may deny FGS promotion when invoked while backgrounded
             }
         } else {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                stopForeground(STOP_FOREGROUND_DETACH)
-            } else {
-                @Suppress("DEPRECATION")
-                stopForeground(false)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    stopForeground(STOP_FOREGROUND_DETACH)
+                } else {
+                    @Suppress("DEPRECATION")
+                    stopForeground(false)
+                }
+                val manager = getSystemService(NotificationManager::class.java)
+                manager?.notify(NOTIFICATION_ID, notification)
+            } catch (_: Throwable) {
             }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager?.notify(NOTIFICATION_ID, notification)
         }
     }
 }
@@ -544,10 +552,15 @@ import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
+import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebSettings
 import android.webkit.WebView
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import ${applicationId}.media.LiquidHubMediaPlaybackService
 
 class MainActivity : TauriActivity() {
@@ -556,15 +569,47 @@ class MainActivity : TauriActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.setBackgroundDrawable(ColorDrawable(Color.parseColor("#0B0E11")))
+        val darkBg = Color.parseColor("#0B0E11")
+        window.setBackgroundDrawable(ColorDrawable(darkBg))
+        @Suppress("DEPRECATION")
+        window.statusBarColor = darkBg
+        @Suppress("DEPRECATION")
+        window.navigationBarColor = darkBg
+        WindowCompat.setDecorFitsSystemWindows(window, true)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
+        // Android 15 (API 35) enforces edge-to-edge; pad content container cleanly inside
+        // system bars, display cutouts, and IME so the UI never collides with status/gesture bars.
+        val contentRoot = findViewById<View>(android.R.id.content)
+        if (contentRoot != null) {
+            contentRoot.setBackgroundColor(darkBg)
+            ViewCompat.setOnApplyWindowInsetsListener(contentRoot) { v, windowInsets ->
+                val insets = windowInsets.getInsets(
+                    WindowInsetsCompat.Type.systemBars() or
+                        WindowInsetsCompat.Type.displayCutout() or
+                        WindowInsetsCompat.Type.ime()
+                )
+                v.setPadding(insets.left, insets.top, insets.right, insets.bottom)
+                WindowInsetsCompat.CONSUMED
+            }
+            ViewCompat.requestApplyInsets(contentRoot)
+        }
     }
 
     override fun onWebViewCreate(webView: WebView) {
         super.onWebViewCreate(webView)
         activeWebView = webView
         webView.setBackgroundColor(Color.parseColor("#0B0E11"))
+        webView.overScrollMode = View.OVER_SCROLL_NEVER
+        webView.isVerticalScrollBarEnabled = false
+        webView.isHorizontalScrollBarEnabled = false
         webView.settings.mediaPlaybackRequiresUserGesture = false
-        webView.settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+        webView.settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+        webView.settings.setSupportZoom(false)
+        webView.settings.builtInZoomControls = false
+        webView.settings.displayZoomControls = false
         webView.addJavascriptInterface(LiquidHubAndroidBridge(this), "LiquidHubAndroid")
         LiquidHubMediaPlaybackService.attachWebView(webView)
     }
@@ -726,10 +771,7 @@ export function patchAppBuildGradle(gradle, config) {
     process.env.LIQUID_ANDROID_VERSION_NAME || config.versionName || '2.2.0-beta.1',
   );
 
-  out = out.replace(/compileSdk\s*=\s*\d+/, m => {
-    const existing = Number(m.match(/\d+/)?.[0] || 0);
-    return `compileSdk = ${Math.max(existing, compileSdk)}`;
-  });
+  out = out.replace(/compileSdk\s*=\s*\d+/, `compileSdk = ${compileSdk}`);
   out = out.replace(/minSdk\s*=\s*\d+/, `minSdk = ${minSdk}`);
   out = out.replace(/targetSdk\s*=\s*\d+/, `targetSdk = ${targetSdk}`);
   out = out.replace(/versionCode\s*=\s*[^\n]+/, `versionCode = ${versionCode}`);

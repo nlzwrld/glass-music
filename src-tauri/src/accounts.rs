@@ -1289,7 +1289,7 @@ pub async fn hub_oauth_flow(
                         attempt.stop()
                     }
                 });
-                if let Ok(test_client) = reqwest::Client::builder()
+                if let Ok(test_client) = crate::providers::http_client_builder()
                     .connect_timeout(Duration::from_secs(5))
                     .timeout(Duration::from_secs(12))
                     .redirect(policy)

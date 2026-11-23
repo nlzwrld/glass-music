@@ -20,9 +20,42 @@ impl SearchState {
         }
     }
 }
+#[cfg(any(target_os = "android", test))]
+pub(crate) fn webpki_tls_config() -> rustls::ClientConfig {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let provider = std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let mut cfg = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("rustls protocol versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    cfg
+}
+
+/// Platform-safe async HTTP client builder.
+/// On Android, reqwest's default `rustls-platform-verifier` panics unless its JVM
+/// verification AAR is explicitly bundled and initialized; using pure-Rust Mozilla
+/// `webpki-roots` guarantees strict TLS verification on every Android device without JNI.
+pub fn http_client_builder() -> reqwest::ClientBuilder {
+    let builder = reqwest::Client::builder();
+    #[cfg(target_os = "android")]
+    let builder = builder.tls_backend_preconfigured(webpki_tls_config());
+    builder
+}
+
+/// Platform-safe blocking HTTP client builder (covers & local audio streaming proxy).
+pub fn blocking_http_client_builder() -> reqwest::blocking::ClientBuilder {
+    let builder = reqwest::blocking::Client::builder();
+    #[cfg(target_os = "android")]
+    let builder = builder.tls_backend_preconfigured(webpki_tls_config());
+    builder
+}
+
 pub fn client() -> reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| reqwest::Client::builder()
+    CLIENT.get_or_init(|| http_client_builder()
         .connect_timeout(Duration::from_secs(6))
         .timeout(Duration::from_secs(18))
         .redirect(reqwest::redirect::Policy::none())
@@ -236,5 +269,20 @@ mod tests {
             &json!({"query":"x","requestId":"../../bad","source":"all","kind":"all"})
         )
         .is_err());
+    }
+
+    #[test]
+    fn android_webpki_tls_clients_build_cleanly() {
+        let async_client = reqwest::Client::builder()
+            .tls_backend_preconfigured(webpki_tls_config())
+            .connect_timeout(Duration::from_secs(5))
+            .build();
+        assert!(async_client.is_ok(), "async webpki client should build cleanly");
+
+        let blocking_client = reqwest::blocking::Client::builder()
+            .tls_backend_preconfigured(webpki_tls_config())
+            .connect_timeout(Duration::from_secs(5))
+            .build();
+        assert!(blocking_client.is_ok(), "blocking webpki client should build cleanly");
     }
 }

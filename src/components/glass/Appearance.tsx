@@ -109,12 +109,7 @@ export default function Appearance() {
       </div>
 
       <label className="setting-row">
-        <span>
-          <strong>Cor de destaque</strong>
-          {uiStyle === 'beat' && (
-            <small>Pulsa no ritmo da batida da música.</small>
-          )}
-        </span>
+        <strong>Cor de destaque</strong>
         <span className="setting-inline">
           <div className="accent-swatches" role="group" aria-label="Cores rápidas">
             {['#52b79a', '#1db954', '#6366f1', '#ec4899', '#f59e0b', '#38bdf8'].map(hex => (

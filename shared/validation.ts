@@ -59,33 +59,30 @@ export function artworkUrl(raw: string): boolean {
   }
   try {
     const u = new URL(raw);
+    if (u.protocol !== 'https:' || u.username || u.password || u.port) return false;
+    const host = u.hostname.toLowerCase();
+    const exact = [
+      'img.youtube.com',
+      'api.deezer.com',
+      'f4.bcbits.com',
+      'resources.tidal.com',
+      'akamai.sscdn.co',
+      'cdn.discordapp.com',
+      'avatars.githubusercontent.com',
+    ];
+    const suffixes = [
+      '.scdn.co',
+      '.spotifycdn.com',
+      '.ytimg.com',
+      '.ggpht.com',
+      '.googleusercontent.com',
+      '.sndcdn.com',
+      '.dzcdn.net',
+      '.mzstatic.com',
+    ];
     return (
-      u.protocol === 'https:' &&
-      !u.username &&
-      !u.password &&
-      !u.port &&
-      [
-        'i.ytimg.com',
-        'i9.ytimg.com',
-        'lh3.googleusercontent.com',
-        'i1.sndcdn.com',
-        'i2.sndcdn.com',
-        'i.scdn.co',
-        'mosaic.scdn.co',
-        'image-cdn-fa.spotifycdn.com',
-        'image-cdn-ak.spotifycdn.com',
-        'cdn-images.dzcdn.net',
-        'e-cdns-images.dzcdn.net',
-        'cdns-images.dzcdn.net',
-        'is1-ssl.mzstatic.com',
-        'is2-ssl.mzstatic.com',
-        'is3-ssl.mzstatic.com',
-        'is4-ssl.mzstatic.com',
-        'is5-ssl.mzstatic.com',
-        'f4.bcbits.com',
-        'resources.tidal.com',
-        'akamai.sscdn.co',
-      ].includes(u.hostname)
+      exact.includes(host) ||
+      suffixes.some(suffix => host.length > suffix.length && host.endsWith(suffix))
     );
   } catch {
     return false;

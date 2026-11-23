@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { canPlay, type Track } from '../../../shared/types';
 import { useApp, formatTime } from '../../stores/app';
+import { isMobileViewport } from '../../lib/androidBeta';
 import { transport } from '../player/engine';
 import Cover from '../glass/Cover';
 import { IconButton, OfflineIndicator, SourceBadge } from '../glass/controls';
@@ -81,7 +82,8 @@ export default function TrackList({
   };
 
   const hasSnippets = tracks.some(t => !!t.lyricSnippet);
-  const rowHeight = hasSnippets ? 56 : 48;
+  const mobileRow = isMobileViewport();
+  const rowHeight = mobileRow ? (hasSnippets ? 70 : 64) : hasSnippets ? 56 : 48;
   const playableCount = tracks.filter(t => canPlay(t) && t.available !== false).length;
 
   const virtual = useVirtualizer({

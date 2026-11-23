@@ -9,8 +9,12 @@ use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock, mpsc::{sync_channel, SyncSender}},
-    time::Duration,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc::{sync_channel, SyncSender},
+        Arc, Mutex, OnceLock,
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tiny_http::{Header, Request, Response, Server, StatusCode};
 
@@ -192,6 +196,44 @@ pub fn clear_covers(data: &Path) {
         }
     }
 }
+fn sniff_image_mime(file: &mut File, fallback_path: &Path) -> &'static str {
+    let mut head = [0u8; 16];
+    let n = file.read(&mut head).unwrap_or(0);
+    let _ = file.seek(SeekFrom::Start(0));
+    if n >= 3 && head[0] == 0xFF && head[1] == 0xD8 && head[2] == 0xFF {
+        return "image/jpeg";
+    }
+    if n >= 8 && &head[..8] == b"\x89PNG\r\n\x1a\n" {
+        return "image/png";
+    }
+    if n >= 12 && &head[..4] == b"RIFF" && &head[8..12] == b"WEBP" {
+        return "image/webp";
+    }
+    if n >= 6 && (&head[..6] == b"GIF87a" || &head[..6] == b"GIF89a") {
+        return "image/gif";
+    }
+    if n >= 12 && &head[4..8] == b"ftyp" {
+        return "image/avif";
+    }
+    mime(fallback_path)
+}
+fn maybe_trim_cache(dir: &Path, max: u64) {
+    static LAST_TRIM_SECS: AtomicU64 = AtomicU64::new(0);
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let prev = LAST_TRIM_SECS.load(Ordering::Relaxed);
+    if now_secs.saturating_sub(prev) < 60 {
+        return;
+    }
+    if LAST_TRIM_SECS
+        .compare_exchange(prev, now_secs, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        trim_cache(dir, max);
+    }
+}
 fn trim_cache(dir: &Path, max: u64) {
     let mut entries: Vec<_> = fs::read_dir(dir)
         .into_iter()
@@ -228,7 +270,7 @@ pub fn serve(db: Arc<Mutex<Library>>, data: PathBuf, audio: Arc<crate::audio::Au
             match next {Ok((req,ticket,allowed))=>audio.respond(req,&ticket,allowed),Err(_)=>break}
         });
     }
-    for _ in 0..8 {
+    for _ in 0..16 {
         let server = server.clone();
         let db = db.clone();
         let data = data.clone();
@@ -249,7 +291,13 @@ fn handle(req: Request, db: &Arc<Mutex<Library>>, data: &Path, token: &str, host
         header("X-Content-Type-Options", "nosniff"),
     ];
     let fail = |req: Request, status: u16| {
-        let _ = req.respond(Response::from_string("Recurso indisponível").with_status_code(status));
+        let _ = req.respond(
+            Response::from_string("Recurso indisponível")
+                .with_status_code(status)
+                .with_header(header("Access-Control-Allow-Origin", "*"))
+                .with_header(header("Cross-Origin-Resource-Policy", "cross-origin"))
+                .with_header(header("Cache-Control", "no-store")),
+        );
     };
     if req
         .headers()
@@ -305,6 +353,7 @@ fn handle(req: Request, db: &Arc<Mutex<Library>>, data: &Path, token: &str, host
         let _ = req.respond(r);
         return;
     }
+    let path_is_cover = path == "cover" || path.starts_with("covers/");
     let file = if let Some(id)=path.strip_prefix("offline/"){
       let decoded=url::form_urlencoded::parse(format!("id={id}").as_bytes()).next().map(|(_,v)|v.into_owned()).unwrap_or_default();
       db.lock().unwrap().offline_path(&decoded).filter(|(p,_)|crate::offline::owned_path(data,p)).map(|(p,_)|PathBuf::from(p))
@@ -338,31 +387,66 @@ fn handle(req: Request, db: &Arc<Mutex<Library>>, data: &Path, token: &str, host
         } else {
             let dir = data.join("cover-cache");
             let _ = fs::create_dir_all(&dir);
-            trim_cache(&dir, max);
-            let p = dir.join(format!("{}.jpg", hash(url.as_bytes())));
-            if !p.exists() {
-                static COVERS:OnceLock<reqwest::blocking::Client>=OnceLock::new();
+            maybe_trim_cache(&dir, max);
+            let h = hash(url.as_bytes());
+            let p = dir.join(format!("{h}.jpg"));
+            let valid_cached = fs::metadata(&p).map(|m| m.len() > 64).unwrap_or(false);
+            if !valid_cached {
+                static COVERS: OnceLock<reqwest::blocking::Client> = OnceLock::new();
                 if let Some(c) = COVERS.get().or_else(|| {
-                    let client=reqwest::blocking::Client::builder().timeout(Duration::from_secs(8)).redirect(reqwest::redirect::Policy::none()).build().ok()?;
-                    let _=COVERS.set(client);COVERS.get()
+                    let redirect_policy = reqwest::redirect::Policy::custom(|attempt| {
+                        if attempt.previous().len() >= 3 {
+                            return attempt.stop();
+                        }
+                        if db::artwork_url(attempt.url().as_str()) {
+                            attempt.follow()
+                        } else {
+                            attempt.stop()
+                        }
+                    });
+                    let client = crate::providers::blocking_http_client_builder()
+                        .connect_timeout(Duration::from_secs(4))
+                        .timeout(Duration::from_secs(8))
+                        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+                        .redirect(redirect_policy)
+                        .build()
+                        .ok()?;
+                    let _ = COVERS.set(client);
+                    COVERS.get()
                 }) {
-                    if let Ok(r) = c.get(&url).send() {
-                        let ok = r.status().is_success()
-                            && r.headers()
-                                .get("content-type")
-                                .and_then(|h| h.to_str().ok())
-                                .is_some_and(|t| t.starts_with("image/"));
-                        if ok {
+                    if let Ok(r) = c
+                        .get(&url)
+                        .header("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+                        .send()
+                    {
+                        let ct_ok = r
+                            .headers()
+                            .get("content-type")
+                            .and_then(|h| h.to_str().ok())
+                            .is_none_or(|t| {
+                                let lower = t.to_ascii_lowercase();
+                                lower.starts_with("image/") || lower.starts_with("application/octet-stream")
+                            });
+                        if r.status().is_success() && ct_ok {
                             let mut bytes = Vec::new();
                             let _ = r.take(4_000_001).read_to_end(&mut bytes);
-                            if bytes.len() <= 4_000_000 {
-                                let _ = fs::write(&p, &bytes);
+                            if bytes.len() > 64 && bytes.len() <= 4_000_000 {
+                                let tmp = dir.join(format!("{h}.{}.tmp", uuid::Uuid::new_v4().simple()));
+                                if fs::write(&tmp, &bytes).is_ok() {
+                                    if fs::rename(&tmp, &p).is_err() {
+                                        let _ = fs::remove_file(&tmp);
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
-            Some(p)
+            if fs::metadata(&p).map(|m| m.len() > 64).unwrap_or(false) {
+                Some(p)
+            } else {
+                None
+            }
         }
     } else {
         None
@@ -387,10 +471,15 @@ fn handle(req: Request, db: &Arc<Mutex<Library>>, data: &Path, token: &str, host
         );
         return;
     };
+    let content_type = if path_is_cover {
+        sniff_image_mime(&mut file, &path)
+    } else {
+        mime(&path)
+    };
     let _ = file.seek(SeekFrom::Start(start));
     let size = end - start + 1;
     let mut headers = cors;
-    headers.push(header("Content-Type", mime(&path)));
+    headers.push(header("Content-Type", content_type));
     headers.push(header("Accept-Ranges", "bytes"));
     headers.push(header("Cache-Control", "private, max-age=3600"));
     if partial {

@@ -212,7 +212,7 @@ export default function Library() {
         </div>
 
         {(tab === 'all' || tab === 'playlists') &&
-          myShared &&
+          Array.isArray(myShared?.pendingInvites) &&
           myShared.pendingInvites.length > 0 && (
             <section className="library-playlists" aria-label="Convites de colaboração">
               <div className="section-heading">
@@ -295,7 +295,7 @@ export default function Library() {
           )}
 
         {(tab === 'all' || tab === 'playlists') &&
-          myShared &&
+          Array.isArray(myShared?.collaborating) &&
           myShared.collaborating.length > 0 && (
             <section className="library-playlists" aria-label="Playlists colaborativas">
               <div className="section-heading">

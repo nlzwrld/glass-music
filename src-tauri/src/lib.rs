@@ -2053,15 +2053,14 @@ pub fn run() {
                     if let Some(existing) = app.get_webview_window("main") {
                         existing
                     } else {
-                        let main_config = app
-                            .config()
-                            .app
-                            .windows
-                            .iter()
-                            .find(|w| w.label == "main")
-                            .ok_or("Configuração da janela principal ausente.")?;
-                        tauri::WebviewWindowBuilder::from_config(app.handle(), main_config)?
-                            .build()?
+                        tauri::WebviewWindowBuilder::new(
+                            app.handle(),
+                            "main",
+                            tauri::WebviewUrl::App("index.html".into()),
+                        )
+                        .use_https_scheme(true)
+                        .background_color(tauri::window::Color(11, 14, 17, 255))
+                        .build()?
                     }
                 }
             };
@@ -2084,11 +2083,34 @@ pub fn run() {
             media::seed(&db, &resources)?;
             let pref = db.pref();
             native_environment(&window, &pref);
-            let keys = secrets::Secrets::load(&data.join("credentials.dpapi"))?;
+            let keys = match secrets::Secrets::load(&data.join("credentials.dpapi")) {
+                Ok(loaded) => loaded,
+                Err(err) => {
+                    #[cfg(mobile)]
+                    {
+                        eprintln!("Aviso mobile: cofre de credenciais reiniciado ({err})");
+                        secrets::Secrets::default()
+                    }
+                    #[cfg(desktop)]
+                    return Err(err.into());
+                }
+            };
             let db = Arc::new(Mutex::new(db));
             let audio = Arc::new(audio::AudioStreams::new());
             let base = media::serve(db.clone(), data.clone(), audio.clone())?;
-            let accounts = accounts::Accounts::load(&data)?;
+            let accounts = match accounts::Accounts::load(&data) {
+                Ok(loaded) => loaded,
+                Err(err) => {
+                    #[cfg(mobile)]
+                    {
+                        eprintln!("Aviso mobile: conexões reiniciadas ({err})");
+                        let _ = std::fs::remove_file(data.join("accounts.dpapi"));
+                        accounts::Accounts::load(&data)?
+                    }
+                    #[cfg(desktop)]
+                    return Err(err.into());
+                }
+            };
             app.manage(State {
                 accounts,
                 offline: offline::Downloads::default(),

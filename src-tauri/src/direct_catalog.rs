@@ -103,7 +103,7 @@ async fn probe_stream_url(url: &str, ua: &str, content_length: Option<u64>) -> b
     if !crate::audio::valid_cdn(url) {
         return false;
     }
-    let client = reqwest::Client::builder()
+    let client = crate::providers::http_client_builder()
         .connect_timeout(Duration::from_secs(3))
         .timeout(Duration::from_secs(4))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
