@@ -47,7 +47,7 @@ fn http_client() -> &'static reqwest::blocking::Client {
         reqwest::blocking::Client::builder()
             .connect_timeout(Duration::from_secs(7))
             .timeout(Duration::from_secs(60))
-            .pool_idle_timeout(Duration::from_secs(120))
+            .pool_idle_timeout(Duration::from_secs(20))
             .pool_max_idle_per_host(8)
             .redirect(redirect_policy)
             .build()
@@ -204,8 +204,13 @@ impl AudioStreams {
         Ok((ticket, duration))
     }
     pub fn respond(&self, req: Request, token: &str, allowed: bool) {
+        let h = |k: &str, v: &str| Header::from_bytes(k, v).unwrap();
         let fail = |req: Request, code: u16| {
-            let _ = req.respond(Response::from_string("Áudio indisponível").with_status_code(code));
+            let mut resp = Response::from_string("Áudio indisponível").with_status_code(code);
+            resp.add_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
+            resp.add_header(Header::from_bytes("Cross-Origin-Resource-Policy", "cross-origin").unwrap());
+            resp.add_header(Header::from_bytes("Cache-Control", "no-store").unwrap());
+            let _ = req.respond(resp);
         };
         if !allowed {
             fail(req, 403);
@@ -231,7 +236,6 @@ impl AudioStreams {
             fail(req, 416);
             return;
         }
-        let h = |k: &str, v: &str| Header::from_bytes(k, v).unwrap();
         let base_headers = || {
             vec![
                 h("Content-Type", &stream.mime),
@@ -279,16 +283,27 @@ impl AudioStreams {
             }
         }
         let client = http_client();
-        let mut request = if req.method().as_str() == "HEAD" {
-            client.head(&stream.url)
-        } else {
-            client.get(&stream.url)
-        };
-        if !stream.agent.is_empty() {
-            request = request.header("User-Agent", &stream.agent);
+        let is_head = req.method().as_str() == "HEAD";
+        let mut upstream = None;
+        for _ in 0..2 {
+            let mut request = if is_head {
+                client.head(&stream.url)
+            } else {
+                client.get(&stream.url)
+            };
+            if !stream.agent.is_empty() {
+                request = request.header("User-Agent", &stream.agent);
+            }
+            request = request.header("Range", &target_range);
+            match request.send() {
+                Ok(resp) => {
+                    upstream = Some(resp);
+                    break;
+                }
+                Err(_) => continue,
+            }
         }
-        request = request.header("Range", &target_range);
-        let Ok(upstream) = request.send() else {
+        let Some(upstream) = upstream else {
             fail(req, 502);
             return;
         };

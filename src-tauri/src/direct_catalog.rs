@@ -19,7 +19,6 @@ const PLUGIN: &str = "plugins/liquid_hub/yt_dlp_plugins/extractor/liquid_hub_sou
 const VISIONOS_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
 const IOS_UA: &str = "com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_2_1 like Mac OS X;)";
 const ANDROID_VR_UA: &str = "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip";
-const TV_EMBED_UA: &str = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version";
 
 static VISITOR_CACHE: OnceLock<Mutex<Option<(Instant, String)>>> = OnceLock::new();
 
@@ -88,13 +87,19 @@ fn extract_visitor_token(text: &str) -> Option<String> {
 
 #[derive(Clone, Copy)]
 enum InnerTubeClient {
+    VisionOs,
     AndroidVr,
     Ios,
-    VisionOs,
-    TvEmbedded,
 }
 
-async fn probe_stream_url(url: &str, ua: &str) -> bool {
+fn probe_byte_range(content_length: Option<u64>) -> String {
+    match content_length {
+        Some(len) if len > 64 => format!("bytes={}-{}", len - 2, len - 1),
+        _ => "bytes=0-1".to_string(),
+    }
+}
+
+async fn probe_stream_url(url: &str, ua: &str, content_length: Option<u64>) -> bool {
     if !crate::audio::valid_cdn(url) {
         return false;
     }
@@ -115,7 +120,8 @@ async fn probe_stream_url(url: &str, ua: &str) -> bool {
     let Ok(client) = client else {
         return true;
     };
-    let mut req = client.get(url).header("Range", "bytes=0-1");
+    let range = probe_byte_range(content_length);
+    let mut req = client.get(url).header("Range", &range);
     if !ua.is_empty() {
         req = req.header("User-Agent", ua);
     }
@@ -126,7 +132,23 @@ async fn probe_stream_url(url: &str, ua: &str) -> bool {
 }
 
 async fn innertube_player(id: &str, visitor: &str, profile: InnerTubeClient) -> Result<Value> {
-    let (ua, client_id, client_ctx, third_party) = match profile {
+    let (ua, client_id, client_ctx) = match profile {
+        InnerTubeClient::VisionOs => (
+            VISIONOS_UA,
+            "1",
+            json!({
+                "clientName": "VISIONOS",
+                "clientVersion": "0.1",
+                "deviceMake": "Apple",
+                "deviceModel": "RealityDevice14,1",
+                "osName": "visionOS",
+                "osVersion": "1.3.21O771",
+                "hl": "en",
+                "timeZone": "UTC",
+                "utcOffsetMinutes": 0,
+                "visitorData": visitor
+            }),
+        ),
         InnerTubeClient::AndroidVr => (
             ANDROID_VR_UA,
             "28",
@@ -143,7 +165,6 @@ async fn innertube_player(id: &str, visitor: &str, profile: InnerTubeClient) -> 
                 "utcOffsetMinutes": 0,
                 "visitorData": visitor
             }),
-            None,
         ),
         InnerTubeClient::Ios => (
             IOS_UA,
@@ -160,37 +181,6 @@ async fn innertube_player(id: &str, visitor: &str, profile: InnerTubeClient) -> 
                 "utcOffsetMinutes": 0,
                 "visitorData": visitor
             }),
-            None,
-        ),
-        InnerTubeClient::VisionOs => (
-            VISIONOS_UA,
-            "1",
-            json!({
-                "clientName": "VISIONOS",
-                "clientVersion": "0.1",
-                "deviceMake": "Apple",
-                "deviceModel": "RealityDevice14,1",
-                "osName": "visionOS",
-                "osVersion": "1.3.21O771",
-                "hl": "en",
-                "timeZone": "UTC",
-                "utcOffsetMinutes": 0,
-                "visitorData": visitor
-            }),
-            None,
-        ),
-        InnerTubeClient::TvEmbedded => (
-            TV_EMBED_UA,
-            "85",
-            json!({
-                "clientName": "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
-                "clientVersion": "2.0",
-                "hl": "pt-BR",
-                "timeZone": "UTC",
-                "utcOffsetMinutes": 0,
-                "visitorData": visitor
-            }),
-            Some(json!({ "embedUrl": "https://www.youtube.com" })),
         ),
     };
     let mut req = crate::providers::client()
@@ -203,15 +193,11 @@ async fn innertube_player(id: &str, visitor: &str, profile: InnerTubeClient) -> 
     if !visitor.is_empty() {
         req = req.header("X-Goog-Visitor-Id", visitor);
     }
-    let mut context = json!({ "client": client_ctx });
-    if let Some(tp) = third_party {
-        context["thirdParty"] = tp;
-    }
     let body = json!({
         "videoId": id,
         "contentCheckOk": true,
         "racyCheckOk": true,
-        "context": context
+        "context": { "client": client_ctx }
     });
     let mut res = req
         .json(&body)
@@ -265,7 +251,10 @@ async fn innertube_player(id: &str, visitor: &str, profile: InnerTubeClient) -> 
     });
     for best in audio_candidates.into_iter().take(2) {
         let stream_url = s(best, "url");
-        if !probe_stream_url(stream_url, ua).await {
+        let filesize = best["contentLength"]
+            .as_str()
+            .and_then(|v| v.parse::<u64>().ok());
+        if !probe_stream_url(stream_url, ua, filesize).await {
             continue;
         }
         let mime = s(best, "mimeType");
@@ -274,9 +263,6 @@ async fn innertube_player(id: &str, visitor: &str, profile: InnerTubeClient) -> 
         } else {
             "webm"
         };
-        let filesize = best["contentLength"]
-            .as_str()
-            .and_then(|v| v.parse::<u64>().ok());
         let mut out = json!({
             "url": stream_url,
             "vcodec": "none",
@@ -297,10 +283,9 @@ async fn innertube_player(id: &str, visitor: &str, profile: InnerTubeClient) -> 
 async fn innertube_audio(id: &str) -> Result<Value> {
     let visitor = visitor_data(false).await;
     for profile in [
+        InnerTubeClient::VisionOs,
         InnerTubeClient::AndroidVr,
         InnerTubeClient::Ios,
-        InnerTubeClient::VisionOs,
-        InnerTubeClient::TvEmbedded,
     ] {
         if let Ok(stream) = innertube_player(id, &visitor, profile).await {
             return Ok(stream);
@@ -308,7 +293,7 @@ async fn innertube_audio(id: &str) -> Result<Value> {
     }
     let refreshed = visitor_data(true).await;
     if !refreshed.is_empty() && refreshed != visitor {
-        for profile in [InnerTubeClient::AndroidVr, InnerTubeClient::Ios] {
+        for profile in [InnerTubeClient::VisionOs, InnerTubeClient::AndroidVr] {
             if let Ok(stream) = innertube_player(id, &refreshed, profile).await {
                 return Ok(stream);
             }
@@ -977,5 +962,11 @@ mod tests {
     async fn output_is_bounded() {
         assert!(limited_read(&b"12345"[..],4).await.is_err());
         assert_eq!(limited_read(&b"1234"[..],4).await.unwrap(),b"1234");
+    }
+    #[test]
+    fn probe_range_prefers_stream_tail_when_content_length_known() {
+        assert_eq!(probe_byte_range(Some(4_557_665)), "bytes=4557663-4557664");
+        assert_eq!(probe_byte_range(Some(64)), "bytes=0-1");
+        assert_eq!(probe_byte_range(None), "bytes=0-1");
     }
 }

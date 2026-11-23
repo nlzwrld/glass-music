@@ -441,15 +441,22 @@ export function PlayerEngine() {
           resolvedTrack?.resolvedExternalId ||
           resolvedTrack?.playbackId ||
           track.resolvedExternalId ||
-          track.playbackId;
-        if (failedId && !failedIds.includes(failedId)) {
-          failedIds.push(failedId);
-        }
+          track.playbackId ||
+          (track.source === 'youtube' ? track.sourceId : undefined);
+        const excludeIds =
+          track.source === 'youtube' && retryAttempts === 1
+            ? []
+            : (() => {
+                if (failedId && !failedIds.includes(failedId)) {
+                  failedIds.push(failedId);
+                }
+                return [...failedIds];
+              })();
         update({ status: 'Sincronizando fonte de áudio...', error: '' });
         preparation?.release();
         preparation = preparePlayback(track, true, {
           forceRefresh: true,
-          excludeIds: [...failedIds],
+          excludeIds,
         });
         void preparation.promise
           .then(({ track: rematched, source }) => {

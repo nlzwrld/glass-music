@@ -763,7 +763,14 @@ export interface GlassAPI {
   audioSource(
     videoId: string,
     requestId: string,
-    fallback?: { title?: string; artist?: string; duration?: number; isrc?: string; trackId?: string },
+    fallback?: {
+      title?: string;
+      artist?: string;
+      duration?: number;
+      isrc?: string;
+      trackId?: string;
+      forceRefresh?: boolean;
+    },
   ): Promise<{ url: string; duration: number; videoId?: string; provider?: StreamProvider }>;
   window(action: 'minimize' | 'maximize' | 'close' | 'mini' | 'restore'): Promise<void>;
   visualState(): Promise<boolean>;

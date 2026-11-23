@@ -255,8 +255,15 @@ export function preparePlayback(track: Track, active = true, options?: PrepareOp
         }
       }
 
+      const directYoutubeRefreshOnly =
+        track.source === 'youtube' &&
+        Boolean(options?.forceRefresh) &&
+        !options?.preferredProvider &&
+        !(options?.excludeIds || []).includes(track.sourceId);
+
       const useCrossResolver =
         typeof window.glass?.resolveStream === 'function' &&
+        !directYoutubeRefreshOnly &&
         (isCatalogOnlyTrack(track) ||
           Boolean(options?.forceRefresh) ||
           Boolean(options?.preferredProvider) ||
@@ -291,6 +298,7 @@ export function preparePlayback(track: Track, active = true, options?: PrepareOp
           duration: matched.duration,
           isrc: matched.isrc,
           trackId: matched.id,
+          ...(options?.forceRefresh ? { forceRefresh: true } : {}),
         },
       );
       if (created.cancelled) throw new Error('Preparação cancelada.');
