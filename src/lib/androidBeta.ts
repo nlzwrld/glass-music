@@ -12,6 +12,7 @@ export interface LiquidHubAndroidBridge {
     playing: boolean,
     positionMs: number,
     durationMs: number,
+    artworkUrl?: string,
   ) => void;
   stopPlayback?: () => void;
 }
@@ -24,10 +25,12 @@ declare global {
 
 let lastNativeSyncKey = '';
 let lastNativeSyncAt = 0;
+let lastNativePosSec = 0;
 
 export function resetAndroidNativeSyncCache(): void {
   lastNativeSyncKey = '';
   lastNativeSyncAt = 0;
+  lastNativePosSec = 0;
 }
 
 export const ANDROID_BETA_MANIFEST_SUMMARY = {
@@ -151,11 +154,13 @@ export function syncMediaSessionMetadata(
         }
       }
     } else {
-      const stateKey = `${track.id}|${track.title}|${track.artist}|${playing ? '1' : '0'}`;
+      const stateKey = `${track.id}|${track.title}|${track.artist}|${track.artwork || ''}|${playing ? '1' : '0'}`;
       const now = Date.now();
-      if (stateKey !== lastNativeSyncKey || (playing && now - lastNativeSyncAt >= 5000)) {
+      const seekJumped = Math.abs(positionSec - lastNativePosSec) >= 2.2;
+      if (stateKey !== lastNativeSyncKey || seekJumped || (playing && now - lastNativeSyncAt >= 5000)) {
         lastNativeSyncKey = stateKey;
         lastNativeSyncAt = now;
+        lastNativePosSec = positionSec;
         try {
           nativeBridge.updatePlayback?.(
             track.title || 'Liquid Hub',
@@ -164,6 +169,7 @@ export function syncMediaSessionMetadata(
             playing,
             Math.round(Math.max(0, positionSec) * 1000),
             Math.round(Math.max(0, durationSec) * 1000),
+            track.artwork && /^https:\/\//i.test(track.artwork) ? track.artwork : '',
           );
         } catch {
           // Ignore Android bridge errors
@@ -287,16 +293,35 @@ export function useAndroidBetaLifecycle(): { isMobile: boolean; isAndroid: boole
 
   useEffect(() => {
     document.documentElement.dataset.platform = isAndroid ? 'android' : 'desktop';
-    const onResize = () => setIsMobile(isMobileViewport());
+    document.documentElement.dataset.mobile = String(isMobile);
+    const onResize = () => {
+      const nextMobile = isMobileViewport();
+      setIsMobile(nextMobile);
+      document.documentElement.dataset.mobile = String(nextMobile);
+    };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
-  }, [isAndroid]);
+  }, [isAndroid, isMobile]);
 
   useEffect(() => {
+    let preDuckVolume: number | null = null;
     const focusManager = createAudioFocusManager({
       isPlaying: () => useApp.getState().playing,
       play: () => transport.play(),
       pause: () => transport.pause(),
+      setDucking: ducked => {
+        if (ducked) {
+          if (preDuckVolume === null) {
+            preDuckVolume = useApp.getState().data.preferences.volume;
+          }
+          const lowered = Math.max(8, Math.round(preDuckVolume * 0.25));
+          transport.volume(lowered);
+        } else if (preDuckVolume !== null) {
+          const restore = preDuckVolume;
+          preDuckVolume = null;
+          transport.volume(restore);
+        }
+      },
     });
 
     const unregister = registerMediaSessionBridge({

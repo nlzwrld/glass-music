@@ -1,9 +1,6 @@
-name: Liquid Hub Android Beta (APK & AAB)
+name: Liquid Hub Android Beta (Manual APK & AAB)
 
 on:
-  push:
-    branches: [main]
-    paths-ignore: ['README.md', 'docs/**/*.md', 'deploy/**/*.md']
   workflow_dispatch:
 
 permissions:

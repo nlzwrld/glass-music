@@ -1609,11 +1609,15 @@ pub async fn hub_library_push(
 ) -> Result<Value> {
     let (broker, token) =
         ensure_fresh_hub_token(secrets_mtx, secrets_path, Some(s(payload, "brokerUrl"))).await?;
-    let body = json!({
+    let mut body = json!({
         "playlists": payload.get("playlists").cloned().unwrap_or_else(|| json!([])),
         "tracks": payload.get("tracks").cloned().unwrap_or_else(|| json!([])),
         "likes": payload.get("likes").cloned().unwrap_or_else(|| json!([])),
     });
+    let has_prefs = payload.get("preferences").is_some_and(Value::is_object);
+    if has_prefs {
+        body["preferences"] = payload["preferences"].clone();
+    }
     let res = crate::providers::client()
         .put(format!("{broker}/v1/auth/library"))
         .header("Authorization", format!("Bearer {token}"))
@@ -1621,8 +1625,23 @@ pub async fn hub_library_push(
         .send()
         .await
         .map_err(|_| "Falha ao salvar playlists na conta.")?;
-    let status = res.status();
-    let resp_body: Value = res.json().await.unwrap_or(Value::Null);
+    let mut status = res.status();
+    let mut resp_body: Value = res.json().await.unwrap_or(Value::Null);
+    if status.as_u16() == 400 && has_prefs {
+        if let Some(map) = body.as_object_mut() {
+            map.remove("preferences");
+        }
+        if let Ok(retry_res) = crate::providers::client()
+            .put(format!("{broker}/v1/auth/library"))
+            .header("Authorization", format!("Bearer {token}"))
+            .json(&body)
+            .send()
+            .await
+        {
+            status = retry_res.status();
+            resp_body = retry_res.json().await.unwrap_or(Value::Null);
+        }
+    }
     if !status.is_success() {
         return Err(parse_broker_error(
             &resp_body,

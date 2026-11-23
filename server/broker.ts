@@ -1244,7 +1244,32 @@ export class ZeroTrustAuthEngine {
     const likes = Array.isArray(obj.likes)
       ? obj.likes.filter((x): x is string => typeof x === 'string')
       : [];
-    return this.store.saveUserLibrary(userId, { playlists, tracks, likes }, this.clock());
+    const allowedPrefKeys = new Set([
+      'theme',
+      'uiStyle',
+      'accent',
+      'shuffleMode',
+      'smartShuffleDiscoveries',
+      'transition',
+      'transitionSeconds',
+      'autoplay',
+      'notificationMode',
+    ]);
+    let preferences: Record<string, unknown> | undefined;
+    if (obj.preferences && typeof obj.preferences === 'object' && !Array.isArray(obj.preferences)) {
+      const cleaned: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(obj.preferences as Record<string, unknown>)) {
+        if (allowedPrefKeys.has(k) && (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean')) {
+          cleaned[k] = v;
+        }
+      }
+      if (Object.keys(cleaned).length > 0) preferences = cleaned;
+    }
+    return this.store.saveUserLibrary(
+      userId,
+      { playlists, tracks, likes, ...(preferences ? { preferences } : {}) },
+      this.clock(),
+    );
   }
 
   verifyEmail(raw: unknown): { ok: boolean; user: HubUserPublic } {

@@ -43,6 +43,23 @@ export const glass: GlassAPI = {
   closeLyrics: () => call('closeLyrics'),
   pinLyrics: pinned => call('pinLyrics', { pinned }),
   updateStatus: (install = false) => call('updateStatus', { install }),
+  onUpdateProgress: listener => {
+    let active = true;
+    let off: (() => void) | undefined;
+    void listen<{ downloaded: number; total: number; percent: number }>(
+      'update-download-progress',
+      event => {
+        if (active) listener(event.payload);
+      },
+    ).then(fn => {
+      if (active) off = fn;
+      else fn();
+    });
+    return () => {
+      active = false;
+      off?.();
+    };
+  },
   maintenanceStatus: (repair = false) => call('maintenanceStatus', { repair }),
   trackArtwork: id => call('trackArtwork', id),
   lyrics: track => call('lyrics', track),

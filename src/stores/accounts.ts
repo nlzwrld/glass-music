@@ -11,9 +11,56 @@ import type {
   HubOAuthProvider,
   HubProvidersAvailability,
   HubSessionStatus,
+  Preferences,
   ProfileVisibility,
   SocialLinks,
 } from '../../shared/types';
+
+export const SYNCABLE_PREFERENCE_KEYS = [
+  'theme',
+  'uiStyle',
+  'accent',
+  'shuffleMode',
+  'smartShuffleDiscoveries',
+  'transition',
+  'transitionSeconds',
+  'autoplay',
+  'notificationMode',
+] as const;
+
+export type SyncablePreferenceKey = (typeof SYNCABLE_PREFERENCE_KEYS)[number];
+
+export function pickSyncablePreferences(prefs: Partial<Preferences>): Partial<Preferences> {
+  const out: Partial<Preferences> = {};
+  for (const key of SYNCABLE_PREFERENCE_KEYS) {
+    if (key in prefs && prefs[key] !== undefined) {
+      (out as Record<string, unknown>)[key] = prefs[key];
+    }
+  }
+  return out;
+}
+
+const SYNC_DIRTY_STORAGE_KEY = 'lh_cloud_sync_dirty';
+
+function readDirtyFlag(): boolean {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(SYNC_DIRTY_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeDirtyFlag(dirty: boolean): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    if (dirty) localStorage.setItem(SYNC_DIRTY_STORAGE_KEY, '1');
+    else localStorage.removeItem(SYNC_DIRTY_STORAGE_KEY);
+  } catch {
+    // Non-fatal storage restriction
+  }
+}
+
+let cloudSyncDebounceTimer: ReturnType<typeof setTimeout> | undefined;
 
 export interface UpdateProfilePatch {
   brokerUrl?: string;
@@ -63,6 +110,9 @@ interface State {
   authError: string;
   busy: string;
   notice: string;
+  pendingSync: boolean;
+  lastCloudSyncAt: number;
+  syncState: 'idle' | 'syncing' | 'offline-queued' | 'synced';
   openAuthModal(opts?: OpenAuthModalOptions): void;
   closeAuthModal(): void;
   setAuthModalView(view: AuthModalView): void;
@@ -105,6 +155,9 @@ interface State {
   refreshPlusStatus(brokerUrl?: string): Promise<LiquidPlusStatus>;
   syncLibraryFromCloud(brokerUrl?: string): Promise<void>;
   syncLibraryToCloud(brokerUrl?: string): Promise<void>;
+  queueCloudSync(brokerUrl?: string): void;
+  flushPendingCloudSync(brokerUrl?: string): Promise<void>;
+  syncAllMultiplatform(brokerUrl?: string): Promise<void>;
   linkEmail(payload: {
     brokerUrl?: string;
     email: string;
@@ -212,6 +265,9 @@ export const useAccounts = create<State>((set, get) => ({
   authError: '',
   busy: '',
   notice: '',
+  pendingSync: readDirtyFlag(),
+  lastCloudSyncAt: 0,
+  syncState: readDirtyFlag() ? 'offline-queued' : 'idle',
 
   openAuthModal: opts => {
     const hub = get().hub;
@@ -612,6 +668,7 @@ export const useAccounts = create<State>((set, get) => ({
 
   syncLibraryFromCloud: async brokerUrl => {
     if (!get().hub.authenticated || !window.glass?.hubLibraryPull) return;
+    set({ syncState: 'syncing' });
     try {
       const cloud = await window.glass.hubLibraryPull({
         brokerUrl: resolveEffectiveBroker(brokerUrl, get()),
@@ -619,12 +676,12 @@ export const useAccounts = create<State>((set, get) => ({
       const local = useApp.getState().data;
       const cloudPlaylists = Array.isArray(cloud?.playlists) ? cloud.playlists : [];
       const cloudTracks = Array.isArray(cloud?.tracks) ? cloud.tracks : [];
-      if (!cloudPlaylists.length) {
-        if (local.playlists.length > 0) {
-          void get().syncLibraryToCloud(brokerUrl);
-        }
-        return;
-      }
+      const cloudLikes = Array.isArray(cloud?.likes) ? cloud.likes : [];
+      const cloudPrefs =
+        cloud?.preferences && typeof cloud.preferences === 'object'
+          ? pickSyncablePreferences(cloud.preferences)
+          : {};
+
       const cloudTrackMap = new Map(cloudTracks.map(t => [t.id, t]));
       const existingByName = new Map(
         local.playlists.map(p => [p.name.trim().toLowerCase(), p]),
@@ -653,14 +710,70 @@ export const useAccounts = create<State>((set, get) => ({
           }
         }
       }
-      useApp.setState(s => ({ data: { ...latest, preferences: s.data.preferences } }));
+
+      // Merge remote likes without duplicating existing local likes
+      const localLikes = new Set(latest.likes);
+      for (const tid of cloudLikes) {
+        if (localLikes.has(tid)) continue;
+        const tr = cloudTrackMap.get(tid) || latest.tracks.find(t => t.id === tid);
+        if (!tr || tr.source === 'local') continue;
+        try {
+          latest = await window.glass.library({ action: 'like', track: tr });
+          localLikes.add(tid);
+        } catch {
+          // Ignore individual like merge failures
+        }
+      }
+
+      // Merge cross-device preferences when cloud is newer and no local offline write is pending
+      let mergedPrefs = useApp.getState().data.preferences;
+      const cloudUpdatedAt = Number(cloud?.updatedAt || 0);
+      if (
+        Object.keys(cloudPrefs).length > 0 &&
+        !get().pendingSync &&
+        cloudUpdatedAt > get().lastCloudSyncAt
+      ) {
+        const nextPrefs = { ...mergedPrefs, ...cloudPrefs };
+        const changed = SYNCABLE_PREFERENCE_KEYS.some(
+          k => nextPrefs[k] !== mergedPrefs[k],
+        );
+        if (changed) {
+          try {
+            await window.glass.preferences(nextPrefs);
+            mergedPrefs = nextPrefs;
+          } catch {
+            // Keep local preferences if validation rejects any field
+          }
+        }
+      }
+
+      useApp.setState({ data: { ...latest, preferences: mergedPrefs } });
+
+      if (
+        get().pendingSync ||
+        (!cloudPlaylists.length && local.playlists.length > 0) ||
+        (!cloudLikes.length && local.likes.length > 0)
+      ) {
+        await get().syncLibraryToCloud(brokerUrl);
+      } else {
+        set({
+          lastCloudSyncAt: Math.max(get().lastCloudSyncAt, cloudUpdatedAt || Date.now()),
+          syncState: 'synced',
+        });
+      }
     } catch {
-      // Non-fatal offline/cloud sync failure
+      set(s => ({ syncState: s.pendingSync ? 'offline-queued' : 'idle' }));
     }
   },
 
   syncLibraryToCloud: async brokerUrl => {
     if (!get().hub.authenticated || !window.glass?.hubLibraryPush) return;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      writeDirtyFlag(true);
+      set({ pendingSync: true, syncState: 'offline-queued' });
+      return;
+    }
+    set({ syncState: 'syncing' });
     try {
       const data = useApp.getState().data;
       const referencedIds = new Set<string>(data.likes);
@@ -670,15 +783,54 @@ export const useAccounts = create<State>((set, get) => ({
       const tracks = data.tracks.filter(
         t => t.source !== 'local' && referencedIds.has(t.id),
       );
-      await window.glass.hubLibraryPush({
+      const res = await window.glass.hubLibraryPush({
         brokerUrl: resolveEffectiveBroker(brokerUrl, get()),
         playlists: data.playlists,
         tracks,
         likes: data.likes,
+        preferences: pickSyncablePreferences(data.preferences),
+      });
+      writeDirtyFlag(false);
+      set({
+        pendingSync: false,
+        lastCloudSyncAt: Number(res?.updatedAt || Date.now()),
+        syncState: 'synced',
       });
     } catch {
-      // Non-fatal offline/cloud sync failure
+      writeDirtyFlag(true);
+      set({ pendingSync: true, syncState: 'offline-queued' });
     }
+  },
+
+  queueCloudSync: brokerUrl => {
+    if (!get().hub.authenticated) return;
+    writeDirtyFlag(true);
+    set({ pendingSync: true });
+    if (cloudSyncDebounceTimer) clearTimeout(cloudSyncDebounceTimer);
+    cloudSyncDebounceTimer = setTimeout(() => {
+      cloudSyncDebounceTimer = undefined;
+      void get().syncLibraryToCloud(brokerUrl);
+    }, 1200);
+  },
+
+  flushPendingCloudSync: async brokerUrl => {
+    if (!get().hub.authenticated) return;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+    if (get().pendingSync) {
+      await get().syncLibraryToCloud(brokerUrl);
+    }
+    await get().syncLibraryFromCloud(brokerUrl);
+  },
+
+  syncAllMultiplatform: async brokerUrl => {
+    if (!get().hub.authenticated) {
+      throw new Error('Entre na sua conta Liquid Hub para sincronizar entre dispositivos.');
+    }
+    if (get().pendingSync) {
+      await get().syncLibraryToCloud(brokerUrl);
+    }
+    await get().syncLibraryFromCloud(brokerUrl);
+    await get().syncLibraryToCloud(brokerUrl);
   },
 
   linkEmail: async payload => {

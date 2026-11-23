@@ -705,12 +705,19 @@ export interface GlassAPI {
   }): Promise<VersionPolicyResponse>;
   hubLibraryPull(payload?: {
     brokerUrl?: string;
-  }): Promise<{ playlists: Playlist[]; tracks: Track[]; likes: string[]; updatedAt: number }>;
+  }): Promise<{
+    playlists: Playlist[];
+    tracks: Track[];
+    likes: string[];
+    preferences?: Partial<Preferences>;
+    updatedAt: number;
+  }>;
   hubLibraryPush(payload: {
     brokerUrl?: string;
     playlists: Playlist[];
     tracks: Track[];
     likes: string[];
+    preferences?: Partial<Preferences>;
   }): Promise<{ ok: boolean; updatedAt: number }>;
   offlineSource(id: string): Promise<{ url: string; duration: number } | null>;
   downloadOffline(track: Track): Promise<Snapshot>;
@@ -725,7 +732,20 @@ export interface GlassAPI {
   pinLyrics(pinned: boolean): Promise<{ pinned: boolean }>;
   updateStatus(
     install?: boolean,
-  ): Promise<{ configured: boolean; available: boolean; version: string; message: string }>;
+  ): Promise<{
+    configured: boolean;
+    available: boolean;
+    version: string;
+    message: string;
+    notes?: string;
+    pubDate?: string;
+    channel?: string;
+    integrity?: string;
+    downloadUrl?: string;
+  }>;
+  onUpdateProgress?(
+    listener: (ev: { downloaded: number; total: number; percent: number }) => void,
+  ): () => void;
   maintenanceStatus?(repair?: boolean): Promise<MaintenanceReport>;
   lyrics(track: Track): Promise<LyricsResult | null>;
   playlistArtwork(id: string): Promise<string | null>;

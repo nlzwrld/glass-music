@@ -5,6 +5,7 @@ import { activeLyric, parseLRC, resolveTrackLyrics } from '../../lib/lyrics';
 import type { LyricsResult } from '../../../shared/types';
 import { GlassMaterial } from '../glass/materials';
 import { IconButton } from '../glass/controls';
+import { isAndroidPlatform } from '../../lib/androidBeta';
 import { transport } from './engine';
 
 export default function Lyrics({
@@ -100,7 +101,7 @@ export default function Lyrics({
             >
               {pinned ? <Pin size={15} /> : <PinOff size={15} />}
             </IconButton>
-          ) : (
+          ) : !isAndroidPlatform() ? (
             <IconButton
               label="Destacar janela de letras"
               onClick={() => {
@@ -112,7 +113,7 @@ export default function Lyrics({
             >
               <ExternalLink size={15} />
             </IconButton>
-          )}
+          ) : null}
           <IconButton
             label="Fechar letras"
             onClick={() => {
@@ -124,7 +125,11 @@ export default function Lyrics({
           </IconButton>
         </div>
       </header>
-      <div className="lyrics-scroll" onWheel={() => setFollow(false)}>
+      <div
+        className="lyrics-scroll"
+        onWheel={() => setFollow(false)}
+        onTouchMove={() => setFollow(false)}
+      >
         {busy ? (
           <div className="lyrics-state" role="status">
             <LoaderCircle size={18} className="spinner" />

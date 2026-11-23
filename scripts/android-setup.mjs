@@ -33,6 +33,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -47,6 +49,9 @@ import android.os.PowerManager
 import android.webkit.WebView
 import ${applicationId}.MainActivity
 import java.lang.ref.WeakReference
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 class LiquidHubMediaPlaybackService : Service() {
@@ -67,6 +72,7 @@ class LiquidHubMediaPlaybackService : Service() {
         const val EXTRA_PLAYING = "playing"
         const val EXTRA_POSITION_MS = "positionMs"
         const val EXTRA_DURATION_MS = "durationMs"
+        const val EXTRA_ARTWORK_URL = "artworkUrl"
 
         private val mainHandler = Handler(Looper.getMainLooper())
         private val playingFlag = AtomicBoolean(false)
@@ -122,6 +128,10 @@ class LiquidHubMediaPlaybackService : Service() {
     private var currentPlaying: Boolean = false
     private var currentPositionMs: Long = 0L
     private var currentDurationMs: Long = 0L
+    private var currentArtworkUrl: String = ""
+    @Volatile
+    private var currentArtworkBitmap: Bitmap? = null
+    private val artworkExecutor = Executors.newSingleThreadExecutor()
 
     private val becomingNoisyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -215,6 +225,14 @@ class LiquidHubMediaPlaybackService : Service() {
                     currentPlaying = intent.getBooleanExtra(EXTRA_PLAYING, false)
                     currentPositionMs = intent.getLongExtra(EXTRA_POSITION_MS, 0L).coerceAtLeast(0L)
                     currentDurationMs = intent.getLongExtra(EXTRA_DURATION_MS, 0L).coerceAtLeast(0L)
+                    val nextArt = intent.getStringExtra(EXTRA_ARTWORK_URL)?.trim().orEmpty()
+                    if (nextArt != currentArtworkUrl) {
+                        currentArtworkUrl = nextArt
+                        currentArtworkBitmap = null
+                        if (nextArt.startsWith("https://")) {
+                            loadArtworkAsync(nextArt)
+                        }
+                    }
                 }
                 playingFlag.set(currentPlaying)
                 if (currentPlaying) {
@@ -255,7 +273,46 @@ class LiquidHubMediaPlaybackService : Service() {
             mediaSession.release()
         } catch (_: Throwable) {
         }
+        try {
+            artworkExecutor.shutdownNow()
+        } catch (_: Throwable) {
+        }
         super.onDestroy()
+    }
+
+    private fun loadArtworkAsync(urlStr: String) {
+        artworkExecutor.execute {
+            try {
+                val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 4000
+                    readTimeout = 4000
+                    instanceFollowRedirects = true
+                }
+                if (conn.responseCode in 200..299) {
+                    val raw = conn.inputStream.use { it.readBytes() }
+                    if (raw.isNotEmpty() && raw.size <= 1_500_000) {
+                        val decoded = BitmapFactory.decodeByteArray(raw, 0, raw.size)
+                        if (decoded != null) {
+                            val scaled = if (decoded.width > 320 || decoded.height > 320) {
+                                Bitmap.createScaledBitmap(decoded, 320, 320, true)
+                            } else {
+                                decoded
+                            }
+                            if (currentArtworkUrl == urlStr && runningFlag.get()) {
+                                currentArtworkBitmap = scaled
+                                mainHandler.post {
+                                    if (runningFlag.get() && currentArtworkUrl == urlStr) {
+                                        updateSessionAndNotification()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                conn.disconnect()
+            } catch (_: Throwable) {
+            }
+        }
     }
 
     private fun stopPlaybackService() {
@@ -405,7 +462,7 @@ class LiquidHubMediaPlaybackService : Service() {
             .setMediaSession(mediaSession.sessionToken)
             .setShowActionsInCompactView(0, 1, 2)
 
-        return builder
+        val built = builder
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentTitle(currentTitle)
             .setContentText(currentArtist.ifBlank { "Liquid Hub" })
@@ -418,7 +475,8 @@ class LiquidHubMediaPlaybackService : Service() {
             .addAction(playPauseAction)
             .addAction(nextAction)
             .setStyle(style)
-            .build()
+        currentArtworkBitmap?.let { built.setLargeIcon(it) }
+        return built.build()
     }
 
     private fun updateSessionAndNotification() {
@@ -440,13 +498,15 @@ class LiquidHubMediaPlaybackService : Service() {
             .build()
         mediaSession.setPlaybackState(playbackState)
 
-        val metadata = MediaMetadata.Builder()
+        val metaBuilder = MediaMetadata.Builder()
             .putString(MediaMetadata.METADATA_KEY_TITLE, currentTitle)
             .putString(MediaMetadata.METADATA_KEY_ARTIST, currentArtist)
             .putString(MediaMetadata.METADATA_KEY_ALBUM, currentAlbum)
             .putLong(MediaMetadata.METADATA_KEY_DURATION, currentDurationMs)
-            .build()
-        mediaSession.setMetadata(metadata)
+        currentArtworkBitmap?.let {
+            metaBuilder.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, it)
+        }
+        mediaSession.setMetadata(metaBuilder.build())
 
         val notification = buildNotification()
         if (currentPlaying) {
@@ -517,6 +577,15 @@ class MainActivity : TauriActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        activeWebView?.onResume()
+        activeWebView?.evaluateJavascript(
+            "window.dispatchEvent(new CustomEvent('liquid:app-foreground'));",
+            null
+        )
+    }
+
     override fun onDestroy() {
         LiquidHubMediaPlaybackService.attachWebView(null)
         if (isFinishing) {
@@ -550,13 +619,15 @@ class MainActivity : TauriActivity() {
         fun isNativeBridgeReady(): Boolean = true
 
         @JavascriptInterface
+        @JvmOverloads
         fun updatePlayback(
             title: String?,
             artist: String?,
             album: String?,
             playing: Boolean,
             positionMs: Long,
-            durationMs: Long
+            durationMs: Long,
+            artworkUrl: String? = null
         ) {
             if (!playing && !LiquidHubMediaPlaybackService.isRunning()) {
                 return
@@ -572,6 +643,7 @@ class MainActivity : TauriActivity() {
                 putExtra(LiquidHubMediaPlaybackService.EXTRA_PLAYING, playing)
                 putExtra(LiquidHubMediaPlaybackService.EXTRA_POSITION_MS, positionMs)
                 putExtra(LiquidHubMediaPlaybackService.EXTRA_DURATION_MS, durationMs)
+                putExtra(LiquidHubMediaPlaybackService.EXTRA_ARTWORK_URL, artworkUrl ?: "")
             }
             try {
                 if (playing && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

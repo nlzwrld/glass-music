@@ -6,6 +6,7 @@ export interface ReleaseInventory {
   installer: ReleaseAssetInventory;
   signature: ReleaseAssetInventory;
   manifest: ReleaseAssetInventory;
+  extraAssets?: ReleaseAssetInventory[];
   notes: { path: string };
 }
 export function createReleaseArtifacts(options?: Record<string, unknown>): Promise<{ manifest: Record<string, unknown>; inventory: ReleaseInventory; inventoryPath: string }>;

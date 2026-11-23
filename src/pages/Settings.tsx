@@ -17,7 +17,9 @@ import { LiquidPlusSection } from '../components/library/LiquidPlusSection';
 import { LiquidHubLogo } from '../components/brand/LiquidHubLogo';
 import { Toggle } from '../components/glass/controls';
 import { audioOutputDevices, requestAudioOutput } from '../lib/audioGraph';
+import { isAndroidPlatform } from '../lib/androidBeta';
 import { useUpdateNotice } from '../lib/updates';
+import { useAccounts } from '../stores/accounts';
 import {
   useApp,
   cleanError,
@@ -423,22 +425,36 @@ export default function Settings() {
                   <option value="always">Sempre</option>
                 </select>
               </label>
-              <Toggle
-                label="Teclas multimídia"
-                checked={p.globalShortcuts}
-                onChange={globalShortcuts => prefUI({ globalShortcuts })}
-              />
-              <Toggle
-                label="Fechar janela para a bandeja"
-                description="Minimizar ou recolher para a bandeja mantém a reprodução e a JAM ativas"
-                checked={p.tray}
-                onChange={v => prefUI({ tray: v })}
-              />
-              <Toggle
-                label="Iniciar com o Windows"
-                checked={p.startup}
-                onChange={v => prefUI({ startup: v })}
-              />
+              {isAndroidPlatform() ? (
+                <div className="setting-row">
+                  <span>
+                    <strong>Reprodução em segundo plano e Bluetooth (Android)</strong>
+                    <small>
+                      Serviço de mídia ativo com MediaSession, tela de bloqueio, controles de fones
+                      Bluetooth e recuperação automática de foco de áudio.
+                    </small>
+                  </span>
+                </div>
+              ) : (
+                <>
+                  <Toggle
+                    label="Teclas multimídia"
+                    checked={p.globalShortcuts}
+                    onChange={globalShortcuts => prefUI({ globalShortcuts })}
+                  />
+                  <Toggle
+                    label="Fechar janela para a bandeja"
+                    description="Minimizar ou recolher para a bandeja mantém a reprodução e a JAM ativas"
+                    checked={p.tray}
+                    onChange={v => prefUI({ tray: v })}
+                  />
+                  <Toggle
+                    label="Iniciar com o Windows"
+                    checked={p.startup}
+                    onChange={v => prefUI({ startup: v })}
+                  />
+                </>
+              )}
             </section>
           )}
 
@@ -478,12 +494,40 @@ export default function Settings() {
                 </button>
               </div>
               <div className="settings-actions-row">
-                <button className="button secondary" onClick={() => void window.glass.exportLibrary()}>
-                  Exportar biblioteca
-                </button>
-                <button className="button secondary" onClick={() => void useApp.getState().importLibrary()}>
-                  Importar biblioteca
-                </button>
+                {isAndroidPlatform() ? (
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={() =>
+                      void useAccounts
+                        .getState()
+                        .syncAllMultiplatform()
+                        .then(() =>
+                          useApp
+                            .getState()
+                            .message('Biblioteca e preferências sincronizadas com sua conta.'),
+                        )
+                        .catch(e => useApp.getState().message(cleanError(e)))
+                    }
+                  >
+                    Sincronizar biblioteca na nuvem
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      className="button secondary"
+                      onClick={() => void window.glass.exportLibrary()}
+                    >
+                      Exportar biblioteca
+                    </button>
+                    <button
+                      className="button secondary"
+                      onClick={() => void useApp.getState().importLibrary()}
+                    >
+                      Importar biblioteca
+                    </button>
+                  </>
+                )}
                 <button
                   className="button secondary"
                   onClick={() =>
@@ -508,7 +552,12 @@ export default function Settings() {
                 <div className="setting-row">
                   <span>
                     <strong>Versão instalada</strong>
-                    <small>Liquid Hub v{integration?.version || '2.2.0'}</small>
+                    <small>
+                      Liquid Hub v{integration?.version || '2.2.0'} · Canal estável ·{' '}
+                      {isAndroidPlatform()
+                        ? 'APK Assinado + SHA-256'
+                        : 'Minisign-Ed25519 + SHA-256'}
+                    </small>
                   </span>
                   <button
                     className="button secondary"
@@ -522,7 +571,12 @@ export default function Settings() {
                         .then(([v]) => {
                           setMessage(v.message);
                           if (v.available && v.version) {
-                            useUpdateNotice.getState().setAvailable(v.version);
+                            useUpdateNotice.getState().setAvailable(v.version, {
+                              notes: v.notes,
+                              integrity: v.integrity,
+                              channel: v.channel,
+                              downloadUrl: v.downloadUrl,
+                            });
                           }
                         })
                         .catch(e => setMessage(cleanError(e)))

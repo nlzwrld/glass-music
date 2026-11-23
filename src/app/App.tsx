@@ -57,7 +57,7 @@ export default function App() {
     hub = useAccounts(s => s.hub),
     hubHydrated = useAccounts(s => s.hubHydrated),
     visitorMode = useAccounts(s => s.visitorMode);
-  const { isAndroid } = useAndroidBetaLifecycle();
+  const { isAndroid, isMobile } = useAndroidBetaLifecycle();
   const lockedByAuth =
     ready &&
     p.onboardingDone &&
@@ -176,9 +176,16 @@ export default function App() {
     if (!ready || lockedByAuth || !p.onlineConsent || !p.catalogConsent || !p.onboardingDone) return;
     const initial = setTimeout(() => void autoSyncAccounts(), 5000),
       timer = setInterval(() => void autoSyncAccounts(), 30 * 60 * 1000);
+    const onReconnectOrResume = () => {
+      void useAccounts.getState().flushPendingCloudSync();
+    };
+    window.addEventListener('online', onReconnectOrResume);
+    window.addEventListener('liquid:app-foreground', onReconnectOrResume);
     return () => {
       clearTimeout(initial);
       clearInterval(timer);
+      window.removeEventListener('online', onReconnectOrResume);
+      window.removeEventListener('liquid:app-foreground', onReconnectOrResume);
     };
   }, [ready, lockedByAuth, p.onlineConsent, p.catalogConsent, p.onboardingDone]);
 
@@ -380,7 +387,7 @@ export default function App() {
               <Queue />
               <Lyrics />
               <Player />
-              {isAndroid && <MobileBottomNav />}
+              {isMobile && <MobileBottomNav />}
               <Dialogs />
               <GlassLaboratory />
             </>

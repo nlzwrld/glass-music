@@ -1,11 +1,13 @@
-use crate::db::{Library, Result};
-#[cfg(desktop)]
-use crate::db::s;
+use crate::db::{s, Library, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 #[cfg(desktop)]
+use tauri::Emitter;
+#[cfg(desktop)]
 use tauri_plugin_updater::UpdaterExt;
+#[cfg(mobile)]
+use tauri_plugin_opener::OpenerExt;
 
 pub fn backup_library(db: &Library, directory: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
@@ -64,27 +66,156 @@ pub async fn status(
         return Ok(json!({"configured":true,"available":false,"version":env!("CARGO_PKG_VERSION"),"message":"O aplicativo está atualizado."}));
     };
     let version = update.version.clone();
+    let notes = update.body.clone().unwrap_or_default();
     if install {
+        let mut downloaded: u64 = 0;
+        let app_handle = app.clone();
         update
-            .download_and_install(|_, _| {}, || {})
+            .download_and_install(
+                move |chunk_len, content_len| {
+                    downloaded = downloaded.saturating_add(chunk_len as u64);
+                    let percent = content_len
+                        .filter(|t| *t > 0)
+                        .map(|t| ((downloaded as f64 / t as f64) * 100.0).min(100.0).round() as u32)
+                        .unwrap_or(0);
+                    let _ = app_handle.emit(
+                        "update-download-progress",
+                        json!({
+                            "downloaded": downloaded,
+                            "total": content_len.unwrap_or(0),
+                            "percent": percent
+                        }),
+                    );
+                },
+                || {},
+            )
             .await
             .map_err(|_| "Não foi possível verificar e instalar a atualização assinada.")?;
         app.restart();
     }
-    Ok(json!({"configured":true,"available":true,"version":version,"message":format!("Versão {version} disponível.")}))
+    Ok(json!({
+        "configured": true,
+        "available": true,
+        "version": version,
+        "notes": notes,
+        "channel": "stable",
+        "integrity": "Minisign-Ed25519 + SHA-256",
+        "message": format!("Versão {version} disponível.")
+    }))
 }
+#[cfg(any(mobile, test))]
+fn parse_semver(raw: &str) -> Option<(u64, u64, u64)> {
+    let trimmed = raw.trim().trim_start_matches('v');
+    let core = trimmed.split(['-', '+']).next()?;
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse::<u64>().ok()?;
+    let minor = parts.next()?.parse::<u64>().ok()?;
+    let patch = parts.next()?.parse::<u64>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+#[cfg(any(mobile, test))]
+fn is_newer_version(current: &str, candidate: &str) -> bool {
+    match (parse_semver(current), parse_semver(candidate)) {
+        (Some(cur), Some(next)) => next > cur,
+        _ => false,
+    }
+}
+
+#[cfg(any(mobile, test))]
+fn mobile_apk_download_url(repository: &str, version: &str) -> Option<String> {
+    if parse_semver(version).is_none()
+        || repository.is_empty()
+        || !repository
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/_.-".contains(&b))
+        || repository.split('/').count() != 2
+    {
+        return None;
+    }
+    Some(format!(
+        "https://github.com/{repository}/releases/download/v{version}/Liquid.Hub_{version}_arm64.apk"
+    ))
+}
+
 #[cfg(mobile)]
 pub async fn status(
-    _app: &AppHandle,
-    _consent: bool,
-    _install: bool,
-    _before_install: impl FnOnce() -> Result<()>,
+    app: &AppHandle,
+    consent: bool,
+    install: bool,
+    before_install: impl FnOnce() -> Result<()>,
 ) -> Result<Value> {
+    let config: Value =
+        serde_json::from_str(include_str!("../release.json")).map_err(|_| "Canal de atualização inválido.")?;
+    let endpoint = s(&config, "endpoint");
+    let repository = s(&config, "repository");
+    let current = env!("CARGO_PKG_VERSION");
+    if endpoint.is_empty() || repository.is_empty() {
+        return Ok(json!({
+            "configured": false,
+            "available": false,
+            "version": current,
+            "message": "O canal de atualizações do GitHub ainda não foi configurado."
+        }));
+    }
+    if !consent {
+        return Err("Ative o acesso online para verificar atualizações.".into());
+    }
+    let url = url::Url::parse(endpoint).map_err(|_| "Canal inválido.")?;
+    if url.scheme() != "https" || url.host_str() != Some("github.com") {
+        return Err("Canal de atualização inválido.".into());
+    }
+    let resp = crate::providers::client()
+        .get(url)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|_| "Não foi possível consultar o GitHub agora.")?;
+    if !resp.status().is_success() {
+        return Err("Não foi possível consultar o GitHub agora.".into());
+    }
+    let manifest: Value = resp
+        .json()
+        .await
+        .map_err(|_| "Manifesto de atualização inválido.")?;
+    let latest_version = s(&manifest, "version").trim().to_string();
+    let notes = s(&manifest, "notes").trim().to_string();
+    let pub_date = s(&manifest, "pub_date").trim().to_string();
+    if !is_newer_version(current, &latest_version) {
+        return Ok(json!({
+            "configured": true,
+            "available": false,
+            "version": current,
+            "channel": "stable",
+            "integrity": "APK Assinado + SHA-256",
+            "message": "O aplicativo está atualizado."
+        }));
+    }
+    let download_url = mobile_apk_download_url(repository, &latest_version)
+        .ok_or("URL do APK de atualização inválida.")?;
+    if install {
+        before_install()?;
+        app.opener()
+            .open_url(&download_url, None::<&str>)
+            .map_err(|_| "Não foi possível abrir o download da atualização APK.")?;
+    }
     Ok(json!({
-        "configured": false,
-        "available": false,
-        "version": env!("CARGO_PKG_VERSION"),
-        "message": "Atualizações no Android Beta são distribuídas pelo canal APK/Play Store."
+        "configured": true,
+        "available": true,
+        "version": latest_version,
+        "notes": notes,
+        "pubDate": pub_date,
+        "channel": "stable",
+        "integrity": "APK Assinado + SHA-256",
+        "downloadUrl": download_url,
+        "message": if install {
+            format!("Baixando Liquid Hub {latest_version} (APK). Confirme a instalação quando o Android solicitar.")
+        } else {
+            format!("Versão {latest_version} disponível para Android.")
+        }
     }))
 }
 
@@ -247,5 +378,18 @@ mod tests{
   assert_eq!(std::fs::read_dir(&backups).unwrap().count(),1);
   assert_eq!(std::fs::read(&sentinel).unwrap(),b"keep-existing-backup");
   std::fs::remove_dir_all(directory).unwrap();
+ }
+ #[test]
+ fn mobile_semver_and_apk_release_url_are_deterministic(){
+  assert!(is_newer_version("2.2.34","2.2.35"));
+  assert!(is_newer_version("2.2.34","2.3.0"));
+  assert!(!is_newer_version("2.2.35","2.2.35"));
+  assert!(!is_newer_version("2.2.35","2.2.34"));
+  assert_eq!(
+   mobile_apk_download_url("nlzwrld/glass-music","2.2.35").as_deref(),
+   Some("https://github.com/nlzwrld/glass-music/releases/download/v2.2.35/Liquid.Hub_2.2.35_arm64.apk")
+  );
+  assert!(mobile_apk_download_url("bad repo","2.2.35").is_none());
+  assert!(mobile_apk_download_url("nlzwrld/glass-music","invalid").is_none());
  }
 }

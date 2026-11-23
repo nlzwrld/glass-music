@@ -2134,6 +2134,7 @@ export class HubAuthStore {
     playlists: unknown[];
     tracks: unknown[];
     likes: string[];
+    preferences?: Record<string, unknown>;
     updatedAt: number;
   } {
     this.assertOpen();
@@ -2148,6 +2149,7 @@ export class HubAuthStore {
         playlists?: unknown[];
         tracks?: unknown[];
         likes?: string[];
+        preferences?: Record<string, unknown>;
       };
       return {
         playlists: Array.isArray(parsed.playlists) ? parsed.playlists : [],
@@ -2155,6 +2157,9 @@ export class HubAuthStore {
         likes: Array.isArray(parsed.likes)
           ? parsed.likes.filter((x): x is string => typeof x === 'string')
           : [],
+        ...(parsed.preferences && typeof parsed.preferences === 'object' && !Array.isArray(parsed.preferences)
+          ? { preferences: parsed.preferences }
+          : {}),
         updatedAt: Number(row.updated_at) || 0,
       };
     } catch {
@@ -2164,7 +2169,12 @@ export class HubAuthStore {
 
   saveUserLibrary(
     userId: string,
-    payload: { playlists: unknown[]; tracks: unknown[]; likes: string[] },
+    payload: {
+      playlists: unknown[];
+      tracks: unknown[];
+      likes: string[];
+      preferences?: Record<string, unknown>;
+    },
     now: number,
   ): { ok: boolean; updatedAt: number } {
     this.assertOpen();
@@ -2172,6 +2182,9 @@ export class HubAuthStore {
       playlists: payload.playlists.slice(0, 200),
       tracks: payload.tracks.slice(0, 2000),
       likes: payload.likes.slice(0, 5000),
+      ...(payload.preferences && Object.keys(payload.preferences).length > 0
+        ? { preferences: payload.preferences }
+        : {}),
     });
     this.db
       .prepare(

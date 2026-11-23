@@ -327,6 +327,8 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
       expect(serviceKt).toContain('ACTION_AUDIO_BECOMING_NOISY');
       expect(serviceKt).toContain('PARTIAL_WAKE_LOCK');
       expect(serviceKt).toContain('liquid:android-media');
+      expect(serviceKt).toContain('EXTRA_ARTWORK_URL');
+      expect(serviceKt).toContain('METADATA_KEY_ALBUM_ART');
 
       const mainKt = readFileSync(
         join(appMain, 'java', 'com', 'nlzwrld', 'liquidhub', 'MainActivity.kt'),
@@ -334,6 +336,8 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
       );
       expect(mainKt).toContain('addJavascriptInterface(LiquidHubAndroidBridge(this), "LiquidHubAndroid")');
       expect(mainKt).toContain('LiquidHubMediaPlaybackService.isCurrentlyPlaying()');
+      expect(mainKt).toContain('liquid:app-foreground');
+      expect(mainKt).toContain('@JvmOverloads');
 
       const gradle = readFileSync(join(tempRoot, 'app', 'build.gradle.kts'), 'utf8');
       expect(gradle).toContain('minSdk = 26');
@@ -347,7 +351,7 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
       expect(manifestAfter.match(/LiquidHubMediaPlaybackService/g)?.length).toBe(1);
       expect(manifestAfter.match(/android:scheme="liquidhub"/g)?.length).toBe(5);
 
-      // Verify native Android WebView bridge syncing
+      // Verify native Android WebView bridge syncing (including artworkUrl & immediate seek jump)
       resetAndroidNativeSyncCache();
       const updatePlayback = vi.fn();
       const stopPlayback = vi.fn();
@@ -356,23 +360,19 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
         LiquidHubAndroid: { updatePlayback, stopPlayback },
       };
       try {
-        syncMediaSessionMetadata(
-          {
-            id: 'youtube:abc12345678',
-            source: 'youtube',
-            sourceId: 'abc12345678',
-            kind: 'track',
-            title: 'Neon Drift',
-            artist: 'Liquid Artist',
-            album: 'Beta Album',
-            duration: 180,
-            addedAt: Date.now(),
-          },
-          true,
-          12.5,
-          180,
-          null,
-        );
+        const sampleTrack = {
+          id: 'youtube:abc12345678',
+          source: 'youtube' as const,
+          sourceId: 'abc12345678',
+          kind: 'track' as const,
+          title: 'Neon Drift',
+          artist: 'Liquid Artist',
+          album: 'Beta Album',
+          artwork: 'https://i.ytimg.com/vi/abc12345678/mqdefault.jpg',
+          duration: 180,
+          addedAt: Date.now(),
+        };
+        syncMediaSessionMetadata(sampleTrack, true, 12.5, 180, null);
         expect(updatePlayback).toHaveBeenCalledWith(
           'Neon Drift',
           'Liquid Artist',
@@ -380,6 +380,19 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
           true,
           12500,
           180000,
+          'https://i.ytimg.com/vi/abc12345678/mqdefault.jpg',
+        );
+        // Immediate seek jump (>2.2s) triggers instant lockscreen scrubber update
+        syncMediaSessionMetadata(sampleTrack, true, 65.0, 180, null);
+        expect(updatePlayback).toHaveBeenCalledTimes(2);
+        expect(updatePlayback).toHaveBeenLastCalledWith(
+          'Neon Drift',
+          'Liquid Artist',
+          'Beta Album',
+          true,
+          65000,
+          180000,
+          'https://i.ytimg.com/vi/abc12345678/mqdefault.jpg',
         );
         syncMediaSessionMetadata(null, false, 0, 0, null);
         expect(stopPlayback).toHaveBeenCalledTimes(1);
@@ -447,5 +460,104 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
         plusStatus: activePlus,
       }),
     ).toBe(false);
+  });
+
+  it('verifies multiplatform parity: 5-tab mobile nav, audio ducking, syncable preferences & unified release workflow', async () => {
+    // 1. Mobile bottom nav must expose Home, Search, Library (not empty collection!), JAM and Profile
+    const mobileNavSrc = readFileSync(
+      join(process.cwd(), 'src', 'components', 'mobile', 'MobileBottomNav.tsx'),
+      'utf8',
+    );
+    expect(mobileNavSrc).toContain("setPage('home')");
+    expect(mobileNavSrc).toContain("setPage('search')");
+    expect(mobileNavSrc).toContain("setPage('library')");
+    expect(mobileNavSrc).toContain("setPage('jam')");
+    expect(mobileNavSrc).not.toContain("setPage('collection')");
+
+    // 2. Audio ducking lowers and restores cleanly on transient duck -> gain
+    let duckedState = false;
+    const focus = createAudioFocusManager({
+      isPlaying: () => true,
+      play: () => {},
+      pause: () => {},
+      setDucking: d => {
+        duckedState = d;
+      },
+    });
+    focus.handleAudioFocusChange('duck');
+    expect(duckedState).toBe(true);
+    focus.handleAudioFocusChange('gain');
+    expect(duckedState).toBe(false);
+
+    // 3. Cross-platform preferences filter excludes device-local fields
+    const { pickSyncablePreferences } = await import('../../src/stores/accounts');
+    const synced = pickSyncablePreferences({
+      theme: 'dark',
+      uiStyle: 'beat',
+      accent: '#7c5cff',
+      shuffleMode: 'smart',
+      volume: 85,
+      tray: true,
+      startup: true,
+      onlineConsent: true,
+    });
+    expect(synced).toEqual({
+      theme: 'dark',
+      uiStyle: 'beat',
+      accent: '#7c5cff',
+      shuffleMode: 'smart',
+    });
+    expect('volume' in synced).toBe(false);
+    expect('tray' in synced).toBe(false);
+    expect('startup' in synced).toBe(false);
+
+    // 4. Unified release workflow builds Windows + Android APK/AAB and attaches APK to versioned GitHub Release
+    const releaseYml = readFileSync(
+      join(process.cwd(), '.github', 'workflows', 'release.yml'),
+      'utf8',
+    );
+    expect(releaseYml).toContain('build-windows:');
+    expect(releaseYml).toContain('build-android:');
+    expect(releaseYml).toContain('Liquid.Hub_${RELEASE_VERSION}_arm64.apk');
+    expect(releaseYml).toContain('--extra-asset "$APK"');
+    expect(releaseYml).toContain('android-beta');
+
+    // 5. Real multiplatform sync roundtrip: Device A (Windows) <-> Device B (Android) via ZeroTrustAuthEngine
+    const engine = new ZeroTrustAuthEngine({
+      argon2Params: { memory: 1024, passes: 1, parallelism: 1, tagLength: 16 },
+      clock: () => Date.now(),
+    });
+    const registered = engine.registerUser('multisync', 'SyncStrongPassword!2026');
+    const userId = registered.id;
+    // Windows saves playlist + tracks (local track must be stripped) + likes + syncable preferences (device-local keys stripped)
+    const pushWin = engine.saveUserLibrary(userId, {
+      playlists: [{ id: 'pl-1', name: 'Treino', trackIds: ['youtube:dQw4w9WgXcQ'] }],
+      tracks: [
+        { id: 'youtube:dQw4w9WgXcQ', source: 'youtube', title: 'Track 1', artist: 'Artist 1' },
+        { id: 'local:secret', source: 'local', title: 'Local Only', artist: 'PC' },
+      ],
+      likes: ['youtube:dQw4w9WgXcQ'],
+      preferences: {
+        theme: 'dark',
+        uiStyle: 'beat',
+        accent: '#7c5cff',
+        volume: 99,
+        startup: true,
+      },
+    });
+    expect(pushWin.ok).toBe(true);
+    expect(pushWin.updatedAt).toBeGreaterThan(0);
+
+    // Android pulls the exact synced library & preferences without local files or Windows-only keys
+    const pullAndroid = engine.getUserLibrary(userId);
+    expect(pullAndroid.playlists).toHaveLength(1);
+    expect(pullAndroid.tracks).toHaveLength(1);
+    expect((pullAndroid.tracks[0] as { id: string }).id).toBe('youtube:dQw4w9WgXcQ');
+    expect(pullAndroid.likes).toEqual(['youtube:dQw4w9WgXcQ']);
+    expect(pullAndroid.preferences).toEqual({
+      theme: 'dark',
+      uiStyle: 'beat',
+      accent: '#7c5cff',
+    });
   });
 });

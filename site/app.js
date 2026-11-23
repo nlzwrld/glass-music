@@ -42,19 +42,34 @@ async function hydrateReleases() {
       }),
     ]);
 
+    let foundApkInLatest = false;
     if (winRes.status === 'fulfilled' && winRes.value.ok) {
       const rel = await winRes.value.json();
       winTag = rel.tag_name || '';
-      const exe = (rel.assets || []).find(a => /\.exe$/i.test(a.name));
+      const assets = rel.assets || [];
+      const exe = assets.find(a => /\.exe$/i.test(a.name));
       if (exe?.browser_download_url) {
         winUrl = exe.browser_download_url;
         if (winBtn) winBtn.href = winUrl;
         if (winSize && exe.size) winSize.textContent = `${formatBytes(exe.size)} · 64-bit`;
       }
       if (winVer && winTag) winVer.textContent = winTag;
+
+      const latestApk = assets.find(a => /\.apk$/i.test(a.name));
+      const latestAab = assets.find(a => /\.aab$/i.test(a.name));
+      if (latestApk?.browser_download_url) {
+        foundApkInLatest = true;
+        apkUrl = latestApk.browser_download_url;
+        if (apkBtn) apkBtn.href = apkUrl;
+        if (androidSize && latestApk.size) androidSize.textContent = `${formatBytes(latestApk.size)} · arm64`;
+        if (androidVer && winTag) androidVer.textContent = winTag;
+      }
+      if (latestAab?.browser_download_url && aabBtn) {
+        aabBtn.href = latestAab.browser_download_url;
+      }
     }
 
-    if (androidRes.status === 'fulfilled' && androidRes.value.ok) {
+    if (!foundApkInLatest && androidRes.status === 'fulfilled' && androidRes.value.ok) {
       const rel = await androidRes.value.json();
       androidTag = rel.name || 'Android Beta';
       const apk = (rel.assets || []).find(a => /\.apk$/i.test(a.name));

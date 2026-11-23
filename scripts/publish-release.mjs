@@ -14,9 +14,16 @@ function remoteDigest(asset) {
 }
 
 async function readLocalAssets(inventory) {
+  const entries = [
+    ['installer', inventory.installer],
+    ['signature', inventory.signature],
+    ...(Array.isArray(inventory.extraAssets)
+      ? inventory.extraAssets.map((item, idx) => [`extra:${idx}`, item])
+      : []),
+    ['manifest', inventory.manifest],
+  ];
   const result = [];
-  for (const key of ['installer', 'signature', 'manifest']) {
-    const declared = inventory[key];
+  for (const [key, declared] of entries) {
     if (!declared?.path || !declared?.name) throw new Error(`Inventário sem ${key}.`);
     const bytes = await readFile(declared.path);
     if (!bytes.length) throw new Error(`Artefato vazio: ${declared.path}`);

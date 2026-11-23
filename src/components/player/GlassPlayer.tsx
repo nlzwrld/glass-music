@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   Heart,
@@ -22,7 +22,6 @@ import {
   MicVocal,
   LoaderCircle,
   Radio,
-  Sparkles,
 } from 'lucide-react';
 import {
   useApp,
@@ -33,6 +32,7 @@ import {
 } from '../../stores/app';
 import { useJam } from '../jam/state';
 import { openJamWindow } from '../../lib/jamWindow';
+import { isMobileViewport } from '../../lib/androidBeta';
 import { PlayerEngine, transport } from './engine';
 import { coverMotion, useReducedUI } from '../../lib/motion';
 import Cover from '../glass/Cover';
@@ -217,7 +217,7 @@ export function Seekbar({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function VolumeControl() {
+export function VolumeControl() {
   const volume = useApp(s => s.data.preferences.volume);
   return (
     <div className="volume-control">
@@ -239,7 +239,7 @@ function VolumeControl() {
   );
 }
 
-function TrackMenu({ track, label }: { track?: Track; label: string }) {
+export function TrackMenu({ track, label }: { track?: Track; label: string }) {
   return (
     <GlassContextMenu
       label={label}
@@ -519,12 +519,147 @@ export function SidePlayer() {
 export default function GlassPlayer() {
   const track = useDisplayTrack(),
     active = useApp(s => s.queue[s.index]),
+    playing = useApp(s => s.playing),
+    playbackIntent = useApp(s => s.playbackIntent),
+    status = useApp(s => s.status),
+    position = useApp(s => s.position),
+    duration = useApp(s => s.duration),
     downloadingIds = useApp(s => s.downloadingIds),
     sideOpen = useApp(s => s.sideOpen),
     error = useApp(s => s.error),
     jamActive = useJam(s => Boolean(s.session)),
     reduced = useReducedUI();
+  const [mobile, setMobile] = useState(() => isMobileViewport());
+  const touchOrigin = useRef<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    const onResize = () => setMobile(isMobileViewport());
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
   const isDownloading = !!track && downloadingIds.includes(track.id);
+  const wantsPlayback = playing || playbackIntent;
+  const preparing =
+    !playing &&
+    playbackIntent &&
+    (status === 'Carregando' || status === 'Sincronizando fonte de áudio...');
+  const totalDuration = active ? duration || active.duration || 0 : track?.duration || 0;
+  const progressPct =
+    active && Number.isFinite(totalDuration) && totalDuration > 0
+      ? Math.max(0, Math.min(100, (position / totalDuration) * 100))
+      : 0;
+
+  if (mobile) {
+    return (
+      <GlassMaterial
+        as="footer"
+        variant="thick"
+        material="floating"
+        className="player mobile-mini-player"
+        aria-label="Controles de reprodução"
+        onTouchStart={e => {
+          const t = e.touches[0];
+          if (t) touchOrigin.current = { x: t.clientX, y: t.clientY };
+        }}
+        onTouchEnd={e => {
+          const start = touchOrigin.current;
+          touchOrigin.current = null;
+          const end = e.changedTouches[0];
+          if (!start || !end || !active) return;
+          const dx = end.clientX - start.x;
+          const dy = end.clientY - start.y;
+          if (dy < -48 && Math.abs(dy) > Math.abs(dx)) {
+            useApp.setState({ expanded: true });
+          } else if (Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+            if (dx < 0) useApp.getState().next(true);
+            else useApp.getState().previous();
+          }
+        }}
+      >
+        <PlayerEngine />
+        <button
+          type="button"
+          className="mobile-mini-hit"
+          aria-label="Abrir player expandido"
+          disabled={!active}
+          onClick={() => active && useApp.setState({ expanded: true })}
+        >
+          <span className="mobile-mini-cover">
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.div
+                key={track?.id || 'empty'}
+                className="cover-transition-frame"
+                {...coverMotion(reduced)}
+              >
+                <Cover track={track} />
+              </motion.div>
+            </AnimatePresence>
+          </span>
+          <span className="mobile-mini-meta">
+            <strong>{track?.title || 'Nenhuma faixa'}</strong>
+            <small>
+              {track && <OfflineIndicator offline={track.offline} downloading={isDownloading} />}
+              <span>{track?.artist || 'Toque em uma música para ouvir'}</span>
+            </small>
+          </span>
+        </button>
+        <div className="mobile-mini-actions">
+          <Favorite label="Curtir música atual" track={track} />
+          <button
+            type="button"
+            className="mobile-mini-play"
+            aria-label={wantsPlayback ? 'Pausar' : 'Reproduzir'}
+            disabled={!track}
+            onClick={() => {
+              if (active) transport.toggle();
+              else if (track)
+                useApp
+                  .getState()
+                  .play(track, useApp.getState().data.tracks.filter(t => t.kind === 'track'));
+            }}
+          >
+            {preparing ? (
+              <LoaderCircle className="spinner" size={18} />
+            ) : wantsPlayback ? (
+              <Pause size={18} fill="currentColor" />
+            ) : (
+              <Play size={18} fill="currentColor" />
+            )}
+          </button>
+          <IconButton
+            label="Próxima faixa"
+            disabled={!active}
+            onClick={() => useApp.getState().next(true)}
+          >
+            <SkipForward size={18} fill="currentColor" />
+          </IconButton>
+        </div>
+        <div className="mobile-mini-progress" aria-hidden="true">
+          <span style={{ width: `${progressPct}%` }} />
+        </div>
+        {error && (
+          <div className="playback-error" role="alert">
+            <span>{error}</span>
+            {active && (
+              <button
+                className="button secondary"
+                onClick={() => useApp.getState().play(active, useApp.getState().queue)}
+              >
+                Tentar
+              </button>
+            )}
+            <IconButton
+              label="Fechar aviso de reprodução"
+              onClick={() => useApp.setState({ error: '' })}
+            >
+              <X size={14} />
+            </IconButton>
+          </div>
+        )}
+      </GlassMaterial>
+    );
+  }
 
   return (
     <GlassMaterial

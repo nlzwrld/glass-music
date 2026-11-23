@@ -1498,9 +1498,28 @@ export const useApp = create<State>((set, get) => ({
 
 /** Fire-and-forget UI path; awaited callers still receive the original rejection. */
 export function setPreferencesFromUI(patch: Partial<Preferences>): void {
-  void useApp.getState().setPreferences(patch).catch(() => {
-    // Persistence failures are already reported and recovered by setPreferences.
-  });
+  void useApp
+    .getState()
+    .setPreferences(patch)
+    .then(() => {
+      const syncableKeys = [
+        'theme',
+        'uiStyle',
+        'accent',
+        'shuffleMode',
+        'smartShuffleDiscoveries',
+        'transition',
+        'transitionSeconds',
+        'autoplay',
+        'notificationMode',
+      ];
+      if (syncableKeys.some(key => key in patch)) {
+        void import('./accounts').then(m => m.useAccounts.getState().queueCloudSync());
+      }
+    })
+    .catch(() => {
+      // Persistence failures are already reported and recovered by setPreferences.
+    });
 }
 
 export function cleanError(e: unknown): string {

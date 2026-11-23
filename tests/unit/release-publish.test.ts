@@ -112,6 +112,31 @@ describe('publish reconciliation', () => {
     expect(github.mutations).toEqual([]);
   });
 
+  it('uploads extra mobile assets (APK & AAB) before latest.json and verifies every digest', async () => {
+    const { root, inventory } = await fixture();
+    const apkPath = join(root, 'Liquid.Hub_1.2.3_arm64.apk');
+    const aabPath = join(root, 'Liquid.Hub_1.2.3_arm64.aab');
+    await writeFile(apkPath, 'signed-apk-binary');
+    await writeFile(aabPath, 'signed-aab-binary');
+    inventory.extraAssets = [
+      { path: apkPath, name: 'Liquid.Hub_1.2.3_arm64.apk', sha256: hash(Buffer.from('signed-apk-binary')) },
+      { path: aabPath, name: 'Liquid.Hub_1.2.3_arm64.aab', sha256: hash(Buffer.from('signed-aab-binary')) },
+    ];
+    const github = new FakeGitHub();
+    github.tagCommit = null;
+    const result = await reconcileRelease({ github, inventory, commit });
+    expect(result.status).toBe('published');
+    expect(github.mutations).toEqual([
+      'create',
+      `upload:${inventory.installer.name}`,
+      `upload:${inventory.signature.name}`,
+      'upload:Liquid.Hub_1.2.3_arm64.apk',
+      'upload:Liquid.Hub_1.2.3_arm64.aab',
+      'upload:latest.json',
+      'publish:latest=true',
+    ]);
+  });
+
   it('finds draft releases via releases list and resolves missing/existing tags via git/ref/tags', async () => {
     const calls: string[][] = [];
     const adapter = createGitHubCliAdapter({

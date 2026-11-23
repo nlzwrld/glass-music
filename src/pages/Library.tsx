@@ -15,6 +15,8 @@ import {
   Globe,
   Link2,
   Lock,
+  Plus,
+  History,
 } from 'lucide-react';
 import type { MySharedPlaylistsResponse } from '../../shared/types';
 import { resolveEffectiveBroker, useAccounts } from '../stores/accounts';
@@ -140,6 +142,40 @@ export default function Library() {
             <span className="heading-count">
               {data.playlists.length} playlists · {data.tracks.length} faixas
             </span>
+          </div>
+          <div className="heading-actions library-quick-actions">
+            <button
+              type="button"
+              className="button primary"
+              onClick={() => useApp.getState().setDialog({ type: 'playlist' })}
+            >
+              <Plus size={15} />
+              Nova playlist
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => useApp.getState().setDialog({ type: 'link' })}
+            >
+              <Link2 size={15} />
+              Importar link
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => useApp.getState().setPage('downloads')}
+            >
+              <Download size={15} />
+              Downloads
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => useApp.getState().setPage('history')}
+            >
+              <History size={15} />
+              Histórico
+            </button>
           </div>
         </div>
 
