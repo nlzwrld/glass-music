@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Cloud, LoaderCircle, Music2, RefreshCw } from 'lucide-react';
+import { Cloud, Music2, RefreshCw } from 'lucide-react';
 import { useApp, cleanError } from '../../stores/app';
 import type { CatalogResult, Track } from '../../../shared/types';
 import TrackCard from './TrackCard';
@@ -126,23 +126,18 @@ export default function OnlineCatalog({ expanded = false }: { expanded?: boolean
   const rankedResult = useMemo(() => {
     const base = rankCatalogByTaste(result, taste);
     if (!personalTracks.length) return base;
-    const subtitle = taste.topArtists.length
-      ? `Recomendado para você · ${taste.topArtists.slice(0, 3).join(', ')}`
-      : 'Recomendado para você';
     const personalSections: CatalogResult['sections'] = [
       {
         id: 'personal:recent-vibe',
         source: 'youtube',
-        title: subtitle,
+        title: 'Para você',
         items: personalTracks.slice(0, 8),
       },
     ];
     if (personalTracks.length > 6) {
-      const exploreLabel = taste.topStyles[1]
-        ? `Explorar novos estilos · ${taste.topStyles.slice(0, 2).join(' · ')}`
-        : taste.topArtists[1]
-          ? `Mais no estilo de ${taste.topArtists[1]}`
-          : 'Descobertas para variar seu estilo';
+      const exploreLabel = taste.topArtists[1]
+        ? `Mais como ${taste.topArtists[1]}`
+        : 'Descobertas';
       personalSections.push({
         id: 'personal:more-styles',
         source: 'youtube',
@@ -172,7 +167,8 @@ export default function OnlineCatalog({ expanded = false }: { expanded?: boolean
       </section>
     );
 
-  if (!configured)
+  if (!configured) {
+    if (tracks.length > 0) return null;
     return (
       <section className="catalog-intro" role="status">
         <Cloud size={18} />
@@ -187,14 +183,25 @@ export default function OnlineCatalog({ expanded = false }: { expanded?: boolean
         </button>
       </section>
     );
+  }
 
   return (
     <div className="online-catalog" aria-busy={loading}>
       {loading && !rankedResult.sections.length && (
-        <div className="catalog-loading" role="status">
-          <LoaderCircle size={16} className="spinner" />
-          Carregando…
-        </div>
+        <section className="catalog-section" aria-label="Carregando catálogo">
+          <div className="section-heading">
+            <span className="skeleton-heading" />
+          </div>
+          <div className="catalog-grid">
+            {Array.from({ length: 6 }, (_, i) => (
+              <div key={i} className="track-card skeleton-card" aria-hidden="true">
+                <div className="skeleton-cover" />
+                <div className="skeleton-line" />
+                <div className="skeleton-line short" />
+              </div>
+            ))}
+          </div>
+        </section>
       )}
       {rankedResult.sections.map((section, idx) => (
         <section className="catalog-section" key={section.id} aria-label={section.title}>
@@ -216,7 +223,12 @@ export default function OnlineCatalog({ expanded = false }: { expanded?: boolean
           {section.items.length ? (
             <div className="catalog-grid">
               {section.items.slice(0, expanded ? 12 : 6).map(track => (
-                <TrackCard key={track.id} track={track} list={section.items} />
+                <TrackCard
+                  key={track.id}
+                  track={track}
+                  list={section.items}
+                  contextId={`catalog:${section.id}`}
+                />
               ))}
             </div>
           ) : (

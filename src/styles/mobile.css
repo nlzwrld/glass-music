@@ -234,6 +234,34 @@ html[data-mobile='true']:not([data-ui-style='glass']) .side-open .catalog-grid {
   gap: 14px 12px !important;
 }
 
+/* Native Spotify/Apple Music horizontal swipe shelves on Home */
+html[data-platform='android'] .home-page .catalog-grid,
+html[data-mobile='true'] .home-page .catalog-grid,
+html[data-platform='android']:not([data-ui-style='glass']) .home-page .catalog-grid,
+html[data-mobile='true']:not([data-ui-style='glass']) .home-page .catalog-grid {
+  display: grid !important;
+  grid-template-columns: none !important;
+  grid-auto-flow: column !important;
+  grid-auto-columns: 148px !important;
+  gap: 11px !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  padding: 2px 2px 6px !important;
+  scroll-snap-type: x proximity !important;
+  scrollbar-width: none !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+html[data-platform='android'] .home-page .catalog-grid::-webkit-scrollbar,
+html[data-mobile='true'] .home-page .catalog-grid::-webkit-scrollbar {
+  display: none;
+}
+
+html[data-platform='android'] .home-page .catalog-grid > *,
+html[data-mobile='true'] .home-page .catalog-grid > * {
+  scroll-snap-align: start;
+}
+
 html[data-platform='android'] .track-card,
 html[data-mobile='true'] .track-card {
   padding: 0 !important;

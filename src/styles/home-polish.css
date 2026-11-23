@@ -1,0 +1,536 @@
+/* ==========================================================================
+   LIQUID HUB — INITIAL UI/UX & HOME POLISH (Desktop + Mobile, All Themes)
+   Minimalist Spotify / Apple Music hierarchy with zero explanatory bloat.
+   ========================================================================== */
+
+/* Compact Onboarding Modal */
+.onboarding-compact {
+  width: min(380px, 90vw);
+  display: grid;
+  gap: 12px;
+}
+
+.onboarding-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.onboarding-compact h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.onboarding-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Home Layout & Atmospheric Top Wash */
+.home-page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding-bottom: 12px;
+}
+
+.home-hero-header {
+  margin: -12px -18px -6px;
+  padding: 16px 18px 10px;
+  border-radius: 14px 14px 0 0;
+  background: radial-gradient(
+    ellipse 64% 130% at 12% 0%,
+    color-mix(in srgb, var(--user-accent, #52b79a) 13%, transparent) 0%,
+    transparent 74%
+  );
+}
+
+html[data-theme='light'] .home-hero-header {
+  background: radial-gradient(
+    ellipse 64% 130% at 12% 0%,
+    color-mix(in srgb, var(--user-accent, #1f8a70) 11%, transparent) 0%,
+    transparent 74%
+  );
+}
+
+.home-hero-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.home-hero-top h1 {
+  margin: 0 !important;
+  font-size: clamp(21px, 2.2vw, 26px) !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.028em !important;
+  line-height: 1.15 !important;
+}
+
+/* Home Filter Pills (Tudo / Músicas / Playlists) */
+.home-filter-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.home-pill {
+  height: 30px;
+  padding: 0 13px;
+  border-radius: 999px;
+  border: 1px solid var(--m-border-subtle, var(--line));
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease, transform 120ms ease;
+}
+
+.home-pill:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.home-pill.selected {
+  background: var(--text);
+  border-color: var(--text);
+  color: #0e1013;
+  font-weight: 620;
+}
+
+html[data-theme='light'] .home-pill.selected {
+  background: #14171c;
+  border-color: #14171c;
+  color: #ffffff;
+}
+
+/* Upgraded Quick-Resume Hero Grid */
+.home-quick-section .quick-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 980px) {
+  .home-quick-section .quick-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.home-quick-section .quick-tile {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 56px;
+  padding: 0 10px 0 0;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  border: 1px solid var(--m-border-subtle, var(--line));
+  overflow: hidden;
+  min-width: 0;
+  transition: background-color 170ms ease, border-color 170ms ease, transform 160ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms ease;
+}
+
+.home-quick-section .quick-tile:hover {
+  background: var(--hover);
+  border-color: var(--m-border, var(--line));
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+}
+
+.home-quick-section .quick-tile.is-active {
+  border-color: color-mix(in srgb, var(--user-accent, #52b79a) 44%, var(--m-border, var(--line)));
+  background: color-mix(in srgb, var(--user-accent, #52b79a) 9%, var(--surface));
+}
+
+.quick-tile-main {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.home-quick-section .quick-tile-art {
+  width: 56px;
+  height: 56px;
+  flex: none;
+  overflow: hidden;
+  border-radius: 0;
+}
+
+.home-quick-section .quick-tile-text strong {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.home-quick-section .quick-tile.is-active .quick-tile-text strong {
+  color: var(--user-accent, #52b79a);
+}
+
+.home-quick-section .quick-tile-text small {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.home-quick-section .quick-tile-play {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 0;
+  display: grid;
+  place-items: center;
+  flex: none;
+  background: var(--user-accent, #52b79a) !important;
+  color: #090d0b !important;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateX(4px) scale(0.92);
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.34);
+  transition: opacity 160ms ease, transform 180ms cubic-bezier(0.22, 1, 0.36, 1), filter 140ms ease;
+}
+
+.home-quick-section .quick-tile:hover .quick-tile-play,
+.home-quick-section .quick-tile:focus-within .quick-tile-play,
+.home-quick-section .quick-tile-play.visible {
+  opacity: 1;
+  transform: translateX(0) scale(1);
+}
+
+.home-quick-section .quick-tile-play:hover {
+  filter: brightness(1.08);
+  transform: scale(1.06);
+}
+
+/* Live 3-bar Equalizer Indicator */
+.eq-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 13px;
+  flex: none;
+  margin-right: 2px;
+}
+
+.eq-bars i {
+  width: 2.5px;
+  border-radius: 2px;
+  background: var(--user-accent, #52b79a);
+  display: block;
+  animation: lh-eq 0.9s ease-in-out infinite;
+}
+
+.eq-bars i:nth-child(1) {
+  height: 6px;
+  animation-delay: 0s;
+}
+
+.eq-bars i:nth-child(2) {
+  height: 12px;
+  animation-delay: 0.22s;
+}
+
+.eq-bars i:nth-child(3) {
+  height: 8px;
+  animation-delay: 0.44s;
+}
+
+@keyframes lh-eq {
+  0%,
+  100% {
+    transform: scaleY(0.38);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.home-quick-section .quick-tile:hover .eq-bars {
+  display: none;
+}
+
+/* Section Headings */
+.home-section .section-heading,
+.catalog-section .section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.home-section .section-heading h2,
+.catalog-section .section-heading h2 {
+  margin: 0;
+  font-size: 16.5px !important;
+  font-weight: 660 !important;
+  letter-spacing: -0.015em !important;
+}
+
+.section-heading-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.section-heading-actions .text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Refined Track & Playlist Cards */
+.home-page .track-card,
+.online-catalog .track-card {
+  border-radius: 12px !important;
+  padding: 10px !important;
+  transition: background-color 180ms ease, border-color 180ms ease, transform 200ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 200ms ease !important;
+}
+
+.home-page .track-card:hover,
+.online-catalog .track-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
+}
+
+.home-page .track-card.is-playing,
+.online-catalog .track-card.is-playing {
+  border-color: color-mix(in srgb, var(--user-accent, #52b79a) 48%, var(--m-border, var(--line))) !important;
+}
+
+.home-page .track-card.is-playing .card-caption h3,
+.online-catalog .track-card.is-playing .card-caption h3 {
+  color: var(--user-accent, #52b79a);
+}
+
+.home-page .card-art,
+.online-catalog .card-art {
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.home-page .card-play,
+.online-catalog .card-play,
+.card-play-fab {
+  position: absolute !important;
+  inset: auto 9px 9px auto !important;
+  width: 38px !important;
+  height: 38px !important;
+  border-radius: 999px !important;
+  border: 0 !important;
+  display: grid !important;
+  place-items: center !important;
+  background: var(--user-accent, #52b79a) !important;
+  color: #090d0b !important;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.42) !important;
+  opacity: 0;
+  transform: translateY(6px) scale(0.92);
+  cursor: pointer;
+  z-index: 2;
+  transition: opacity 170ms ease, transform 200ms cubic-bezier(0.22, 1, 0.36, 1), filter 140ms ease !important;
+}
+
+.track-card:hover .card-play,
+.track-card:focus-within .card-play,
+.card-play.visible,
+.track-card:hover .card-play-fab,
+.track-card:focus-within .card-play-fab,
+.card-play-fab.visible {
+  opacity: 1 !important;
+  transform: translateY(0) scale(1) !important;
+}
+
+.card-play-fab:hover {
+  filter: brightness(1.08);
+  transform: translateY(0) scale(1.06) !important;
+}
+
+/* Catalog Skeleton Loading Shimmer */
+.skeleton-heading {
+  display: block;
+  width: 140px;
+  height: 18px;
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--surface) 88%, transparent) 25%,
+    color-mix(in srgb, var(--hover) 95%, transparent) 50%,
+    color-mix(in srgb, var(--surface) 88%, transparent) 75%
+  );
+  background-size: 200% 100%;
+  animation: lh-shimmer 1.4s ease-in-out infinite;
+}
+
+.skeleton-card {
+  pointer-events: none;
+}
+
+.skeleton-cover {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 8px;
+  margin-bottom: 10px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--surface) 88%, transparent) 25%,
+    color-mix(in srgb, var(--hover) 95%, transparent) 50%,
+    color-mix(in srgb, var(--surface) 88%, transparent) 75%
+  );
+  background-size: 200% 100%;
+  animation: lh-shimmer 1.4s ease-in-out infinite;
+}
+
+.skeleton-line {
+  height: 11px;
+  border-radius: 5px;
+  margin-bottom: 7px;
+  width: 78%;
+  background: color-mix(in srgb, var(--hover) 72%, transparent);
+}
+
+.skeleton-line.short {
+  width: 48%;
+  height: 9px;
+  margin-bottom: 0;
+  opacity: 0.7;
+}
+
+@keyframes lh-shimmer {
+  0% {
+    background-position: 180% 0;
+  }
+  100% {
+    background-position: -180% 0;
+  }
+}
+
+.home-empty-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 18px 0;
+}
+
+/* Sidebar Active Accent Pill Indicator */
+.sidebar .nav-item {
+  position: relative;
+}
+
+html:not([data-ui-style='glass']) .sidebar .nav-item.selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--user-accent, #52b79a);
+}
+
+/* Mobile Home Polish (Native Spotify / Apple Music Shelves) */
+html[data-platform='android'] .home-page,
+html[data-mobile='true'] .home-page {
+  gap: 20px;
+}
+
+html[data-platform='android'] .home-hero-header,
+html[data-mobile='true'] .home-hero-header {
+  margin: -8px -14px -6px;
+  padding: 12px 14px 6px;
+  border-radius: 0;
+}
+
+html[data-platform='android'] .home-hero-top,
+html[data-mobile='true'] .home-hero-top {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+html[data-platform='android'] .home-hero-top h1,
+html[data-mobile='true'] .home-hero-top h1 {
+  font-size: 24px !important;
+}
+
+html[data-platform='android'] .home-quick-section .quick-grid,
+html[data-mobile='true'] .home-quick-section .quick-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 8px !important;
+}
+
+html[data-platform='android'] .home-quick-section .quick-tile,
+html[data-mobile='true'] .home-quick-section .quick-tile {
+  height: 52px !important;
+  padding-right: 6px !important;
+  border-radius: 10px !important;
+}
+
+html[data-platform='android'] .home-quick-section .quick-tile-art,
+html[data-mobile='true'] .home-quick-section .quick-tile-art {
+  width: 52px !important;
+  height: 52px !important;
+}
+
+html[data-platform='android'] .home-quick-section .quick-tile-text strong,
+html[data-mobile='true'] .home-quick-section .quick-tile-text strong {
+  font-size: 12.5px !important;
+}
+
+html[data-platform='android'] .home-quick-section .quick-tile-play,
+html[data-mobile='true'] .home-quick-section .quick-tile-play {
+  display: none !important;
+}
+
+html[data-platform='android'] .home-page .catalog-grid,
+html[data-mobile='true'] .home-page .catalog-grid {
+  display: grid !important;
+  grid-template-columns: none !important;
+  grid-auto-flow: column !important;
+  grid-auto-columns: 148px !important;
+  gap: 11px !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  padding: 2px 2px 6px !important;
+  scroll-snap-type: x proximity !important;
+  scrollbar-width: none !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+html[data-platform='android'] .home-page .catalog-grid::-webkit-scrollbar,
+html[data-mobile='true'] .home-page .catalog-grid::-webkit-scrollbar {
+  display: none;
+}
+
+html[data-platform='android'] .home-page .catalog-grid > *,
+html[data-mobile='true'] .home-page .catalog-grid > * {
+  scroll-snap-align: start;
+}
+
+html[data-platform='android'] .home-page .card-play,
+html[data-mobile='true'] .home-page .card-play,
+html[data-platform='android'] .card-play-fab,
+html[data-mobile='true'] .card-play-fab {
+  width: 34px !important;
+  height: 34px !important;
+  opacity: 0.94 !important;
+  transform: none !important;
+}

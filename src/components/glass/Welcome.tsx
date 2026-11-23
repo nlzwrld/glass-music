@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { ArrowUpRight } from 'lucide-react';
 import { LiquidHubLogo } from '../brand/LiquidHubLogo';
 import { motion, useReducedMotion } from 'motion/react';
 import { CURRENT_PRIVACY_VERSION, CURRENT_TERMS_VERSION } from '../../../shared/auth';
@@ -20,21 +19,21 @@ export default function Welcome() {
   const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const systemReduced = useReducedMotion(),
     reduced = preferences.reducedMotion || preferences.performance || systemReduced;
-  const isMatte = (preferences.uiStyle ?? 'matte') === 'matte';
+  const skipSplash = (preferences.uiStyle ?? 'matte') !== 'glass';
 
   useEffect(() => {
     if (!ready || !preferences.onboardingDone || done) return;
-    if (isMatte) {
+    if (skipSplash) {
       setDone(true);
       return;
     }
-    const fade = setTimeout(() => setLeaving(true), reduced ? 180 : 1650);
-    const finish = setTimeout(() => setDone(true), reduced ? 220 : 2150);
+    const fade = setTimeout(() => setLeaving(true), reduced ? 120 : 620);
+    const finish = setTimeout(() => setDone(true), reduced ? 160 : 920);
     return () => {
       clearTimeout(fade);
       clearTimeout(finish);
     };
-  }, [ready, preferences.onboardingDone, done, reduced, isMatte]);
+  }, [ready, preferences.onboardingDone, done, reduced, skipSplash]);
 
   useEffect(() => {
     document.documentElement.dataset.starting = String(!done);
@@ -98,51 +97,26 @@ export default function Welcome() {
 
   if (!ready) return null;
   if (preferences.onboardingDone) {
-    return done || isMatte ? null : (
+    return done || skipSplash ? null : (
       <motion.div
         className="welcome-screen welcome-smooth"
         role="status"
         aria-label="Liquid Hub abertura"
         initial={reduced ? false : { opacity: 0 }}
         animate={{ opacity: leaving ? 0 : 1 }}
-        transition={{ duration: reduced ? 0 : 0.45, ease: [0.22, 1, 0.36, 1] }}
+        transition={{ duration: reduced ? 0 : 0.3, ease: [0.22, 1, 0.36, 1] }}
       >
         <motion.div
           className="welcome-content"
-          initial={reduced ? false : { opacity: 0, y: 16, scale: 0.985 }}
-          animate={{ opacity: leaving ? 0 : 1, y: leaving && !reduced ? -6 : 0, scale: 1 }}
-          transition={{ duration: reduced ? 0 : 0.85, ease: [0.22, 1, 0.36, 1] }}
+          initial={reduced ? false : { opacity: 0, y: 10, scale: 0.985 }}
+          animate={{ opacity: leaving ? 0 : 1, y: leaving && !reduced ? -4 : 0, scale: 1 }}
+          transition={{ duration: reduced ? 0 : 0.45, ease: [0.22, 1, 0.36, 1] }}
         >
-          <motion.div
-            className="welcome-emblem"
-            initial={reduced ? false : { opacity: 0, scale: 0.94 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: reduced ? 0 : 1, ease: [0.22, 1, 0.36, 1] }}
-          >
-            <LiquidHubLogo size={36} />
-          </motion.div>
-          <motion.h1
-            initial={reduced ? false : { opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{
-              duration: reduced ? 0 : 0.8,
-              delay: reduced ? 0 : 0.08,
-              ease: [0.22, 1, 0.36, 1],
-            }}
-          >
-            {phrase}
-          </motion.h1>
-          <motion.time
-            initial={reduced ? false : { opacity: 0, y: 5 }}
-            animate={{ opacity: 0.8, y: 0 }}
-            transition={{
-              duration: reduced ? 0 : 0.8,
-              delay: reduced ? 0 : 0.18,
-              ease: [0.22, 1, 0.36, 1],
-            }}
-          >
-            {time}
-          </motion.time>
+          <div className="welcome-emblem">
+            <LiquidHubLogo size={34} />
+          </div>
+          <h1>{phrase}</h1>
+          <time>{time}</time>
         </motion.div>
       </motion.div>
     );
@@ -150,29 +124,20 @@ export default function Welcome() {
 
   return (
     <div className="modal-backdrop onboarding">
-      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="welcome-title">
-        <span className="collection-type-label">Liquid Hub</span>
-        <h2 id="welcome-title">Permitir acesso online?</h2>
-        <p>
-          Buscas, capas, letras e sessões JAM consultam catálogos externos e o LRCLIB. Ao continuar
-          online, você aceita os Termos de Uso e a Política de Privacidade (v.{' '}
-          {CURRENT_TERMS_VERSION}); sua biblioteca e credenciais permanecem protegidas localmente
-          neste computador.
-        </p>
-        <div className="terms-links">
-          {[
-            ['YouTube', 'https://www.youtube.com/t/terms'],
-            ['SoundCloud', 'https://soundcloud.com/terms-of-use'],
-            ['Privacidade Google', 'https://policies.google.com/privacy'],
-            ['Privacidade SoundCloud', 'https://soundcloud.com/pages/privacy'],
-            ['LRCLIB', 'https://lrclib.net'],
-          ].map(([label, url]) => (
-            <button key={label} onClick={() => void window.glass.external(url)}>
-              {label}
-              <ArrowUpRight size={12} />
-            </button>
-          ))}
+      <section
+        className="modal onboarding-compact"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="welcome-title"
+      >
+        <div className="onboarding-brand">
+          <LiquidHubLogo size={24} />
+          <span className="collection-type-label" style={{ margin: 0 }}>
+            Liquid Hub
+          </span>
         </div>
+        <h2 id="welcome-title">Permitir acesso online?</h2>
+        <p className="onboarding-hint">Para buscas, capas, letras e salas JAM.</p>
         <div className="modal-actions">
           <button className="button secondary" disabled={busy} onClick={() => void accept(false)}>
             Agora não
