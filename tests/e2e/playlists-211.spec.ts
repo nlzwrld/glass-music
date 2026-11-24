@@ -3,12 +3,25 @@ import {spawn} from 'node:child_process';
 import {mkdir,mkdtemp,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
+import {createBroker} from '../../server/broker';
 import {defaults,type Track} from '../../shared/types';
 import {opticalDefaults} from '../../src/components/glass/v3/model';
-import {activeAudio,openSidebarPlaylist} from './ui';
+import {activeAudio,authenticateLocalBroker,openSidebarPlaylist,waitForCdp} from './ui';
 
 test('playlist play, filtered drag, keyboard order, context transfer, removal and individual song covers',async()=>{
  test.setTimeout(120000);await mkdir('.test-data/profiles',{recursive:true});await mkdir('test-results',{recursive:true});
+ const brokerServer = createBroker(
+  {
+   BROKER_ACCESS_TOKEN: 'playlists-e2e-broker-secret-token-1234',
+   SOUNDCLOUD_CLIENT_ID: 'playlists-sc-id',
+   SOUNDCLOUD_CLIENT_SECRET: 'playlists-sc-secret',
+  },
+  async () => new Response(JSON.stringify({ access_token: 'sc', expires_in: 3600 })),
+  Date.now,
+  { argon2Params: { memory: 1024, passes: 1, parallelism: 1, tagLength: 16 } },
+ );
+ await new Promise<void>(r => brokerServer.listen(0, '127.0.0.1', r));
+ const brokerUrl = `http://127.0.0.1:${(brokerServer.address() as { port: number }).port}`;
  const profile=await mkdtemp(resolve('.test-data/profiles/playlists-211-'));const db=new DatabaseSync(join(profile,'library.sqlite'));
  db.exec('CREATE TABLE tracks(id TEXT PRIMARY KEY,data TEXT NOT NULL,local_path TEXT,refreshed INTEGER NOT NULL);CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);CREATE TABLE playlists(id TEXT PRIMARY KEY,name TEXT NOT NULL,created INTEGER NOT NULL);CREATE TABLE playlist_tracks(playlist_id TEXT REFERENCES playlists(id) ON DELETE CASCADE,track_id TEXT REFERENCES tracks(id) ON DELETE CASCADE,position INTEGER NOT NULL,PRIMARY KEY(playlist_id,track_id));');
  const tracks:Track[]=['A faixa','Oculta','B faixa'].map((title,i)=>({id:'local:qa'+i,source:'local',sourceId:'qa'+i,kind:'track',title,artist:'Teste',duration:20,addedAt:1}));
@@ -18,12 +31,13 @@ test('playlist play, filtered drag, keyboard order, context transfer, removal an
  for(const id of ['origem','destino'])db.prepare('INSERT INTO playlists VALUES(?,?,?)').run(id,id==='origem'?'Minha playlist':'Destino',1);
  tracks.forEach((t,i)=>db.prepare('INSERT INTO playlist_tracks VALUES(?,?,?)').run('origem',t.id,i));remote.forEach((t,i)=>db.prepare('INSERT INTO playlist_tracks VALUES(?,?,?)').run('destino',t.id,i));
  db.prepare('INSERT INTO settings VALUES(?,?)').run('preferences',JSON.stringify({...defaults,onboardingDone:true,onlineConsent:true,catalogConsent:false,volume:0,reducedMotion:true,appearance:{...opticalDefaults,background:'solid',backgroundMotion:0}}));db.close();
- const proc=spawn(process.env.GLASS_EXE!,[],{windowsHide:true,env:{...process.env,GLASS_TEST_DATA:profile,GLASS_TEST_DISABLE_DIRECT:'1',WEBVIEW2_USER_DATA_FOLDER:join(profile,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9368'}});let browser:Browser|undefined;const errors:string[]=[];
+ const proc=spawn(process.env.GLASS_EXE||join(process.env.LOCALAPPDATA!,'Liquid Hub/liquid-hub.exe'),[],{windowsHide:true,env:{...process.env,GLASS_TEST_DATA:profile,GLASS_TEST_DISABLE_DIRECT:'1',LIQUID_HUB_BROKER_URL:brokerUrl,WEBVIEW2_USER_DATA_FOLDER:join(profile,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9368'}});let browser:Browser|undefined;const errors:string[]=[];
  try{
-  for(let i=0;i<100;i++){try{if((await fetch('http://127.0.0.1:9368/json/version')).ok)break;}catch{}await new Promise(r=>setTimeout(r,200));}
+  await waitForCdp(proc, 9368, 100, 200);
   browser=await chromium.connectOverCDP('http://127.0.0.1:9368');const page=browser.contexts()[0].pages()[0];page.on('pageerror',e=>errors.push(e.message));
+  await authenticateLocalBroker(page, { name: 'PlaylistUser', email: 'playlists-211@liquidhub.dev' });
   await expect(page.locator('.welcome-screen')).toHaveCount(0,{timeout:15000});await openSidebarPlaylist(page,'Minha playlist');
-  const play=page.getByRole('button',{name:'Reproduzir playlist',exact:true});await expect(play).toBeVisible();expect(await play.evaluate(e=>getComputedStyle(e).backgroundColor)).toBe('rgb(245, 245, 245)');expect((await play.boundingBox())!.height).toBe(34);
+  const play=page.getByRole('button',{name:'Reproduzir playlist',exact:true});await expect(play).toBeVisible();expect(await play.evaluate(e=>getComputedStyle(e).backgroundColor)).toBe('rgb(28, 28, 28)');const box=(await play.boundingBox())!;expect(Math.round(box.height)).toBe(38);expect(Math.round(box.width)).toBe(38);
   await play.click();await expect.poll(()=>activeAudio(page).evaluate((a:HTMLAudioElement)=>a.currentTime)).toBeGreaterThan(.2);await page.getByRole('button',{name:'Pausar playlist',exact:true}).click();await expect.poll(()=>activeAudio(page).evaluate((a:HTMLAudioElement)=>a.paused)).toBe(true);
   await page.getByRole('textbox',{name:'Pesquisar nesta coleção'}).fill('faixa');await expect(page.locator('.track-row')).toHaveCount(2);
   const dt=await page.evaluateHandle(()=>new DataTransfer());await page.getByRole('button',{name:'Mover A faixa',exact:true}).dispatchEvent('dragstart',{dataTransfer:dt});await page.locator('.track-row').filter({hasText:'B faixa'}).dispatchEvent('drop',{dataTransfer:dt});
@@ -41,5 +55,5 @@ test('playlist play, filtered drag, keyboard order, context transfer, removal an
   await openSidebarPlaylist(page,'Minha playlist');await page.getByRole('button',{name:'Opções de B faixa',exact:true}).click();await page.getByRole('menuitem',{name:'Remover da biblioteca',exact:true}).click();await page.getByRole('dialog').getByRole('button',{name:'Confirmar',exact:true}).click();await expect.poll(order).toEqual(['local:qa1']);
   const saved=await page.evaluate(()=>window.glass.bootstrap());await page.evaluate(async p=>{await window.glass.preferences({...p,theme:'light'});},saved.preferences);await page.reload();await openSidebarPlaylist(page,'Destino');await expect(page.locator('.track-row .cover img')).toHaveCount(2);await page.waitForFunction(()=>getComputedStyle(document.querySelector('.playlist-page')!.parentElement!).opacity==='1');await page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));await page.screenshot({path:'test-results/playlists-211-light.png'});expect(errors).toEqual([]);
   await writeFile('test-results/playlists-211.json',JSON.stringify({mattePlayStyle:true,filteredReorder:true,keyboardReorder:true,atomicTransfer:true,playlistRemovalPreservesLibrary:true,libraryRemoval:true,keyboardMenu:true,individualArtwork:{count:artwork.length,distinct:2,persisted:true,loaded:true},errors},null,2));
- }finally{proc.kill();await browser?.close().catch(()=>{});}
+ }finally{proc.kill();await browser?.close().catch(()=>{});brokerServer.closeAllConnections();await new Promise<void>(r=>brokerServer.close(()=>r()));}
 });

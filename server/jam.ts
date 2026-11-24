@@ -3371,6 +3371,35 @@ function isBrokerAuthOrSocialPath(pathname: string): boolean {
   );
 }
 
+type StoredDoRoom = {
+  roomId?: string;
+  code: string;
+  roomName?: string;
+  hostAvatar?: string;
+  locked?: boolean;
+  requireAuth?: boolean;
+  requireApproval?: boolean;
+  permissions?: JamRoomPermissions;
+  maxParticipants?: number;
+  inviteExpiresAt?: number;
+  inviteTtlMs?: number;
+  createdAt?: number;
+  members: [string, Member][];
+  recentMembers?: [string, RecentMember][];
+  kickedKeys?: string[];
+  blockedKeys?: string[];
+  blockedList?: [string, JamBlockedParticipant][];
+  joinRequests?: [string, InternalJoinRequest][];
+  playback: JamPlayback;
+  skipVotes?: string[];
+  skipTriggeredAt?: number;
+  jamQueue?: JamQueueItem[];
+  recommendations?: JamPlaylistRecommendation[];
+  messages?: JamChatMessage[];
+  touched: number;
+  nonces?: [string, number][];
+};
+
 export class JamRoomDO {
   private readonly ctx: CfDurableObjectState;
   private readonly env: CfJamEnv;
@@ -3413,65 +3442,74 @@ export class JamRoomDO {
     return this.authEngine;
   }
 
+  private hydrateRoom(saved: StoredDoRoom) {
+    this.room = {
+      roomId: saved.roomId || makeRoomId(),
+      code: saved.code,
+      roomName: saved.roomName || 'Liquid Hub JAM',
+      hostAvatar: saved.hostAvatar,
+      locked: Boolean(saved.locked),
+      requireAuth: Boolean(saved.requireAuth),
+      requireApproval: this.env.JAM_REQUIRE_APPROVAL === '1' || Boolean(saved.requireApproval),
+      permissions: sanitizePermissions(saved.permissions, DEFAULT_JAM_PERMISSIONS),
+      maxParticipants: saved.maxParticipants || MAX_PARTICIPANTS,
+      inviteExpiresAt: saved.inviteExpiresAt || saved.touched + DEFAULT_INVITE_TTL_MS,
+      inviteTtlMs: saved.inviteTtlMs || DEFAULT_INVITE_TTL_MS,
+      createdAt: saved.createdAt || saved.touched,
+      members: new Map(saved.members),
+      recentMembers: new Map(saved.recentMembers || []),
+      kickedKeys: new Set(saved.kickedKeys || []),
+      blockedKeys: new Set(saved.blockedKeys || []),
+      blockedList: new Map(saved.blockedList || []),
+      joinRequests: new Map(saved.joinRequests || []),
+      playback: saved.playback,
+      skipVotes: new Set(saved.skipVotes || []),
+      skipTriggeredAt: saved.skipTriggeredAt || 0,
+      jamQueue: saved.jamQueue || [],
+      recommendations: saved.recommendations || [],
+      messages: saved.messages || [],
+      touched: saved.touched,
+    };
+    this.mutationNonces = new Map(saved.nonces || []);
+    this.tombstone = null;
+  }
+
+  private serializeRoom(room: Room): StoredDoRoom {
+    return {
+      roomId: room.roomId,
+      code: room.code,
+      roomName: room.roomName,
+      hostAvatar: room.hostAvatar,
+      locked: room.locked,
+      requireAuth: room.requireAuth,
+      requireApproval: room.requireApproval,
+      permissions: room.permissions,
+      maxParticipants: room.maxParticipants,
+      inviteExpiresAt: room.inviteExpiresAt,
+      inviteTtlMs: room.inviteTtlMs,
+      createdAt: room.createdAt,
+      members: [...room.members.entries()],
+      recentMembers: [...room.recentMembers.entries()],
+      kickedKeys: [...room.kickedKeys],
+      blockedKeys: [...room.blockedKeys],
+      blockedList: [...room.blockedList.entries()],
+      joinRequests: [...room.joinRequests.entries()],
+      playback: room.playback,
+      skipVotes: [...(room.skipVotes || [])],
+      skipTriggeredAt: room.skipTriggeredAt || 0,
+      jamQueue: room.jamQueue || [],
+      recommendations: room.recommendations || [],
+      messages: room.messages || [],
+      touched: room.touched,
+      nonces: [...this.mutationNonces.entries()],
+    };
+  }
+
   private async loadRoom(): Promise<Room | null> {
     if (this.room) return this.room;
-    const saved = await this.ctx.storage.get<{
-      roomId?: string;
-      code: string;
-      roomName?: string;
-      hostAvatar?: string;
-      locked?: boolean;
-      requireAuth?: boolean;
-      requireApproval?: boolean;
-      permissions?: JamRoomPermissions;
-      maxParticipants?: number;
-      inviteExpiresAt?: number;
-      inviteTtlMs?: number;
-      createdAt?: number;
-      members: [string, Member][];
-      kickedKeys?: string[];
-      blockedKeys?: string[];
-      blockedList?: [string, JamBlockedParticipant][];
-      joinRequests?: [string, InternalJoinRequest][];
-      playback: JamPlayback;
-      skipVotes?: string[];
-      skipTriggeredAt?: number;
-      jamQueue?: JamQueueItem[];
-      recommendations?: JamPlaylistRecommendation[];
-      messages?: JamChatMessage[];
-      touched: number;
-      nonces?: [string, number][];
-    }>('room');
+    const saved = await this.ctx.storage.get<StoredDoRoom>('room');
     if (saved) {
-      this.room = {
-        roomId: saved.roomId || makeRoomId(),
-        code: saved.code,
-        roomName: saved.roomName || 'Liquid Hub JAM',
-        hostAvatar: saved.hostAvatar,
-        locked: Boolean(saved.locked),
-        requireAuth: Boolean(saved.requireAuth),
-        requireApproval: this.env.JAM_REQUIRE_APPROVAL === '1' || Boolean(saved.requireApproval),
-        permissions: sanitizePermissions(saved.permissions, DEFAULT_JAM_PERMISSIONS),
-        maxParticipants: saved.maxParticipants || MAX_PARTICIPANTS,
-        inviteExpiresAt: saved.inviteExpiresAt || saved.touched + DEFAULT_INVITE_TTL_MS,
-        inviteTtlMs: saved.inviteTtlMs || DEFAULT_INVITE_TTL_MS,
-        createdAt: saved.createdAt || saved.touched,
-        members: new Map(saved.members),
-        recentMembers: new Map(),
-        kickedKeys: new Set(saved.kickedKeys || []),
-        blockedKeys: new Set(saved.blockedKeys || []),
-        blockedList: new Map(saved.blockedList || []),
-        joinRequests: new Map(saved.joinRequests || []),
-        playback: saved.playback,
-        skipVotes: new Set(saved.skipVotes || []),
-        skipTriggeredAt: saved.skipTriggeredAt || 0,
-        jamQueue: saved.jamQueue || [],
-        recommendations: saved.recommendations || [],
-        messages: saved.messages || [],
-        touched: saved.touched,
-      };
-      this.mutationNonces = new Map(saved.nonces || []);
-      this.tombstone = null;
+      this.hydrateRoom(saved);
     } else if (!this.tombstone) {
       const savedTomb = await this.ctx.storage.get<InviteTombstone>('tombstone');
       if (savedTomb && savedTomb.expiresAt > this.clock()) {
@@ -3499,33 +3537,7 @@ export class JamRoomDO {
       }
       return;
     }
-    await this.ctx.storage.put('room', {
-      roomId: room.roomId,
-      code: room.code,
-      roomName: room.roomName,
-      hostAvatar: room.hostAvatar,
-      locked: room.locked,
-      requireAuth: room.requireAuth,
-      requireApproval: room.requireApproval,
-      permissions: room.permissions,
-      maxParticipants: room.maxParticipants,
-      inviteExpiresAt: room.inviteExpiresAt,
-      inviteTtlMs: room.inviteTtlMs,
-      createdAt: room.createdAt,
-      members: [...room.members.entries()],
-      kickedKeys: [...room.kickedKeys],
-      blockedKeys: [...room.blockedKeys],
-      blockedList: [...room.blockedList.entries()],
-      joinRequests: [...room.joinRequests.entries()],
-      playback: room.playback,
-      skipVotes: [...(room.skipVotes || [])],
-      skipTriggeredAt: room.skipTriggeredAt || 0,
-      jamQueue: room.jamQueue || [],
-      recommendations: room.recommendations || [],
-      messages: room.messages || [],
-      touched: room.touched,
-      nonces: [...this.mutationNonces.entries()],
-    });
+    await this.ctx.storage.put('room', this.serializeRoom(room));
     await this.ctx.storage.setAlarm(this.clock() + this.ttl());
   }
 
@@ -3599,10 +3611,10 @@ export class JamRoomDO {
     }
   }
 
-  private closeAll(reason: string) {
+  private closeAll(reason: string, closeCode = 1008) {
     for (const ws of this.ctx.getWebSockets()) {
       try {
-        ws.close(1008, reason);
+        ws.close(closeCode, reason);
       } catch {}
     }
   }
@@ -3723,6 +3735,33 @@ export class JamRoomDO {
         baseOAuthProviders: baseProviders,
         publicBase: this.env.BROKER_PUBLIC_URL || url.origin,
       });
+    }
+    if (
+      url.pathname === '/__internal/migrate' &&
+      request.method === 'POST' &&
+      request.headers.get('X-Liquid-Internal-Migrate') === '1'
+    ) {
+      const now = this.clock();
+      await this.loadRoom();
+      await this.pruneRoom(now);
+      if (this.room) {
+        return new Response(JSON.stringify({ error: 'Código em uso.' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        });
+      }
+      const rawSaved = await request.text();
+      if (Buffer.byteLength(rawSaved, 'utf8') > 4 * 1024 * 1024) {
+        return new Response(JSON.stringify({ error: 'Snapshot da sala muito grande.' }), {
+          status: 413,
+          headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        });
+      }
+      const saved = JSON.parse(rawSaved) as StoredDoRoom;
+      this.hydrateRoom(saved);
+      this.tombstone = null;
+      await this.persistRoom();
+      return Response.json({ ok: true });
     }
     const now = this.clock();
     await this.loadRoom();
@@ -4157,6 +4196,72 @@ export class JamRoomDO {
         });
       }
 
+      if (action === 'rotateInvite') {
+        if (!member.host) {
+          throw new JamError('Somente o anfitrião pode gerar um novo convite.', 403, 'FORBIDDEN');
+        }
+        this.verifyReplay(p, now, action);
+        const oldCode = current.code;
+        const nextTtl =
+          typeof p.inviteTtlMs === 'number' && Number.isFinite(p.inviteTtlMs)
+            ? Math.max(60000, Math.min(86400000, Math.round(p.inviteTtlMs)))
+            : current.inviteTtlMs;
+        current.touched = now;
+        current.inviteTtlMs = nextTtl;
+        current.inviteExpiresAt = now + nextTtl;
+
+        let newCode = '';
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const candidate = generateInviteCode(new Set([oldCode]));
+          const snapshot: StoredDoRoom = {
+            ...this.serializeRoom(current),
+            code: candidate,
+          };
+          const migrateRes = await this.env.JAM_ROOMS.get(
+            this.env.JAM_ROOMS.idFromName(candidate),
+          ).fetch(
+            new Request('https://jam.internal/__internal/migrate', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Liquid-Internal-Migrate': '1',
+              },
+              body: JSON.stringify(snapshot),
+            }),
+          );
+          if (migrateRes.ok) {
+            newCode = candidate;
+            break;
+          }
+          if (migrateRes.status !== 409) break;
+        }
+        if (!newCode) {
+          throw new JamError('Não foi possível gerar um novo convite agora.', 500);
+        }
+
+        current.code = newCode;
+        const viewBody = this.roomView(current, now, p, member.host);
+        this.broadcastRoomState(current, now);
+        this.closeAll('Código da JAM atualizado.', 4001);
+        this.tombstone = {
+          code: oldCode,
+          roomId: current.roomId,
+          roomName: current.roomName,
+          hostName: member.name,
+          hostAvatar: current.hostAvatar || member.avatar,
+          reason: 'expired',
+          createdAt: current.createdAt,
+          endedAt: now,
+          expiresAt: now + TOMBSTONE_RETENTION_MS,
+        };
+        this.room = null;
+        this.mutationNonces.clear();
+        this.volatileNonces.clear();
+        this.rates.clear();
+        await this.persistRoom();
+        return new Response(JSON.stringify(viewBody), { status: 200, headers });
+      }
+
       if (action === 'updateRoom') {
         if (!member.host) {
           throw new JamError('Somente o anfitrião pode alterar as opções da JAM.', 403, 'FORBIDDEN');
@@ -4570,6 +4675,16 @@ export async function handleCloudflareJamFetch(request: Request, env: CfJamEnv):
             closed?: unknown;
           } | null;
           if (result?.closed === true) releaseCapacity();
+        }
+        if (action === 'rotateInvite' && response.status === 200) {
+          const rotated = (await response.clone().json().catch(() => null)) as {
+            code?: unknown;
+          } | null;
+          const nextCode = typeof rotated?.code === 'string' ? normalizeJamCode(rotated.code) : '';
+          releaseCapacity();
+          if (nextCode) {
+            roomCreates.set(nextCode, { reservation: Symbol(nextCode), createdAt: now });
+          }
         }
         return response;
       } catch (error) {

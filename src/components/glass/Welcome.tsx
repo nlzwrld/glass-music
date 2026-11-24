@@ -138,6 +138,9 @@ export default function Welcome() {
         </div>
         <h2 id="welcome-title">Permitir acesso online?</h2>
         <p className="onboarding-hint">Para buscas, capas, letras e salas JAM.</p>
+        <p className="onboarding-hint" style={{ fontSize: '0.78rem', opacity: 0.72, marginTop: -4 }}>
+          Ao continuar online, você aceita os Termos e Privacidade (v{CURRENT_TERMS_VERSION}).
+        </p>
         <div className="modal-actions">
           <button className="button secondary" disabled={busy} onClick={() => void accept(false)}>
             Agora não

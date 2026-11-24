@@ -11,6 +11,7 @@ import { CURRENT_PRIVACY_VERSION, CURRENT_TERMS_VERSION } from '../../shared/aut
 import { defaults } from '../../shared/types';
 import { opticalDefaults } from '../../src/components/glass/v3/model';
 import { resolveLiquidHubExe } from './exe';
+import { openProfileMenuPage } from './ui';
 
 interface MockProviderProfile {
   mode?: 'approve' | 'cancel';
@@ -326,6 +327,7 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
       profile,
       runIndex: 1,
       cdpPort: 9391,
+      brokerUrl,
       errors,
     });
     proc = run1.proc;
@@ -356,10 +358,6 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
     await expect(gate.getByRole('button', { name: 'Continuar com GitHub', exact: true })).toBeVisible();
     await expect(gate.getByRole('button', { name: 'Entrar com e-mail', exact: true })).toBeVisible();
 
-    // Configure local brokerUrl directly from the mandatory login screen
-    await gate.locator('summary', { hasText: 'Servidor de autenticação' }).click();
-    await gate.getByLabel('Servidor de autenticação').fill(brokerUrl);
-
     // Scenario 1: Cadastro com e-mail + verificação de e-mail
     await gate.getByRole('button', { name: 'Entrar com e-mail', exact: true }).click();
     await gate.getByRole('button', { name: 'Criar conta com e-mail', exact: true }).click();
@@ -370,8 +368,8 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
 
     await waitForAuthenticated(page, 'Ana Costa');
     await expect(page.locator('.sidebar .brand')).toBeVisible({ timeout: 15000 });
-    await page.locator('.sidebar nav').getByRole('button', { name: 'Configurações', exact: true }).click();
-    await expect(page.getByText(/Cofre DPAPI ativo/)).toBeVisible();
+    await openProfileMenuPage(page, 'Configurações');
+    await expect(page.getByText(/Sessão protegida no cofre do Windows/)).toBeVisible();
     await expect(page.getByText(/Não verificado/)).toBeVisible();
 
     const verifyMail = capturedEmails.find(
@@ -409,7 +407,7 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
     await gate.getByRole('button', { name: 'Entrar', exact: true }).click();
     await waitForAuthenticated(page, 'Ana Costa');
     await expect(page.locator('.sidebar .brand')).toBeVisible({ timeout: 15000 });
-    await page.locator('.sidebar nav').getByRole('button', { name: 'Configurações', exact: true }).click();
+    await openProfileMenuPage(page, 'Configurações');
 
     // Scenario 8: Vinculação de duas identidades (Ana vincula Discord + GitHub e depois desvincula Discord)
     await page.getByRole('button', { name: 'Vincular Discord', exact: true }).click();
@@ -448,7 +446,7 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
     });
     await gate.getByRole('button', { name: 'Continuar com Discord', exact: true }).click();
     await waitForAuthenticated(page, 'Lucas Discord');
-    await page.getByRole('button', { name: 'Configurações', exact: true }).click();
+    await openProfileMenuPage(page, 'Configurações');
 
     // Lucas tem apenas Discord -> botão Desvincular deve ficar desabilitado (não deixa excluir único método)
     await expect(
@@ -506,7 +504,7 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
     await gate.getByRole('button', { name: 'Continuar com Discord', exact: true }).click();
     await waitForAuthenticated(page, 'Sem Email Discord');
     expect((await page.evaluate(() => window.glass.hubStatus())).email).toBeNull();
-    await page.getByRole('button', { name: 'Configurações', exact: true }).click();
+    await openProfileMenuPage(page, 'Configurações');
     await page.getByRole('button', { name: 'Encerrar sessão', exact: true }).click();
     await waitForLoggedOut(page);
     await expect(gate).toBeVisible();
@@ -522,7 +520,7 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
     });
     await gate.getByRole('button', { name: 'Continuar com GitHub', exact: true }).click();
     await waitForAuthenticated(page, 'Privado GitHub');
-    await page.getByRole('button', { name: 'Configurações', exact: true }).click();
+    await openProfileMenuPage(page, 'Configurações');
     await expect(page.locator('[data-hub-provider="github"]')).toContainText(/E-mail privado/);
 
     await browser.close().catch(() => {});
@@ -561,7 +559,7 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
     expect(persistedAudit.hasJwtInStorage).toBe(false);
 
     // Logout before Scenario 12 so the app starts unauthenticated with an incoming JAM invite
-    await page.getByRole('button', { name: 'Configurações', exact: true }).click();
+    await openProfileMenuPage(page, 'Configurações');
     await page.getByRole('button', { name: 'Encerrar sessão', exact: true }).click();
     await waitForLoggedOut(page);
     await expect(page.locator('.auth-gate')).toBeVisible();

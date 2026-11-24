@@ -871,8 +871,10 @@ async fn ensure_fresh_hub_token_with_force(
     broker_override: Option<&str>,
     force_refresh: bool,
 ) -> Result<(String, String)> {
+    static HUB_REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     let broker = resolve_hub_broker(secrets_mtx, broker_override)?;
-    let (access_token, refresh_token, expires_at) = {
+    let (seen_access, seen_refresh) = {
         let guard = secrets_mtx.lock().unwrap();
         let Some(sess) = &guard.hub_session else {
             return Err("Autenticação Liquid Hub necessária.".into());
@@ -880,17 +882,34 @@ async fn ensure_fresh_hub_token_with_force(
         if sess.refresh_token.is_empty() {
             return Err("Autenticação Liquid Hub necessária.".into());
         }
-        (
-            sess.access_token.clone(),
-            sess.refresh_token.clone(),
-            sess.expires_at,
-        )
+        let now_ms = now();
+        if !force_refresh && !sess.access_token.is_empty() && sess.expires_at > now_ms + 60_000 {
+            return Ok((broker, sess.access_token.clone()));
+        }
+        (sess.access_token.clone(), sess.refresh_token.clone())
     };
 
-    let now_ms = now();
-    if !force_refresh && !access_token.is_empty() && expires_at > now_ms + 60_000 {
-        return Ok((broker, access_token));
-    }
+    let _refresh_guard = HUB_REFRESH_LOCK.lock().await;
+    let active_refresh = {
+        let guard = secrets_mtx.lock().unwrap();
+        let Some(sess) = &guard.hub_session else {
+            return Err("Autenticação Liquid Hub necessária.".into());
+        };
+        if sess.refresh_token.is_empty() {
+            return Err("Autenticação Liquid Hub necessária.".into());
+        }
+        let now_ms = now();
+        if sess.refresh_token != seen_refresh
+            || (!force_refresh && !sess.access_token.is_empty() && sess.expires_at > now_ms + 60_000)
+            || (force_refresh
+                && sess.access_token != seen_access
+                && !sess.access_token.is_empty()
+                && sess.expires_at > now_ms + 60_000)
+        {
+            return Ok((broker, sess.access_token.clone()));
+        }
+        sess.refresh_token.clone()
+    };
 
     let http = crate::providers::client();
     let jwk_x = fetch_jwk_x(&http, &broker).await?;
@@ -898,7 +917,7 @@ async fn ensure_fresh_hub_token_with_force(
         .post(format!("{broker}/v1/auth/token"))
         .json(&json!({
             "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
+            "refresh_token": active_refresh,
             "client_id": "liquid-hub-desktop"
         }))
         .send()
@@ -908,8 +927,14 @@ async fn ensure_fresh_hub_token_with_force(
     let tokens: Value = res.json().await.unwrap_or(Value::Null);
     if status == reqwest::StatusCode::UNAUTHORIZED {
         let mut guard = secrets_mtx.lock().unwrap();
-        guard.clear_hub_session();
-        let _ = guard.save(secrets_path);
+        if guard
+            .hub_session
+            .as_ref()
+            .is_some_and(|s| s.refresh_token == active_refresh)
+        {
+            guard.clear_hub_session();
+            let _ = guard.save(secrets_path);
+        }
         return Err("Sua sessão expirou ou foi revogada. Entre novamente.".into());
     }
     if !status.is_success() {
@@ -2552,5 +2577,139 @@ mod storage_tests {
             .all(|v| v["connected"] == false));
         std::fs::remove_file(dir.join("accounts.dpapi")).unwrap();
         std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn concurrent_hub_token_refresh_is_single_flight_and_never_revokes_family() {
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+        use std::sync::atomic::AtomicUsize;
+
+        let dir = std::env::temp_dir().join(format!("liquid-hub-refresh-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let secrets_path = dir.join("secrets.dpapi");
+
+        let rng = SystemRandom::new();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let keypair = Arc::new(Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap());
+        let jwk_x = URL_SAFE_NO_PAD.encode(keypair.public_key().as_ref());
+
+        let initial_refresh = "initial-refresh-token-at-least-32-chars";
+        let rotated_refresh = "rotated-refresh-token-at-least-32-chars";
+
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let broker_url = format!("http://{}", server.server_addr());
+        let refresh_calls = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let srv_calls = refresh_calls.clone();
+        let srv_stop = stop.clone();
+        let srv_kp = keypair.clone();
+        let srv_jwk_x = jwk_x.clone();
+
+        let handle = std::thread::spawn(move || {
+            while !srv_stop.load(Ordering::Relaxed) {
+                let Ok(Some(mut req)) = server.recv_timeout(Duration::from_millis(50)) else {
+                    continue;
+                };
+                let url = req.url().to_string();
+                let ct = tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap();
+                if url == "/.well-known/jwks.json" {
+                    let body = json!({
+                        "keys": [{ "kty": "OKP", "crv": "Ed25519", "alg": "EdDSA", "x": srv_jwk_x }]
+                    })
+                    .to_string();
+                    let _ = req.respond(tiny_http::Response::from_string(body).with_header(ct));
+                    continue;
+                }
+                if url == "/v1/auth/token" {
+                    let mut raw = String::new();
+                    let _ = std::io::Read::read_to_string(req.as_reader(), &mut raw);
+                    let parsed: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+                    let call_idx = srv_calls.fetch_add(1, Ordering::SeqCst);
+                    if parsed["refresh_token"] == initial_refresh && call_idx == 0 {
+                        std::thread::sleep(Duration::from_millis(80));
+                        let now_sec = now() / 1000;
+                        let h = URL_SAFE_NO_PAD
+                            .encode(json!({"alg":"EdDSA","typ":"JWT"}).to_string().as_bytes());
+                        let c = URL_SAFE_NO_PAD.encode(
+                            json!({
+                                "iss": "liquid-hub-auth",
+                                "aud": "liquid-hub-desktop",
+                                "iat": now_sec,
+                                "exp": now_sec + 600,
+                                "fam": "fam1",
+                                "sub": "usr_1"
+                            })
+                            .to_string()
+                            .as_bytes(),
+                        );
+                        let signing_input = format!("{h}.{c}");
+                        let sig = URL_SAFE_NO_PAD.encode(srv_kp.sign(signing_input.as_bytes()).as_ref());
+                        let jwt = format!("{signing_input}.{sig}");
+                        let body = json!({
+                            "access_token": jwt,
+                            "refresh_token": rotated_refresh,
+                            "subject": "usr_1",
+                            "user": { "subject": "usr_1", "displayName": "Test User" }
+                        })
+                        .to_string();
+                        let _ = req.respond(tiny_http::Response::from_string(body).with_header(ct));
+                    } else {
+                        let _ = req.respond(
+                            tiny_http::Response::from_string(r#"{"error":"Revoked"}"#)
+                                .with_status_code(401)
+                                .with_header(ct),
+                        );
+                    }
+                    continue;
+                }
+                let _ = req.respond(tiny_http::Response::from_string("{}").with_status_code(404));
+            }
+        });
+
+        let mut secrets = Secrets::default();
+        secrets.broker_url = broker_url.clone();
+        secrets.hub_session = Some(HubVaultSession {
+            subject: "usr_1".into(),
+            access_token: "expired.jwt.token".into(),
+            refresh_token: initial_refresh.into(),
+            family_id: "fam1".into(),
+            expires_at: now() - 10_000,
+            jwk_x,
+            ..Default::default()
+        });
+        secrets.save(&secrets_path).unwrap();
+        let secrets_mtx = Mutex::new(secrets);
+
+        let (r1, r2, r3, r4) = tokio::join!(
+            ensure_fresh_hub_token(&secrets_mtx, &secrets_path, None),
+            ensure_fresh_hub_token(&secrets_mtx, &secrets_path, None),
+            ensure_fresh_hub_token(&secrets_mtx, &secrets_path, None),
+            ensure_fresh_hub_token(&secrets_mtx, &secrets_path, None),
+        );
+
+        stop.store(true, Ordering::Relaxed);
+        let _ = handle.join();
+
+        let (b1, t1) = r1.expect("caller 1 must succeed");
+        let (b2, t2) = r2.expect("caller 2 must succeed");
+        let (b3, t3) = r3.expect("caller 3 must succeed");
+        let (b4, t4) = r4.expect("caller 4 must succeed");
+
+        assert_eq!(refresh_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(b1, broker_url);
+        assert_eq!(b2, broker_url);
+        assert_eq!(b3, broker_url);
+        assert_eq!(b4, broker_url);
+        assert_eq!(t1, t2);
+        assert_eq!(t2, t3);
+        assert_eq!(t3, t4);
+
+        let saved = Secrets::load(&secrets_path).unwrap();
+        let sess = saved.hub_session.expect("hub_session must not be cleared");
+        assert_eq!(sess.refresh_token, rotated_refresh);
+        assert_eq!(sess.access_token, t1);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

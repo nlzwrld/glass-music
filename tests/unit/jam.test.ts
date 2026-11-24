@@ -31,6 +31,7 @@ import {
   type JamInviteLookupResult,
   type JamInvitePreview,
   type JamRoom,
+  type JamSession,
 } from '../../shared/jam';
 import type { Track } from '../../shared/types';
 
@@ -1641,5 +1642,118 @@ describe('JAM v3 invites, persistence, real-time SSE, deduplication and Ed25519 
       'https://wa.me/?text=',
     );
     expect(buildDiscordShareText('Sextou', inviteUrl, 'K9M4P2XR')).toContain(inviteUrl);
+  });
+
+  it('supports rotateInvite in Cloudflare JamRoomDO, migrates room state across restart, blocks non-host, and keeps duplicate join idempotent', async () => {
+    installCloudflareSocketRuntime();
+    const cloud = createCloudflareJamSimulator({ JAM_REPLAY_WINDOW_MS: '300000' });
+
+    // Internal migration endpoint must never be exposed publicly
+    const publicMigrate = await cloud.fetch(
+      new Request('https://jam.test/__internal/migrate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Liquid-Internal-Migrate': '1' },
+        body: '{}',
+      }),
+    );
+    expect(publicMigrate.status).toBe(404);
+
+    const createRes = await cloud.fetch(
+      workerJamRequest({ action: 'create', name: 'HostDO', roomName: 'Sala DO', clientId: 'host_do_1' }),
+    );
+    expect(createRes.status).toBe(201);
+    const created = (await createRes.json()) as JamSession;
+
+    // Joining twice with the same clientId must stay idempotent with 2 members (host + 1 guest)
+    const join1 = await cloud.fetch(
+      workerJamRequest({
+        action: 'join',
+        code: created.code,
+        name: 'GuestDO',
+        clientId: 'guest_do_same_client',
+      }),
+    );
+    expect(join1.status).toBe(200);
+    const guest1 = (await join1.json()) as JamSession;
+
+    const join2 = await cloud.fetch(
+      workerJamRequest({
+        action: 'join',
+        code: created.code,
+        name: 'GuestDO',
+        clientId: 'guest_do_same_client',
+      }),
+    );
+    expect(join2.status).toBe(200);
+    const guest2 = (await join2.json()) as JamSession;
+    expect(guest2.members).toHaveLength(2);
+    expect(guest2.token).toBe(guest1.token);
+
+    // Connect WebSocket on old code so we verify broadcast + 4001 close code on rotateInvite
+    const wsRes = await upgradeCloudflareWebSocket(cloud, created.code, guest2.token);
+    expect(wsRes.status).toBe(200);
+    const guestSock = cloud.sockets(created.code)[0]!;
+
+    // Guest cannot rotate invite
+    const forbiddenRotate = await cloud.fetch(
+      workerJamRequest({
+        action: 'rotateInvite',
+        code: created.code,
+        token: guest2.token,
+        nonce: `worker_rotate_forbid_${++workerNonceSequence}`,
+        timestamp: cloud.clock.now,
+      }),
+    );
+    expect(forbiddenRotate.status).toBe(403);
+
+    // Host rotates invite
+    const rotateRes = await cloud.fetch(
+      workerJamRequest({
+        action: 'rotateInvite',
+        code: created.code,
+        token: created.token,
+        inviteTtlMs: 180000,
+        nonce: `worker_rotate_ok_${++workerNonceSequence}`,
+        timestamp: cloud.clock.now,
+      }),
+    );
+    expect(rotateRes.status).toBe(200);
+    const rotated = (await rotateRes.json()) as JamRoom;
+    expect(rotated.code).not.toBe(created.code);
+    expect(rotated.members).toHaveLength(2);
+
+    // Connected socket got the updated room code broadcast and closed cleanly with 4001 (not 1008)
+    expect(guestSock.sent.some(msg => msg.includes(rotated.code))).toBe(true);
+    expect(guestSock.closeCode).toBe(4001);
+
+    // Old code returns INVITE_EXPIRED tombstone
+    const oldLookup = await cloud.fetch(
+      workerJamRequest({ action: 'lookup', code: created.code }),
+    );
+    expect(oldLookup.status).toBe(410);
+    expect(((await oldLookup.json()) as { errorCode?: string }).errorCode).toBe('INVITE_EXPIRED');
+
+    // Cold-restart new DO instance from storage and verify state, lookup, poll, and WS upgrade work on newCode
+    cloud.restart(rotated.code);
+    const newLookup = await cloud.fetch(
+      workerJamRequest({ action: 'lookup', code: rotated.code }),
+    );
+    expect(newLookup.status).toBe(200);
+    expect(((await newLookup.json()) as JamInvitePreview).roomName).toBe('Sala DO');
+
+    const newPoll = await cloud.fetch(
+      workerJamRequest({
+        action: 'poll',
+        code: rotated.code,
+        token: guest2.token,
+        nonce: `worker_poll_rot_${++workerNonceSequence}`,
+        timestamp: cloud.clock.now,
+      }),
+    );
+    expect(newPoll.status).toBe(200);
+    expect(((await newPoll.json()) as JamRoom).code).toBe(rotated.code);
+
+    const wsResNew = await upgradeCloudflareWebSocket(cloud, rotated.code, guest2.token);
+    expect(wsResNew.status).toBe(200);
   });
 });

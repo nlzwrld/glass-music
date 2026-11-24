@@ -1174,19 +1174,59 @@ async fn call(
                 biased;
                 _ = token.cancelled() => Err("Download cancelado.".into()),
                 result = async {
-                    let track = if p["source"] == "link" {
-                        links::playback(p.clone(), &st.catalog_url, &st.direct).await?
-                    } else {
-                        p.clone()
-                    };
+                    let mut track = p.clone();
+                    if p["source"] == "link" {
+                        let key = db::canonical_mapping_key(&p);
+                        if let Some(m) = st.db.lock().unwrap().get_stream_mapping(&key) {
+                            if ["ytmusic", "youtube"].contains(&m.resolved_provider.as_str())
+                                && m.resolved_id.len() == 11
+                            {
+                                track["streamProvider"] = json!(m.resolved_provider);
+                                track["resolvedExternalId"] = json!(m.resolved_id);
+                                track["playbackId"] = json!(m.resolved_id);
+                            }
+                        }
+                        if track["playbackId"].as_str().map_or(true, |v| v.is_empty()) {
+                            track = match resolver::resolve_stream(
+                                p.clone(),
+                                resolver::ResolveOptions {
+                                    force_refresh: false,
+                                    exclude_ids: vec![],
+                                    preferred_provider: Some("ytmusic".into()),
+                                },
+                                &st.db,
+                                &st.audio,
+                                &st.base,
+                                &st.catalog_url,
+                                &st.direct,
+                            )
+                            .await
+                            {
+                                Ok(resolved)
+                                    if resolved["track"]["playbackId"]
+                                        .as_str()
+                                        .is_some_and(|v| v.len() == 11) =>
+                                {
+                                    resolved["track"].clone()
+                                }
+                                _ => links::playback(p.clone(), &st.catalog_url, &st.direct).await?,
+                            };
+                        }
+                    }
                     db::validate_track(&track)?;
                     if s(&track, "id") != id {
                         return Err("A faixa resolvida mudou durante o download.".into());
                     }
-                    let stream = st
-                        .direct
-                        .audio(track["playbackId"].as_str().unwrap_or(s(&track, "sourceId")))
-                        .await?;
+                    let audio_id = track["playbackId"]
+                        .as_str()
+                        .filter(|v| !v.is_empty())
+                        .or_else(|| {
+                            track["resolvedExternalId"]
+                                .as_str()
+                                .filter(|v| v.len() == 11)
+                        })
+                        .unwrap_or(s(&track, "sourceId"));
+                    let stream = st.direct.audio(audio_id).await?;
                     let progress_id = id.clone();
                     let progress_app = app.clone();
                     let pending = offline::download_with_progress(

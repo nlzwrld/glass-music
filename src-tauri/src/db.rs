@@ -388,26 +388,34 @@ impl Library {
             params![now() - 7 * 86_400_000],
         );
         let this = Self { db };
-        let expired = this.query(
-            "SELECT data FROM tracks WHERE refreshed < ?",
-            params![now() - 28 * 86400000],
-        )?;
+        let refresh_now = now();
+        let expired = {
+            let mut stmt = this
+                .db
+                .prepare("SELECT data FROM tracks WHERE refreshed < ? AND id NOT IN (SELECT track_id FROM offline_tracks)")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![refresh_now - 28 * 86_400_000], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            let mut items = Vec::new();
+            for row in rows {
+                let raw = row.map_err(|e| e.to_string())?;
+                items.push(serde_json::from_str::<Value>(&raw).map_err(|e| e.to_string())?);
+            }
+            items
+        };
         for mut t in expired {
             if s(&t, "source") != "local" {
-                t["title"] = json!(if s(&t, "source") == "youtube" {
-                    "Vídeo do YouTube"
-                } else {
-                    "Faixa do SoundCloud"
-                });
-                t["artist"] = t["source"].clone();
-                t["duration"] = json!(0);
                 if let Some(o) = t.as_object_mut() {
-                    o.remove("artwork");
+                    o.remove("playbackId");
+                    o.remove("resolvedExternalId");
+                    o.remove("resolvedStreamUrl");
+                    o.remove("streamProvider");
                 }
                 this.db
                     .execute(
-                        "UPDATE tracks SET data=? WHERE id=?",
-                        params![t.to_string(), s(&t, "id")],
+                        "UPDATE tracks SET data=?, refreshed=? WHERE id=?",
+                        params![t.to_string(), refresh_now, s(&t, "id")],
                     )
                     .map_err(|e| e.to_string())?;
             }
@@ -1438,6 +1446,109 @@ mod tests {
             }))
             .unwrap();
         assert!(cleared["playlists"][0]["artwork"].is_null());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn expired_tracks_preserve_user_metadata_and_offline_files_while_clearing_stale_online_streams() {
+        let dir = std::env::temp_dir().join(format!("liquid-expired-meta-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("lib.sqlite");
+        let stale_ts = now() - 35 * 86_400_000;
+
+        {
+            let db = Library::open(&db_path).unwrap();
+            let sp = json!({
+                "id": "link:sp1",
+                "source": "link",
+                "sourceId": "sp1",
+                "kind": "track",
+                "title": "Midnight City",
+                "artist": "M83",
+                "duration": 243,
+                "url": "https://open.spotify.com/track/1kAZGb11n9fB9v91e9o0s0",
+                "artwork": "https://i.scdn.co/image/ab67616d00001e02midnight",
+                "catalogSource": "spotify",
+                "streamProvider": "ytmusic",
+                "resolvedExternalId": "dX3k_QDnzHE",
+                "resolvedStreamUrl": "https://music.youtube.com/watch?v=dX3k_QDnzHE",
+                "playbackId": "dX3k_QDnzHE",
+                "addedAt": 1
+            });
+            let yt = json!({
+                "id": "youtube:dQw4w9WgXcQ",
+                "source": "youtube",
+                "sourceId": "dQw4w9WgXcQ",
+                "kind": "track",
+                "title": "Never Gonna Give You Up",
+                "artist": "Rick Astley",
+                "duration": 212,
+                "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "artwork": "https://img.youtube.com/vi/dQw4w9WgXcQ/mqdefault.jpg",
+                "addedAt": 1
+            });
+            let off = json!({
+                "id": "link:off1",
+                "source": "link",
+                "sourceId": "off1",
+                "kind": "track",
+                "title": "Instant Crush",
+                "artist": "Daft Punk",
+                "duration": 337,
+                "url": "https://open.spotify.com/track/2cGxRwrMyEAp8dEbuZaVv6",
+                "artwork": "https://i.scdn.co/image/ab67616d00001e02instant",
+                "streamProvider": "ytmusic",
+                "resolvedExternalId": "a5uQMwRMHcs",
+                "playbackId": "a5uQMwRMHcs",
+                "addedAt": 1
+            });
+            let loc = track("local1");
+
+            db.save(&sp, None).unwrap();
+            db.save(&yt, None).unwrap();
+            db.save(&off, None).unwrap();
+            db.save(&loc, Some("C:/local1.wav")).unwrap();
+            db.save_offline("link:off1", "C:/off1.m4a", 4096, 337.0).unwrap();
+
+            db.db
+                .execute("UPDATE tracks SET refreshed = ?", params![stale_ts])
+                .unwrap();
+        }
+
+        let reopened = Library::open(&db_path).unwrap();
+        let snap = reopened.snapshot().unwrap();
+        let items = snap["tracks"].as_array().unwrap();
+
+        let sp_after = items.iter().find(|t| t["id"] == "link:sp1").unwrap();
+        assert_eq!(sp_after["title"], "Midnight City");
+        assert_eq!(sp_after["artist"], "M83");
+        assert_eq!(sp_after["duration"], 243);
+        assert_eq!(sp_after["artwork"], "https://i.scdn.co/image/ab67616d00001e02midnight");
+        assert!(sp_after.get("playbackId").is_none());
+        assert!(sp_after.get("resolvedStreamUrl").is_none());
+        assert!(sp_after.get("streamProvider").is_none());
+
+        let yt_after = items.iter().find(|t| t["id"] == "youtube:dQw4w9WgXcQ").unwrap();
+        assert_eq!(yt_after["title"], "Never Gonna Give You Up");
+        assert_eq!(yt_after["artist"], "Rick Astley");
+        assert_eq!(yt_after["duration"], 212);
+
+        let off_after = items.iter().find(|t| t["id"] == "link:off1").unwrap();
+        assert_eq!(off_after["title"], "Instant Crush");
+        assert_eq!(off_after["artist"], "Daft Punk");
+        assert_eq!(off_after["playbackId"], "a5uQMwRMHcs");
+        assert_eq!(off_after["offline"], true);
+
+        let loc_after = items.iter().find(|t| t["id"] == "local:local1").unwrap();
+        assert_eq!(loc_after["title"], "local1");
+        assert_eq!(loc_after["artist"], "Teste");
+
+        let sp_refreshed: i64 = reopened
+            .db
+            .query_row("SELECT refreshed FROM tracks WHERE id = 'link:sp1'", [], |r| r.get(0))
+            .unwrap();
+        assert!(sp_refreshed > stale_ts);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

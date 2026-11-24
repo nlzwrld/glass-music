@@ -3,18 +3,32 @@ import {spawn} from 'node:child_process';
 import {mkdtemp,mkdir,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
+import {createBroker} from '../../server/broker';
 import {defaults} from '../../shared/types';
 import {opticalDefaults} from '../../src/components/glass/v3/model';
-import {navButton,selectGlass} from './ui';
+import {authenticateLocalBroker,openProfileMenuPage,selectGlass,waitForCdp} from './ui';
 
 async function appearance(page:Page){
- await navButton(page,'Configurações').click();
+ await openProfileMenuPage(page,'Configurações');
+ await page.getByRole('navigation',{name:'Categorias de configurações',exact:true}).getByRole('button',{name:'Aparência',exact:true}).click();
  await selectGlass(page);
  await expect(page.getByRole('slider',{name:'Intensidade do gradiente',exact:true})).toBeVisible();
 }
 
 test('recent sidebar fits, vivid gradients remain tonal, desktop blur stays neutral and motion honors preference',async()=>{
  test.setTimeout(150000);await mkdir('.test-data/profiles',{recursive:true});await mkdir('test-results',{recursive:true});
+ const brokerServer = createBroker(
+  {
+   BROKER_ACCESS_TOKEN: 'visual-e2e-broker-secret-token-1234',
+   SOUNDCLOUD_CLIENT_ID: 'visual-sc-id',
+   SOUNDCLOUD_CLIENT_SECRET: 'visual-sc-secret',
+  },
+  async () => new Response(JSON.stringify({ access_token: 'sc', expires_in: 3600 })),
+  Date.now,
+  { argon2Params: { memory: 1024, passes: 1, parallelism: 1, tagLength: 16 } },
+ );
+ await new Promise<void>(r => brokerServer.listen(0, '127.0.0.1', r));
+ const brokerUrl = `http://127.0.0.1:${(brokerServer.address() as { port: number }).port}`;
  const profile=await mkdtemp(resolve('.test-data/profiles/visual-220-')),db=new DatabaseSync(join(profile,'library.sqlite'));
  db.exec('CREATE TABLE tracks(id TEXT PRIMARY KEY,data TEXT NOT NULL,local_path TEXT,refreshed INTEGER NOT NULL);CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);CREATE TABLE history(track_id TEXT REFERENCES tracks(id) ON DELETE CASCADE,played INTEGER NOT NULL);');
  for(let i=0;i<36;i++){
@@ -24,11 +38,12 @@ test('recent sidebar fits, vivid gradients remain tonal, desktop blur stays neut
  }
  db.prepare('INSERT INTO history VALUES(?,?)').run('local:recent-0',Date.now()+1000);
  db.prepare('INSERT INTO settings VALUES(?,?)').run('preferences',JSON.stringify({...defaults,onboardingDone:true,onlineConsent:false,catalogConsent:false,volume:0,glass:20,reducedMotion:false,appearance:{...opticalDefaults,background:'solid',solidColor:'#ff0000',backgroundMotion:0,quality:'balanced'}}));db.close();
- const proc=spawn(process.env.GLASS_EXE!,[],{windowsHide:true,env:{...process.env,GLASS_TEST_DATA:profile,GLASS_TEST_DISABLE_DIRECT:'1',WEBVIEW2_USER_DATA_FOLDER:join(profile,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9384'}});
+ const proc=spawn(process.env.GLASS_EXE||join(process.env.LOCALAPPDATA!,'Liquid Hub/liquid-hub.exe'),[],{windowsHide:true,env:{...process.env,GLASS_TEST_DATA:profile,GLASS_TEST_DISABLE_DIRECT:'1',LIQUID_HUB_BROKER_URL:brokerUrl,WEBVIEW2_USER_DATA_FOLDER:join(profile,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9384'}});
  let browser:Browser|undefined;const errors:string[]=[],layouts:unknown[]=[],gradients:unknown[]=[],desktop:unknown[]=[];
  try{
-  for(let i=0;i<100;i++){try{if((await fetch('http://127.0.0.1:9384/json/version')).ok)break;}catch{}await new Promise(r=>setTimeout(r,200));}
+  await waitForCdp(proc, 9384, 100, 200);
   browser=await chromium.connectOverCDP('http://127.0.0.1:9384');const context=browser.contexts()[0],page=context.pages()[0];page.on('pageerror',e=>errors.push(e.message));
+  await authenticateLocalBroker(page, { name: 'VisualUser', email: 'visual-220@liquidhub.dev' });
   await expect(page.locator('.welcome-screen')).toHaveCount(0,{timeout:15000});
   await expect(page.locator('.sidebar .recent-track')).toHaveCount(20);
   await expect(page.locator('.sidebar-recents')).toHaveAttribute('aria-label','Músicas recentes');
@@ -70,5 +85,5 @@ test('recent sidebar fits, vivid gradients remain tonal, desktop blur stays neut
   await expect(page.locator('html')).toHaveAttribute('data-motion','reduced');
   const duration=await page.locator('.recent-track').first().evaluate(el=>getComputedStyle(el).transitionDuration);expect(duration.split(',').every(v=>parseFloat(v)<.001)).toBe(true);
   expect(errors).toEqual([]);await writeFile('test-results/visual-220-validation.json',JSON.stringify({layouts,gradients,desktop,reducedMotion:true,errors},null,2));
- }finally{proc.kill();await browser?.close().catch(()=>{});}
+ }finally{proc.kill();await browser?.close().catch(()=>{});brokerServer.closeAllConnections();await new Promise<void>(r=>brokerServer.close(()=>r()));}
 });

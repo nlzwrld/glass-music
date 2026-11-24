@@ -415,6 +415,19 @@ fn valid_audio_signature(ext: &str, bytes: &[u8]) -> bool {
     }
 }
 
+pub(crate) fn cdn_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 5 {
+            return attempt.stop();
+        }
+        if crate::audio::valid_cdn(attempt.url().as_str()) {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
 pub async fn download_with_progress<F>(
     data: &Path,
     id: &str,
@@ -446,7 +459,7 @@ where
     let temporary = pending.temporary.clone();
     let client = crate::providers::http_client_builder()
         .timeout(std::time::Duration::from_secs(60))
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(cdn_redirect_policy())
         .build()
         .map_err(|_| "Falha no download.")?;
     if token.is_cancelled() {
@@ -684,5 +697,85 @@ mod tests {
         assert!(!old.exists());
         drop(operation);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn download_client_allows_only_cdn_redirects_and_rejects_non_cdn_targets() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        assert!(crate::audio::valid_cdn(
+            "https://rr3---sn-test.googlevideo.com/videoplayback?expire=999"
+        ));
+        assert!(crate::audio::valid_cdn(
+            "https://cf-media.sndcdn.com/media/123.mp3"
+        ));
+        assert!(!crate::audio::valid_cdn("http://127.0.0.1/secret"));
+        assert!(!crate::audio::valid_cdn("https://evil.example/videoplayback"));
+        assert!(!crate::audio::valid_cdn(
+            "https://googlevideo.com.evil.test/videoplayback"
+        ));
+
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let addr = server.server_addr().to_string();
+        let secret_hits = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let srv_hits = secret_hits.clone();
+        let srv_stop = stop.clone();
+        let redirect_target = format!("http://{addr}/secret");
+
+        let handle = std::thread::spawn(move || {
+            while !srv_stop.load(Ordering::Relaxed) {
+                let Ok(Some(req)) = server.recv_timeout(std::time::Duration::from_millis(50)) else {
+                    continue;
+                };
+                if req.url() == "/secret" {
+                    srv_hits.fetch_add(1, Ordering::SeqCst);
+                    let _ = req.respond(tiny_http::Response::from_string("secret"));
+                } else {
+                    let loc = tiny_http::Header::from_bytes("Location", redirect_target.as_bytes()).unwrap();
+                    let _ = req.respond(
+                        tiny_http::Response::from_string("")
+                            .with_status_code(302)
+                            .with_header(loc),
+                    );
+                }
+            }
+        });
+
+        let client = crate::providers::http_client_builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .redirect(cdn_redirect_policy())
+            .build()
+            .unwrap();
+        let resp = client.get(format!("http://{addr}/")).send().await.unwrap();
+        stop.store(true, Ordering::Relaxed);
+        let _ = handle.join();
+
+        assert_eq!(resp.status().as_u16(), 302);
+        assert_eq!(secret_hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn download_with_progress_rejects_non_cdn_stream_without_leaving_temp_files() {
+        let root = temp_dir();
+        let token = CancellationToken::new();
+        let bad_stream = json!({
+            "url": "https://evil.example/videoplayback",
+            "vcodec": "none",
+            "acodec": "mp4a.40.2",
+            "protocol": "https",
+            "ext": "m4a",
+            "duration": 180.0
+        });
+        let err = download_with_progress(&root, "youtube:badcdn", &bad_stream, &token, |_, _| {})
+            .await
+            .err();
+        assert!(err.is_some());
+        let offline_dir = root.join("offline");
+        if offline_dir.exists() {
+            assert_eq!(std::fs::read_dir(&offline_dir).unwrap().count(), 0);
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 }

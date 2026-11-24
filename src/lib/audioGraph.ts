@@ -305,15 +305,15 @@ export class AudioGraph {
     if (!gain) return;
     const target = Math.max(0, Math.min(1, Number.isFinite(value) ? value : 1));
     const time = this.context.currentTime;
-    const current = Math.max(0, Math.min(1, Number.isFinite(gain.value) ? gain.value : 0));
     if (typeof gain.cancelAndHoldAtTime === 'function') {
       gain.cancelAndHoldAtTime(time);
     } else {
+      const fallbackCurrent = Math.max(0, Math.min(1, Number.isFinite(gain.value) ? gain.value : 0));
       gain.cancelScheduledValues(time);
-      gain.setValueAtTime(current, time);
+      gain.setValueAtTime(fallbackCurrent, time);
     }
+    const current = Math.max(0, Math.min(1, Number.isFinite(gain.value) ? gain.value : 0));
     if (seconds > 0) {
-      gain.setValueAtTime(current, time);
       if (
         equalPower &&
         ((current <= 0.15 && target >= 0.9) || (current >= 0.85 && target <= 0.1))

@@ -18,6 +18,27 @@ export async function openProfileMenuPage(page: Page, name: 'Configurações' | 
   await page.getByRole('menuitem', { name, exact: true }).click();
 }
 
+export async function authenticateLocalBroker(
+  page: Page,
+  opts?: { name?: string; email?: string; password?: string },
+) {
+  const gate = page.locator('.auth-gate');
+  await expect(gate).toBeVisible({ timeout: 15000 });
+  const terms = gate.locator('input[type="checkbox"]');
+  if (!(await terms.isChecked())) {
+    await terms.check();
+  }
+  await gate.getByRole('button', { name: 'Entrar com e-mail', exact: true }).click();
+  await gate.getByRole('button', { name: 'Criar conta com e-mail', exact: true }).click();
+  await gate.getByLabel('Nome de exibição').fill(opts?.name || 'Usuário Teste');
+  await gate.getByLabel('E-mail').fill(opts?.email || 'e2e@liquidhub.dev');
+  await gate
+    .getByLabel('Senha (mínimo 12 caracteres)')
+    .fill(opts?.password || 'LocalE2EAuthPass!2026');
+  await gate.getByRole('button', { name: 'Criar conta', exact: true }).click();
+  await expect(page.locator('.sidebar .brand')).toBeVisible({ timeout: 15000 });
+}
+
 export function sidebarPlaylist(page: Page, name: string) {
   return sidebar(page)
     .getByRole('button')

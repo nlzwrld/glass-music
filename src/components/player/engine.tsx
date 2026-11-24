@@ -33,6 +33,15 @@ export function shouldStartPreparedPlayback(cancelled: boolean, playbackIntent: 
   return !cancelled && playbackIntent;
 }
 
+export function isCurrentPlaybackRevision(
+  effectRevision: number,
+  cancelled: boolean,
+  advanced: boolean,
+  currentRevision = useApp.getState().revision,
+): boolean {
+  return !cancelled && !advanced && currentRevision === effectRevision;
+}
+
 export function handlePlaybackStartError(error: unknown): boolean {
   if ((error as { name?: unknown } | null)?.name !== 'NotAllowedError') return false;
   useApp.setState({ playing: false, playbackIntent: false, status: 'Pausado' });
@@ -173,6 +182,7 @@ export function PlayerEngine() {
 
   useEffect(() => {
     const generation = ++activeGeneration.current,
+      effectRevision = revision,
       all = elements();
     clearTimeout(retire.current);
     fade.current.cancel();
@@ -450,21 +460,26 @@ export function PlayerEngine() {
           stageStandby();
         }
         if (p.transition === 'crossfade' && remaining <= seconds && upcomingTrack()) {
-          advanced = true;
-          useApp.getState().next(false);
+          if (isCurrentPlaybackRevision(effectRevision, cancelled, advanced)) {
+            advanced = true;
+            useApp.getState().next(false);
+          }
         } else if (p.transition === 'fade') {
           if (!fadingOut && remaining <= seconds) {
             fadingOut = true;
             graph.current?.level(el, 0, remaining);
           }
           if (remaining <= 0.08 && upcomingTrack() && staged.current?.id === upcomingTrack()?.id) {
-            advanced = true;
-            useApp.getState().next(false);
+            if (isCurrentPlaybackRevision(effectRevision, cancelled, advanced)) {
+              advanced = true;
+              useApp.getState().next(false);
+            }
           }
         }
       }
     };
     const onEnded = () => {
+      if (cancelled || useApp.getState().revision !== effectRevision) return;
       if (fade.current.isFadingOut() && !useApp.getState().playbackIntent) {
         fade.current.cancel();
         el.pause();
@@ -472,7 +487,7 @@ export function PlayerEngine() {
         return;
       }
       fade.current.cancel();
-      if (!advanced) {
+      if (isCurrentPlaybackRevision(effectRevision, cancelled, advanced)) {
         advanced = true;
         const prefs = useApp.getState().data.preferences;
         const willAutoContinue =

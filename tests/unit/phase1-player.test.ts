@@ -269,8 +269,11 @@ describe('Phase 1: AudioGraph click-free ramping & volume preservation', () => {
 
     graph.level(el, 0, 0.5);
     expect(deckGain.cancelAndHoldAtTime).toHaveBeenCalledWith(10);
-    expect(deckGain.setValueAtTime).toHaveBeenCalledWith(1, 10);
+    expect(deckGain.setValueAtTime).not.toHaveBeenCalled();
     expect(deckGain.linearRampToValueAtTime).toHaveBeenCalledWith(0, 10.5);
+    expect(deckGain.cancelAndHoldAtTime!.mock.invocationCallOrder[0]).toBeLessThan(
+      deckGain.linearRampToValueAtTime.mock.invocationCallOrder[0],
+    );
     expect(graph.getLevel(el)).toBe(0);
 
     // Clamping bounds out-of-range values cleanly to [0, 1]

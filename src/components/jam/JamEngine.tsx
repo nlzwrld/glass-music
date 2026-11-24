@@ -533,6 +533,15 @@ export function JamEngine() {
 
         useJam.setState({ realtimeConnected: false });
 
+        // 4001 = invite code rotated cleanly by host; reconnect immediately to the new room code
+        if (event.code === 4001) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(() => {
+            if (!disposed) connectWebSocket();
+          }, 50);
+          return;
+        }
+
         // 1008 = revoked / session expired / room closed by server
         if (event.code === 1008) {
           const reason = event.reason || 'JAM encerrada ou sessão expirada.';
