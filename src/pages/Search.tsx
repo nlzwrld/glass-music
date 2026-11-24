@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Search as SearchIcon,
   LoaderCircle,
@@ -12,6 +12,7 @@ import { resolveEffectiveBroker, useAccounts } from '../stores/accounts';
 import type { SearchKind, SearchSource, SearchResult, UserSearchItem } from '../../shared/types';
 import TrackList from '../components/library/TrackList';
 import TrackCard from '../components/library/TrackCard';
+import { mergeSearchPages } from '../lib/searchPages';
 import { rankSearchTracks } from '../lib/searchRanking';
 
 const KINDS: [SearchKind, string][] = [
@@ -60,16 +61,16 @@ export default function Search() {
   }, [loading]);
 
   const isLink = looksLikeMusicLink(query);
-  const localMatches =
-    kind !== 'lyrics' && kind !== 'user' && (source === 'all' || source === 'local')
-      ? local.filter(
-          t =>
-            (source === 'local' ? t.source === 'local' : true) &&
-            `${t.title} ${t.artist} ${t.album || ''}`
-              .toLocaleLowerCase('pt-BR')
-              .includes(query.toLocaleLowerCase('pt-BR')),
-        )
-      : [];
+  const localMatches = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase('pt-BR');
+    if (!needle || (kind !== 'all' && kind !== 'track') || (source !== 'all' && source !== 'local')) {
+      return [];
+    }
+    return local.filter(track =>
+      (source !== 'local' || track.source === 'local') &&
+      `${track.title} ${track.artist} ${track.album || ''}`.toLocaleLowerCase('pt-BR').includes(needle),
+    );
+  }, [query, local, kind, source]);
 
   useEffect(() => {
     const gen = ++generation.current;
@@ -132,11 +133,14 @@ export default function Search() {
                 .hubSearchUsers({ brokerUrl, query: q, limit: 8 })
                 .catch(() => ({ users: [] as UserSearchItem[] }))
             : Promise.resolve({ users: [] as UserSearchItem[] });
-        const [data, userData] = await Promise.all([searchPromise, usersPromise]);
-        if (generation.current === gen) {
-          setResult(data);
-          setUsers(Array.isArray(userData?.users) ? userData.users : []);
-        }
+        await Promise.all([
+          searchPromise.then(data => {
+            if (generation.current === gen) setResult(data);
+          }),
+          usersPromise.then(data => {
+            if (generation.current === gen) setUsers(Array.isArray(data?.users) ? data.users : []);
+          }),
+        ]);
       } catch (e) {
         if (generation.current === gen)
           setResult({ items: [], next: {}, notices: [cleanError(e)] });
@@ -157,7 +161,7 @@ export default function Search() {
     const requestId = crypto.randomUUID();
     active.current = Object.keys(result.next).map(provider => requestId + provider);
     try {
-      const pages = await Promise.all(
+      const pages = await Promise.allSettled(
         Object.keys(result.next).map(provider =>
           window.glass.search({
             query: query.trim(),
@@ -168,18 +172,11 @@ export default function Search() {
           }),
         ),
       );
-      if (gen === generation.current)
-        setResult(prev => ({
-          items: [
-            ...new Map(
-              [...prev.items, ...pages.flatMap(p => p.items)].map(t => [t.id, t]),
-            ).values(),
-          ],
-          next: Object.assign({}, ...pages.map(p => p.next)),
-          notices: pages.flatMap(p => p.notices),
-        }));
+      if (gen !== generation.current) return;
+      const providers = Object.keys(result.next);
+      setResult(previous => mergeSearchPages(previous, providers, pages, cleanError));
     } catch (e) {
-      useApp.getState().message(cleanError(e));
+      if (gen === generation.current) useApp.getState().message(cleanError(e));
     } finally {
       if (gen === generation.current) setLoading(false);
     }

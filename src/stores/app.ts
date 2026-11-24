@@ -964,8 +964,15 @@ export const useApp = create<State>((set, get) => ({
     }
   },
   play: (incoming, list = [incoming], options) => {
+    const library = get().data.tracks;
+    const savedById = new Map<string, Track>();
+    if (list.length > 1) {
+      for (const saved of library) {
+        if (!savedById.has(saved.id)) savedById.set(saved.id, saved);
+      }
+    }
     const enrich = (t: Track) => {
-      const saved = get().data.tracks.find(v => v.id === t.id);
+      const saved = list.length > 1 ? savedById.get(t.id) : library.find(v => v.id === t.id);
       return {
         ...t,
         ...(saved?.offline ? { offline: true } : {}),

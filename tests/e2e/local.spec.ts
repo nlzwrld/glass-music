@@ -47,6 +47,19 @@ test('existing local audio remains playable offline with the optical engine',asy
   await expect.poll(async()=>(await page.evaluate(()=>window.glass.bootstrap())).preferences.onlineConsent).toBe(false);
   await expect(page.locator('.welcome-screen')).toHaveCount(0,{timeout:15000});await navButton(page,'Biblioteca').click();await page.getByRole('button',{name:`Reproduzir ${track.title}`,exact:true}).click();
   await expect.poll(()=>activeAudio(page).evaluate((a:HTMLAudioElement)=>a.currentTime)).toBeGreaterThan(.8);await expect(page.locator('html')).toHaveAttribute('data-optical-engine',/webgl|css/);
+  await navButton(page, 'Início').click();
+  await page.getByRole('button', { name: 'Fila de reprodução', exact: true }).click();
+  await expect(page.locator('.queue-item.current')).toContainText(track.title);
+  const audio = activeAudio(page);
+  const before = await audio.evaluate((element: HTMLAudioElement) => element.currentTime);
+  await page.getByRole('button', { name: 'Minimizar janela', exact: true }).click();
+  try {
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeGreaterThan(before + 1);
+  } finally {
+    await page.evaluate(() => window.glass.window('restore'));
+  }
+  await expect(page.locator('.queue-item.current')).toContainText(track.title);
+  await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(false);
   await page.locator('footer.player').getByRole('button',{name:'Pausar',exact:true}).click();await expect.poll(()=>activeAudio(page).evaluate((a:HTMLAudioElement)=>a.paused)).toBe(true);
   expect((await page.evaluate(()=>window.glass.bootstrap())).preferences.onlineConsent).toBe(false);expect(errors).toEqual([]);
   await writeFile('test-results/local-v3-validation.json',JSON.stringify({version:'2.0.1',legacyLocalPlayback:true,offline:true,glassActive:true,errors},null,2));
