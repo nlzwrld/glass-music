@@ -88,13 +88,21 @@ export function JamInviteModal() {
 
   useEffect(() => {
     if (!pending && !showingActiveRequest) return;
+    const prevFocus = document.activeElement as HTMLElement | null;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !busy) {
+        e.preventDefault();
+        e.stopPropagation();
         if (pending) useJam.getState().closeInviteModal();
       }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keydown', onKey, true);
+    return () => {
+      window.removeEventListener('keydown', onKey, true);
+      if (prevFocus && prevFocus.isConnected && prevFocus !== document.body) {
+        prevFocus.focus();
+      }
+    };
   }, [pending, showingActiveRequest, busy]);
 
   if (!pending && !showingActiveRequest) return null;

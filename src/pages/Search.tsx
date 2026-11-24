@@ -36,6 +36,7 @@ const SOURCES: [SearchSource, string][] = [
 
 export default function Search() {
   const query = useApp(s => s.filter),
+    searchBusy = useApp(s => s.searchBusy),
     local = useApp(s => s.data.tracks),
     onlineConsent = useApp(s => s.data.preferences.onlineConsent),
     consent = useApp(
@@ -45,19 +46,32 @@ export default function Search() {
     ),
     hub = useAccounts(s => s.hub),
     preferredBrokerUrl = useAccounts(s => s.preferredBrokerUrl);
-  const [kind, setKind] = useState<SearchKind>('all');
-  const [source, setSource] = useState<SearchSource>('all');
-  const [result, setResult] = useState<SearchResult>({ items: [], next: {}, notices: [] });
-  const [users, setUsers] = useState<UserSearchItem[]>([]);
+  const initialSession = useRef(useApp.getState().searchSession);
+  const [kind, setKind] = useState<SearchKind>(() => initialSession.current.kind);
+  const [source, setSource] = useState<SearchSource>(() => initialSession.current.source);
+  const [result, setResult] = useState<SearchResult>(() => initialSession.current.result);
+  const [users, setUsers] = useState<UserSearchItem[]>(() => initialSession.current.users);
   const [loading, setLoading] = useState(false);
   const generation = useRef(0);
   const active = useRef<string[]>([]);
   const brokerUrl = resolveEffectiveBroker(undefined, { preferredBrokerUrl, hub });
+  const lastResolvedSig = useRef(
+    initialSession.current.query &&
+      (initialSession.current.result.items.length > 0 ||
+        initialSession.current.users.length > 0 ||
+        initialSession.current.result.notices.length > 0)
+      ? `${initialSession.current.query}::${initialSession.current.kind}::${initialSession.current.source}::${consent ? '1' : '0'}::${onlineConsent ? '1' : '0'}`
+      : '',
+  );
 
   useEffect(() => {
     useApp.setState({ searchBusy: loading });
     return () => useApp.setState({ searchBusy: false });
   }, [loading]);
+
+  useEffect(() => {
+    useApp.getState().setSearchSession({ kind, source });
+  }, [kind, source]);
 
   const isLink = looksLikeMusicLink(query);
   const localMatches =
@@ -74,22 +88,40 @@ export default function Search() {
   useEffect(() => {
     const gen = ++generation.current;
     const q = query.trim();
-    setResult({ items: [], next: {}, notices: [] });
-    setUsers([]);
+    const sig = `${q}::${kind}::${source}::${consent ? '1' : '0'}::${onlineConsent ? '1' : '0'}`;
     active.current.forEach(id => void window.glass.cancelSearch(id));
     active.current = [];
-    setLoading(false);
-    if (!q || isLink) return;
+    if (!q || isLink) {
+      lastResolvedSig.current = '';
+      const emptyResult: SearchResult = { items: [], next: {}, notices: [] };
+      setResult(emptyResult);
+      setUsers([]);
+      setLoading(false);
+      useApp.getState().setSearchSession({ query: q, result: emptyResult, users: [] });
+      return;
+    }
+    if (lastResolvedSig.current === sig) {
+      setLoading(false);
+      return;
+    }
     if (kind === 'user') {
+      setResult({ items: [], next: {}, notices: [] });
       if (!onlineConsent) {
-        setResult({
+        const noticeRes: SearchResult = {
           items: [],
           next: {},
           notices: ['Ative o acesso online para buscar usuários.'],
-        });
+        };
+        setResult(noticeRes);
+        setUsers([]);
+        setLoading(false);
+        useApp.getState().setSearchSession({ query: q, result: noticeRes, users: [] });
         return;
       }
-      if (!window.glass?.hubSearchUsers) return;
+      if (!window.glass?.hubSearchUsers) {
+        setLoading(false);
+        return;
+      }
       setLoading(true);
       const timer = setTimeout(async () => {
         try {
@@ -99,11 +131,22 @@ export default function Search() {
             limit: 24,
           });
           if (generation.current === gen) {
-            setUsers(Array.isArray(res?.users) ? res.users : []);
+            const nextUsers = Array.isArray(res?.users) ? res.users : [];
+            lastResolvedSig.current = sig;
+            setUsers(nextUsers);
+            useApp.getState().setSearchSession({
+              query: q,
+              kind,
+              source,
+              result: { items: [], next: {}, notices: [] },
+              users: nextUsers,
+            });
           }
         } catch (e) {
           if (generation.current === gen) {
-            setResult({ items: [], next: {}, notices: [cleanError(e)] });
+            const errRes: SearchResult = { items: [], next: {}, notices: [cleanError(e)] };
+            setResult(errRes);
+            useApp.getState().setSearchSession({ query: q, result: errRes });
           }
         } finally {
           if (generation.current === gen) setLoading(false);
@@ -115,31 +158,65 @@ export default function Search() {
       };
     }
 
-    if (source === 'local' && kind !== 'lyrics') return;
+    if (source === 'local' && kind !== 'lyrics') {
+      lastResolvedSig.current = sig;
+      const localRes: SearchResult = { items: [], next: {}, notices: [] };
+      setResult(localRes);
+      setUsers([]);
+      setLoading(false);
+      useApp.getState().setSearchSession({ query: q, kind, source, result: localRes, users: [] });
+      return;
+    }
     if (!consent) {
-      setResult({ items: [], next: {}, notices: ['Ative o acesso online para buscar.'] });
+      const consentRes: SearchResult = {
+        items: [],
+        next: {},
+        notices: ['Ative o acesso online para buscar.'],
+      };
+      lastResolvedSig.current = sig;
+      setResult(consentRes);
+      setUsers([]);
+      setLoading(false);
+      useApp.getState().setSearchSession({ query: q, kind, source, result: consentRes, users: [] });
       return;
     }
     setLoading(true);
     const timer = setTimeout(async () => {
       const requestId = crypto.randomUUID();
       active.current = [requestId];
+      if (kind === 'all' && source === 'all' && window.glass?.hubSearchUsers) {
+        void window.glass
+          .hubSearchUsers({ brokerUrl, query: q, limit: 8 })
+          .then(userData => {
+            if (generation.current === gen) {
+              const nextUsers = Array.isArray(userData?.users) ? userData.users : [];
+              setUsers(nextUsers);
+              useApp.getState().setSearchSession({ users: nextUsers });
+            }
+          })
+          .catch(() => {
+            if (generation.current === gen) {
+              setUsers([]);
+              useApp.getState().setSearchSession({ users: [] });
+            }
+          });
+      } else {
+        setUsers([]);
+        useApp.getState().setSearchSession({ users: [] });
+      }
       try {
-        const searchPromise = window.glass.search({ query: q, kind, source, requestId });
-        const usersPromise =
-          kind === 'all' && source === 'all' && window.glass?.hubSearchUsers
-            ? window.glass
-                .hubSearchUsers({ brokerUrl, query: q, limit: 8 })
-                .catch(() => ({ users: [] as UserSearchItem[] }))
-            : Promise.resolve({ users: [] as UserSearchItem[] });
-        const [data, userData] = await Promise.all([searchPromise, usersPromise]);
+        const data = await window.glass.search({ query: q, kind, source, requestId });
         if (generation.current === gen) {
+          lastResolvedSig.current = sig;
           setResult(data);
-          setUsers(Array.isArray(userData?.users) ? userData.users : []);
+          useApp.getState().setSearchSession({ query: q, kind, source, result: data });
         }
       } catch (e) {
-        if (generation.current === gen)
-          setResult({ items: [], next: {}, notices: [cleanError(e)] });
+        if (generation.current === gen) {
+          const errRes: SearchResult = { items: [], next: {}, notices: [cleanError(e)] };
+          setResult(errRes);
+          useApp.getState().setSearchSession({ query: q, kind, source, result: errRes });
+        }
       } finally {
         if (generation.current === gen) setLoading(false);
       }
@@ -155,10 +232,11 @@ export default function Search() {
     const gen = generation.current;
     setLoading(true);
     const requestId = crypto.randomUUID();
-    active.current = Object.keys(result.next).map(provider => requestId + provider);
+    const providers = Object.keys(result.next);
+    active.current = providers.map(provider => requestId + provider);
     try {
-      const pages = await Promise.all(
-        Object.keys(result.next).map(provider =>
+      const settled = await Promise.allSettled(
+        providers.map(provider =>
           window.glass.search({
             query: query.trim(),
             kind,
@@ -168,16 +246,31 @@ export default function Search() {
           }),
         ),
       );
-      if (gen === generation.current)
-        setResult(prev => ({
-          items: [
-            ...new Map(
-              [...prev.items, ...pages.flatMap(p => p.items)].map(t => [t.id, t]),
-            ).values(),
-          ],
-          next: Object.assign({}, ...pages.map(p => p.next)),
-          notices: pages.flatMap(p => p.notices),
-        }));
+      if (gen === generation.current) {
+        const pages = settled
+          .filter((r): r is PromiseFulfilledResult<SearchResult> => r.status === 'fulfilled')
+          .map(r => r.value);
+        const failures = settled
+          .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+          .map(r => cleanError(r.reason));
+        if (pages.length > 0) {
+          setResult(prev => {
+            const merged: SearchResult = {
+              items: [
+                ...new Map(
+                  [...prev.items, ...pages.flatMap(p => p.items)].map(t => [t.id, t]),
+                ).values(),
+              ],
+              next: Object.assign({}, ...pages.map(p => p.next)),
+              notices: [...new Set([...pages.flatMap(p => p.notices), ...failures])],
+            };
+            useApp.getState().setSearchSession({ result: merged });
+            return merged;
+          });
+        } else if (failures.length > 0) {
+          useApp.getState().message(failures[0]!);
+        }
+      }
     } catch (e) {
       useApp.getState().message(cleanError(e));
     } finally {
@@ -195,7 +288,7 @@ export default function Search() {
   const hasSpotifyResults = combined.some(t => t.catalogSource === 'spotify');
 
   return (
-    <div className="search-page">
+    <div className={`search-page ${loading ? 'is-updating' : ''}`}>
       <div className="page-heading">
         <h1>Buscar</h1>
         {loading && <LoaderCircle size={16} className="spinner" aria-label="Buscando" />}
@@ -241,7 +334,7 @@ export default function Search() {
           <span>Link direto detectado.</span>
           <button
             className="button primary"
-            disabled={loading}
+            disabled={loading || searchBusy}
             onClick={() => void handleDirectLink(query)}
           >
             <Play size={14} fill="currentColor" /> Abrir

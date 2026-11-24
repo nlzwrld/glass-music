@@ -64,37 +64,226 @@ export function GlassSlider({ className = '', ...props }: InputHTMLAttributes<HT
 // Small optical surfaces avoid applying SVG displacement to whole scrolling panels.
 export function LiquidLens({ radius = 99 }: { radius?: number }) { return <span className="lens-fallback" style={{borderRadius:radius}} aria-hidden="true" />; }
 
-export interface GlassMenuItem { label: string; icon?: ReactNode; action(): void; disabled?: boolean; danger?: boolean }
-export function GlassContextMenu({ label, items, disabled = false, icon, className = '', align = 'end' }: { label: string; items: GlassMenuItem[]; disabled?: boolean; icon?: ReactNode; className?: string; align?: 'start' | 'end' }) {
-  const {reduced: opticsReduced}=useOptics();
+const contextScopeHandlers = new WeakMap<
+  HTMLElement,
+  {
+    isDisabled: () => boolean;
+    openAt: (point: { x: number; y: number } | null) => void;
+  }
+>();
+let contextDelegationBound = false;
+
+function ensureContextDelegation() {
+  if (contextDelegationBound || typeof document === 'undefined') return;
+  contextDelegationBound = true;
+  document.addEventListener('contextmenu', e => {
+    const target = e.target as Element | null;
+    const scope = target?.closest<HTMLElement>('[data-track-item],.playlist-row');
+    if (!scope) return;
+    const entry = contextScopeHandlers.get(scope);
+    if (!entry || entry.isDisabled()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    entry.openAt({ x: e.clientX, y: e.clientY });
+  });
+  document.addEventListener('keydown', e => {
+    if (!(e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) return;
+    const target = e.target as Element | null;
+    const scope = target?.closest<HTMLElement>('[data-track-item],.playlist-row');
+    if (!scope) return;
+    const entry = contextScopeHandlers.get(scope);
+    if (!entry || entry.isDisabled()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    entry.openAt(null);
+  });
+}
+
+export interface GlassMenuItem {
+  label: string;
+  icon?: ReactNode;
+  action(): void;
+  disabled?: boolean;
+  danger?: boolean;
+}
+export function GlassContextMenu({
+  label,
+  items,
+  getItems,
+  disabled = false,
+  icon,
+  className = '',
+  align = 'end',
+}: {
+  label: string;
+  items?: GlassMenuItem[];
+  getItems?: () => GlassMenuItem[];
+  disabled?: boolean;
+  icon?: ReactNode;
+  className?: string;
+  align?: 'start' | 'end';
+}) {
+  const { reduced: opticsReduced } = useOptics();
   const uiReduced = useReducedUI();
   const reduced = opticsReduced || uiReduced;
-  const [point,setPoint]=useState<{x:number;y:number}|null>(null);
-  const [open, setOpen] = useState(false), [position, setPosition] = useState({ left: 0, top: 0 });
-  const trigger = useRef<HTMLButtonElement>(null), menu = useRef<HTMLDivElement>(null); const id = useId();
-  useEffect(()=>{
-    const scope=trigger.current?.closest<HTMLElement>('[data-track-item],.playlist-row');if(!scope)return;
-    const show=(e:MouseEvent)=>{if(disabled)return;e.preventDefault();e.stopPropagation();setPoint({x:e.clientX,y:e.clientY});setOpen(true);};
-    const key=(e:KeyboardEvent)=>{if(e.key==='ContextMenu'||(e.shiftKey&&e.key==='F10')){e.preventDefault();setPoint(null);setOpen(true);}};
-    scope.addEventListener('contextmenu',show);scope.addEventListener('keydown',key);return()=>{scope.removeEventListener('contextmenu',show);scope.removeEventListener('keydown',key);};
-  },[disabled]);
+  const [point, setPoint] = useState<{ x: number; y: number } | null>(null);
+  const [open, setOpen] = useState(false);
+  const [portalMounted, setPortalMounted] = useState(false);
+  const [position, setPosition] = useState({ left: 0, top: 0 });
+  const trigger = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const disabledRef = useRef(disabled);
+  disabledRef.current = disabled;
+  const id = useId();
+
+  const openMenu = (nextPoint: { x: number; y: number } | null) => {
+    setPoint(nextPoint);
+    setPortalMounted(true);
+    setOpen(true);
+  };
+
+  useEffect(() => {
+    ensureContextDelegation();
+    const scope = trigger.current?.closest<HTMLElement>('[data-track-item],.playlist-row');
+    if (!scope) return;
+    contextScopeHandlers.set(scope, {
+      isDisabled: () => disabledRef.current,
+      openAt: openMenu,
+    });
+    return () => {
+      contextScopeHandlers.delete(scope);
+    };
+  }, []);
+
   useLayoutEffect(() => {
     if (!open || !trigger.current || !menu.current) return;
-    const r = trigger.current.getBoundingClientRect(), box = menu.current.getBoundingClientRect();
+    const r = trigger.current.getBoundingClientRect(),
+      box = menu.current.getBoundingClientRect();
     const anchorX = align === 'start' ? r.left : r.right - box.width;
-    setPosition(point?{left:Math.max(12,Math.min(innerWidth-box.width-12,point.x)),top:Math.max(12,Math.min(innerHeight-box.height-12,point.y))}:{ left: Math.max(12, Math.min(innerWidth - box.width - 12, anchorX)), top: r.bottom + box.height + 10 < innerHeight ? r.bottom + 6 : Math.max(12, r.top - box.height - 6) });
+    setPosition(
+      point
+        ? {
+            left: Math.max(12, Math.min(innerWidth - box.width - 12, point.x)),
+            top: Math.max(12, Math.min(innerHeight - box.height - 12, point.y)),
+          }
+        : {
+            left: Math.max(12, Math.min(innerWidth - box.width - 12, anchorX)),
+            top:
+              r.bottom + box.height + 10 < innerHeight
+                ? r.bottom + 6
+                : Math.max(12, r.top - box.height - 6),
+          },
+    );
     menu.current.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
-  }, [open,point,align]);
+  }, [open, point, align]);
+
   useEffect(() => {
     if (!open) return;
-    const close = (e: Event) => { if (!menu.current?.contains(e.target as Node) && !trigger.current?.contains(e.target as Node)) setOpen(false); };
+    const close = (e: Event) => {
+      if (
+        !menu.current?.contains(e.target as Node) &&
+        !trigger.current?.contains(e.target as Node)
+      )
+        setOpen(false);
+    };
     const resize = () => setOpen(false);
-    document.addEventListener('pointerdown', close); window.addEventListener('resize', resize);const scroll=(e:Event)=>{if(!menu.current?.contains(e.target as Node))setOpen(false);};document.addEventListener('scroll',scroll,true);
-    return () => { document.removeEventListener('pointerdown', close); window.removeEventListener('resize', resize);document.removeEventListener('scroll',scroll,true); };
+    const scroll = (e: Event) => {
+      if (!menu.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    window.addEventListener('resize', resize);
+    document.addEventListener('scroll', scroll, true);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      window.removeEventListener('resize', resize);
+      document.removeEventListener('scroll', scroll, true);
+    };
   }, [open]);
-  return <><button ref={trigger} className={`icon-button menu-trigger ${className}`} aria-label={label} title={label} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined} disabled={disabled} onClick={() => {setPoint(null);setOpen(!open);}}>{icon ?? <MoreHorizontal size={16} />}</button>{createPortal(<AnimatePresence>{open && <motion.div ref={menu} id={id} role="menu" aria-label={label} className="glass-context-menu" style={position} {...menuMotion(reduced)} onKeyDown={e => {
-    const nodes = Array.from(menu.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') || []); const index = nodes.indexOf(document.activeElement as HTMLButtonElement);
-    if (e.key === 'Escape' || e.key === 'Tab') { setOpen(false); if (e.key === 'Escape') { e.preventDefault(); trigger.current?.focus(); } }
-    if (['ArrowDown','ArrowUp','Home','End'].includes(e.key)) { e.preventDefault(); nodes[e.key === 'Home' ? 0 : e.key === 'End' ? nodes.length - 1 : (index + (e.key === 'ArrowDown' ? 1 : -1) + nodes.length) % nodes.length]?.focus(); }
-  }}>{items.map(item => <button key={item.label} role="menuitem" disabled={item.disabled} className={item.danger ? 'danger' : ''} onClick={() => { setOpen(false); trigger.current?.focus(); item.action(); }}>{item.icon}{item.label}</button>)}</motion.div>}</AnimatePresence>, document.querySelector('.optical-root')||document.body)}</>;
+
+  const resolvedItems = open ? (getItems ? getItems() : items || []) : [];
+
+  return (
+    <>
+      <button
+        ref={trigger}
+        type="button"
+        className={`icon-button menu-trigger ${className}`}
+        aria-label={label}
+        title={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? id : undefined}
+        disabled={disabled}
+        onClick={() => {
+          if (open) {
+            setOpen(false);
+          } else {
+            openMenu(null);
+          }
+        }}
+      >
+        {icon ?? <MoreHorizontal size={16} />}
+      </button>
+      {(open || portalMounted) &&
+        createPortal(
+          <AnimatePresence onExitComplete={() => setPortalMounted(false)}>
+            {open && (
+              <motion.div
+                ref={menu}
+                id={id}
+                role="menu"
+                aria-label={label}
+                className="glass-context-menu"
+                style={position}
+                {...menuMotion(reduced)}
+                onKeyDown={e => {
+                  const nodes = Array.from(
+                    menu.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') || [],
+                  );
+                  const index = nodes.indexOf(document.activeElement as HTMLButtonElement);
+                  if (e.key === 'Escape' || e.key === 'Tab') {
+                    e.stopPropagation();
+                    setOpen(false);
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      trigger.current?.focus();
+                    }
+                  }
+                  if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key) && nodes.length > 0) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    nodes[
+                      e.key === 'Home'
+                        ? 0
+                        : e.key === 'End'
+                          ? nodes.length - 1
+                          : (index + (e.key === 'ArrowDown' ? 1 : -1) + nodes.length) % nodes.length
+                    ]?.focus();
+                  }
+                }}
+              >
+                {resolvedItems.map(item => (
+                  <button
+                    key={item.label}
+                    type="button"
+                    role="menuitem"
+                    disabled={item.disabled}
+                    className={item.danger ? 'danger' : ''}
+                    onClick={() => {
+                      setOpen(false);
+                      trigger.current?.focus();
+                      item.action();
+                    }}
+                  >
+                    {item.icon}
+                    {item.label}
+                  </button>
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>,
+          document.querySelector('.optical-root') || document.body,
+        )}
+    </>
+  );
 }

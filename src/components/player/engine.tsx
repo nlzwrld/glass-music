@@ -20,11 +20,14 @@ import { coverURL } from '../glass/Cover';
 type Driver = {
   play(): void;
   pause(): void;
-  seek(n: number): void;
+  seek(n: number): number | null;
   volume(n: number): void;
   rate?(r: number): void;
 };
 let driver: Driver | undefined;
+let scrubbing = false;
+let recentSeekUntil = 0;
+let recentSeekPosition: number | null = null;
 
 export function shouldStartPreparedPlayback(cancelled: boolean, playbackIntent: boolean): boolean {
   return !cancelled && playbackIntent;
@@ -61,7 +64,20 @@ export const transport = {
     setPlaybackIntent(false);
     driver?.pause();
   },
-  seek: (n: number) => driver?.seek(n),
+  isScrubbing: () => scrubbing,
+  setScrubbing: (active: boolean) => {
+    scrubbing = Boolean(active);
+  },
+  seek: (n: number): number | null => {
+    if (!Number.isFinite(n)) return null;
+    const committed = driver?.seek(n) ?? null;
+    if (committed !== null) {
+      recentSeekPosition = committed;
+      recentSeekUntil = performance.now() + 280;
+      useApp.setState({ position: committed });
+    }
+    return committed;
+  },
   volume: (n: number) => driver?.volume(n),
   rate: (r: number) => driver?.rate?.(Math.min(1.05, Math.max(0.95, Number.isFinite(r) ? r : 1))),
 };
@@ -380,14 +396,24 @@ export function PlayerEngine() {
     };
     const onSeeked = () => {
       fadingOut = false;
+      recentSeekPosition = null;
+      recentSeekUntil = 0;
       if (!el.paused && !fade.current.isFadingOut()) graph.current?.level(el, 1, 0.06);
     };
     const onTime = () => {
       const duration = Number.isFinite(el.duration) ? el.duration : track?.duration || 0;
-      update({ position: el.currentTime, duration });
+      const effectivePos =
+        recentSeekPosition !== null && performance.now() < recentSeekUntil && el.seeking
+          ? recentSeekPosition
+          : el.currentTime;
+      if (!scrubbing) {
+        update({ position: effectivePos, duration });
+      } else if (duration > 0 && duration !== useApp.getState().duration) {
+        update({ duration });
+      }
       notifier.current?.onPlaybackUpdate({
         isPlaying: !el.paused,
-        currentTime: el.currentTime,
+        currentTime: effectivePos,
         mode: resolveNotificationMode(useApp.getState().data.preferences),
         isFocused: isAppWindowFocused(),
       });
@@ -395,21 +421,22 @@ export function PlayerEngine() {
         'mediaSession' in navigator &&
         !hasNativeAndroidMedia() &&
         duration > 0 &&
-        el.currentTime <= duration
+        effectivePos <= duration
       ) {
         try {
           navigator.mediaSession.setPositionState({
             duration,
             playbackRate: el.playbackRate || 1,
-            position: Math.max(0, el.currentTime),
+            position: Math.max(0, effectivePos),
           });
         } catch {}
       }
       const p = useApp.getState().data.preferences,
-        remaining = duration - el.currentTime;
+        remaining = duration - effectivePos;
       if (
+        !scrubbing &&
         duration > 0 &&
-        el.currentTime > 0 &&
+        effectivePos > 0 &&
         !el.paused &&
         !advanced &&
         !fade.current.isFadingOut() &&
@@ -447,7 +474,14 @@ export function PlayerEngine() {
       fade.current.cancel();
       if (!advanced) {
         advanced = true;
-        update({ playing: false, playbackIntent: false });
+        const prefs = useApp.getState().data.preferences;
+        const willAutoContinue =
+          prefs.repeat === 'one' ||
+          Boolean(upcomingTrack()) ||
+          Boolean(prefs.autoplay && prefs.onlineConsent && prefs.onboardingDone);
+        if (!willAutoContinue) {
+          update({ playing: false, playbackIntent: false });
+        }
         useApp.getState().next(false);
       }
     };
@@ -598,13 +632,21 @@ export function PlayerEngine() {
         play,
         pause,
         seek: n => {
-          if (Number.isFinite(el.duration)) {
+          const fallbackDur = useApp.getState().duration;
+          const dur =
+            Number.isFinite(el.duration) && el.duration > 0 ? el.duration : fallbackDur;
+          if (Number.isFinite(dur) && dur > 0) {
+            const clamped = Math.max(0, Math.min(n, dur));
             fadingOut = false;
-            el.currentTime = Math.max(0, Math.min(n, el.duration));
+            if (Number.isFinite(el.duration)) {
+              el.currentTime = clamped;
+            }
             if (!el.paused && !fade.current.isFadingOut()) {
               graph.current?.level(el, 1, 0.06);
             }
+            return clamped;
           }
+          return null;
         },
         volume: n => {
           if (graph.current)
@@ -836,7 +878,12 @@ export function PlayerEngine() {
                   send('pause');
                 });
               },
-              seek: n => send('seek', n),
+              seek: n => {
+                const dur = useApp.getState().duration || track.duration || 0;
+                const clamped = dur > 0 ? Math.max(0, Math.min(n, dur)) : Math.max(0, n);
+                send('seek', clamped);
+                return clamped;
+              },
               volume: n => send('volume', Math.round(n * scLevel)),
             };
             frame.src = `${url}?${new URLSearchParams({
@@ -872,6 +919,9 @@ export function PlayerEngine() {
       window.removeEventListener('message', message);
       frame.src = 'about:blank';
       driver = undefined;
+      scrubbing = false;
+      recentSeekPosition = null;
+      recentSeekUntil = 0;
       if (outgoing) stopOutgoing();
     };
   }, [track?.id, revision, playbackAllowed]);
@@ -1018,11 +1068,23 @@ export function PlayerEngine() {
       if (command === 'previous') useApp.getState().previous();
     });
     const key = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
+      if (e.defaultPrevented) return;
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
       if (
-        ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(target.tagName) ||
+        ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'SUMMARY', 'A'].includes(target.tagName) ||
         target.isContentEditable ||
-        useApp.getState().dialog
+        Boolean(
+          target.closest(
+            '[role="button"], [role="menuitem"], [role="tab"], [role="option"], [role="dialog"], [aria-modal="true"]',
+          ),
+        ) ||
+        useApp.getState().dialog ||
+        Boolean(
+          document.querySelector(
+            '[aria-modal="true"], .welcome-screen, .auth-modal-backdrop, .jam-invite-backdrop',
+          ),
+        )
       )
         return;
       if (e.code === 'Space') {
@@ -1056,7 +1118,7 @@ export function PlayerEngine() {
       [
         'seekto',
         details => {
-          if (typeof details.seekTime === 'number') driver?.seek(details.seekTime);
+          if (typeof details.seekTime === 'number') transport.seek(details.seekTime);
         },
       ],
     ];
@@ -1072,7 +1134,7 @@ export function PlayerEngine() {
         } catch {}
       });
     };
-  }, [track?.id, track?.artwork]);
+  }, [track?.id, track?.title, track?.artist, track?.album, track?.artwork]);
 
   const external = track?.source === 'soundcloud';
   return (

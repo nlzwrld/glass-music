@@ -12,6 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import { useApp, formatTime } from '../stores/app';
+import { transport } from '../components/player/engine';
 import type { OfflineSummary, OfflineTrackInfo } from '../../shared/types';
 import Cover from '../components/glass/Cover';
 import { IconButton, OfflineIndicator, SourceBadge } from '../components/glass/controls';
@@ -33,6 +34,7 @@ export default function Downloads() {
   const allTracks = useApp(s => s.data.tracks);
   const integrations = useApp(s => s.integrations);
   const downloadItems = useApp(s => s.downloadItems);
+  const downloadingIds = useApp(s => s.downloadingIds);
   const downloadsPaused = useApp(s => s.downloadsPaused);
   const current = useApp(s => s.queue[s.index]);
   const queueContext = useApp(s => s.queueContext);
@@ -106,6 +108,10 @@ export default function Downloads() {
     !!current && queueContext === 'downloads' && filteredOffline.some(t => t.id === current.id);
   const canPauseAny = inProgressItems.some(i => i.status === 'downloading' || i.status === 'queued');
   const canResumeAny = inProgressItems.some(i => i.status === 'paused' || i.status === 'failed');
+  const failedItems = useMemo(
+    () => inProgressItems.filter(i => i.status === 'failed'),
+    [inProgressItems],
+  );
 
   return (
     <div className="downloads-page">
@@ -162,6 +168,20 @@ export default function Downloads() {
           <div className="section-heading">
             <h2>Em andamento ({inProgressItems.length})</h2>
             <div className="downloads-queue-bulk">
+              {failedItems.length > 0 && (
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={() =>
+                    void Promise.all(
+                      failedItems.map(item => useApp.getState().cancelDownload(item.track.id)),
+                    )
+                  }
+                >
+                  <X size={13} />
+                  Limpar falhas ({failedItems.length})
+                </button>
+              )}
               {canPauseAny && !downloadsPaused && (
                 <button
                   type="button"
@@ -313,6 +333,8 @@ export default function Downloads() {
           {filteredOffline.map(track => {
             const info = sizeMap.get(track.id);
             const active = current?.id === track.id;
+            const isPlayingHere = active && playing;
+            const rowBusy = downloadingIds.includes(track.id);
             return (
               <div
                 key={track.id}
@@ -322,15 +344,25 @@ export default function Downloads() {
                 <button
                   type="button"
                   className="track-identity"
-                  aria-label={`Reproduzir offline ${track.title}`}
-                  onClick={() =>
-                    useApp.getState().play(track, filteredOffline, { contextId: 'downloads' })
-                  }
+                  aria-label={`${isPlayingHere ? 'Pausar' : 'Reproduzir'} offline ${track.title}`}
+                  onClick={() => {
+                    const live = useApp.getState();
+                    const liveActive = live.queue[live.index]?.id === track.id;
+                    if (liveActive && live.queueContext === 'downloads') {
+                      transport.toggle();
+                    } else {
+                      live.play(track, filteredOffline, { contextId: 'downloads' });
+                    }
+                  }}
                 >
                   <div className="row-cover">
                     <Cover track={track} />
                     <span>
-                      <Play size={14} fill="currentColor" />
+                      {isPlayingHere ? (
+                        <Pause size={14} fill="currentColor" />
+                      ) : (
+                        <Play size={14} fill="currentColor" />
+                      )}
                     </span>
                   </div>
                   <span className="track-text">
@@ -359,6 +391,7 @@ export default function Downloads() {
                 <button
                   type="button"
                   className="button secondary"
+                  disabled={rowBusy}
                   aria-label={`Remover arquivo local de ${track.title}`}
                   title="Remove o arquivo do disco sem apagar da biblioteca"
                   onClick={() => void useApp.getState().removeOfflineFile(track.id)}

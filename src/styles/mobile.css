@@ -41,18 +41,32 @@ html[data-mobile='true'] .optical-window-material {
   display: none !important;
 }
 
-/* Hide desktop-only chrome */
+/* Hide desktop-only chrome, while keeping Back arrow reachable on mobile subpages */
 html[data-platform='android'] .titlebar,
 html[data-mobile='true'] .titlebar,
 html[data-platform='android'] .app-body > .sidebar,
 html[data-mobile='true'] .app-body > .sidebar,
 html[data-platform='android'] .side-player,
 html[data-mobile='true'] .side-player,
-html[data-platform='android'] .navigation-controls,
-html[data-mobile='true'] .navigation-controls,
+html[data-platform='android'] .navigation-controls button:last-child,
+html[data-mobile='true'] .navigation-controls button:last-child,
+html[data-platform='android'] .navigation-controls button:first-child:disabled,
+html[data-mobile='true'] .navigation-controls button:first-child:disabled,
 html[data-platform='android'] .global-search kbd,
 html[data-mobile='true'] .global-search kbd {
   display: none !important;
+}
+
+html[data-platform='android'] .navigation-controls:not(:has(button:first-child:not(:disabled))),
+html[data-mobile='true'] .navigation-controls:not(:has(button:first-child:not(:disabled))) {
+  display: none !important;
+}
+
+html[data-platform='android'] .navigation-controls button:first-child:not(:disabled),
+html[data-mobile='true'] .navigation-controls button:first-child:not(:disabled) {
+  width: 38px !important;
+  height: 38px !important;
+  flex: none !important;
 }
 
 html[data-platform='android'] .app-body,
@@ -82,14 +96,17 @@ html[data-mobile='true']:not([data-ui-style='glass']) .main-shell {
   box-shadow: none !important;
 }
 
-/* ---------- 2. Sleek Mobile Topbar ---------- */
+/* ---------- 2. Sleek Mobile Topbar (Safe-Area Aware) ---------- */
 html[data-platform='android'] .topbar,
 html[data-mobile='true'] .topbar,
 html[data-platform='android']:not([data-ui-style='glass']) .topbar,
 html[data-mobile='true']:not([data-ui-style='glass']) .topbar {
   height: auto !important;
   min-height: 56px !important;
-  padding: 10px 14px 8px !important;
+  padding: calc(10px + env(safe-area-inset-top, 0px))
+    calc(14px + env(safe-area-inset-right, 0px))
+    8px
+    calc(14px + env(safe-area-inset-left, 0px)) !important;
   gap: 10px !important;
   border: 0 !important;
   background: transparent !important;
@@ -439,8 +456,8 @@ html[data-mobile='true']:not([data-ui-style='glass']) .row-actions {
 
 html[data-platform='android'] .row-actions .icon-button,
 html[data-mobile='true'] .row-actions .icon-button {
-  width: 34px !important;
-  height: 34px !important;
+  width: 38px !important;
+  height: 38px !important;
 }
 
 /* ---------- 6. Library, Playlists & Hero Headers ---------- */
@@ -782,14 +799,17 @@ html[data-mobile='true'] .mobile-mini-play {
   color: #0b0e11 !important;
 }
 
-/* ---------- 9. Frosted 5-Tab Mobile Bottom Navigation ---------- */
+/* ---------- 9. Frosted 5-Tab Mobile Bottom Navigation (Safe-Area Aware) ---------- */
 html[data-platform='android'] .mobile-bottom-nav,
 html[data-mobile='true'] .mobile-bottom-nav {
   display: flex !important;
   align-items: center !important;
   justify-content: space-around !important;
-  min-height: 60px !important;
-  padding: 6px 8px 8px !important;
+  min-height: calc(60px + env(safe-area-inset-bottom, 0px)) !important;
+  padding: 6px
+    calc(8px + env(safe-area-inset-right, 0px))
+    calc(8px + env(safe-area-inset-bottom, 0px))
+    calc(8px + env(safe-area-inset-left, 0px)) !important;
   gap: 2px !important;
   border-top: 1px solid color-mix(in srgb, var(--line, rgba(255, 255, 255, 0.1)) 75%, transparent) !important;
   background: color-mix(in srgb, var(--m-bg, #0d1115) 92%, transparent) !important;
@@ -797,6 +817,21 @@ html[data-mobile='true'] .mobile-bottom-nav {
   -webkit-backdrop-filter: blur(24px) saturate(1.35) !important;
   flex: none !important;
   z-index: 50 !important;
+}
+
+html[data-platform='android'] .playback-error,
+html[data-mobile='true'] .playback-error {
+  position: fixed !important;
+  left: calc(12px + env(safe-area-inset-left, 0px)) !important;
+  right: calc(12px + env(safe-area-inset-right, 0px)) !important;
+  bottom: calc(138px + env(safe-area-inset-bottom, 0px)) !important;
+  max-width: none !important;
+  border-radius: 14px !important;
+  padding: 11px 14px !important;
+  background: color-mix(in srgb, var(--m-elevated, #1a1f25) 96%, transparent) !important;
+  border: 1px solid color-mix(in srgb, #e9a8a8 35%, var(--line, rgba(255, 255, 255, 0.14))) !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.44) !important;
+  z-index: 145 !important;
 }
 
 html[data-platform='android'] .mobile-bottom-nav-item,
@@ -824,7 +859,10 @@ html[data-mobile='true']:not([data-ui-style='glass']) .expanded-player {
   max-width: none !important;
   border: 0 !important;
   border-radius: 0 !important;
-  padding: 12px 20px 22px !important;
+  padding: calc(12px + env(safe-area-inset-top, 0px))
+    calc(20px + env(safe-area-inset-right, 0px))
+    calc(22px + env(safe-area-inset-bottom, 0px))
+    calc(20px + env(safe-area-inset-left, 0px)) !important;
   background: radial-gradient(
       100% 55% at 50% 15%,
       color-mix(in srgb, var(--user-accent, #52b79a) 22%, transparent) 0%,
@@ -946,7 +984,10 @@ html[data-mobile='true'] .lyrics-panel,
 html[data-platform='android']:not([data-ui-style='glass']) .lyrics-panel,
 html[data-mobile='true']:not([data-ui-style='glass']) .lyrics-panel {
   position: fixed !important;
-  inset: 10px 10px 10px 10px !important;
+  inset: calc(10px + env(safe-area-inset-top, 0px))
+    calc(10px + env(safe-area-inset-right, 0px))
+    calc(10px + env(safe-area-inset-bottom, 0px))
+    calc(10px + env(safe-area-inset-left, 0px)) !important;
   width: auto !important;
   max-width: none !important;
   height: auto !important;
@@ -957,9 +998,9 @@ html[data-mobile='true']:not([data-ui-style='glass']) .lyrics-panel {
 
 html[data-platform='android'] .toast,
 html[data-mobile='true'] .toast {
-  bottom: 138px !important;
-  left: 12px !important;
-  right: 12px !important;
+  bottom: calc(138px + env(safe-area-inset-bottom, 0px)) !important;
+  left: calc(12px + env(safe-area-inset-left, 0px)) !important;
+  right: calc(12px + env(safe-area-inset-right, 0px)) !important;
   transform: none !important;
   max-width: none !important;
   border-radius: 14px !important;

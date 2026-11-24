@@ -78,13 +78,21 @@ export function AuthModal({ mandatory = false }: { mandatory?: boolean }) {
 
   useEffect(() => {
     if (!effectiveOpen || mandatory) return;
+    const prevFocus = document.activeElement as HTMLElement | null;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && view !== 'terms' && !busy) {
+        e.preventDefault();
+        e.stopPropagation();
         closeAuthModal();
       }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keydown', onKey, true);
+    return () => {
+      window.removeEventListener('keydown', onKey, true);
+      if (prevFocus && prevFocus.isConnected && prevFocus !== document.body) {
+        prevFocus.focus();
+      }
+    };
   }, [effectiveOpen, mandatory, view, busy, closeAuthModal]);
 
   if (!effectiveOpen) return null;

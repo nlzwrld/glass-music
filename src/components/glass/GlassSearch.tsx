@@ -2,6 +2,9 @@ import { useEffect, useRef, useState, type RefObject } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
+  Compass,
+  Download,
+  Heart,
   History,
   LoaderCircle,
   LogIn,
@@ -20,6 +23,8 @@ import { GlassMaterial } from './materials';
 function TopbarProfileMenu() {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const page = useApp(s => s.page);
   const setPage = useApp(s => s.setPage);
   const hub = useAccounts(s => s.hub);
@@ -33,20 +38,31 @@ function TopbarProfileMenu() {
       }
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
     };
     window.addEventListener('pointerdown', onPointerDown);
-    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keydown', onKeyDown, true);
     return () => {
       window.removeEventListener('pointerdown', onPointerDown);
-      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keydown', onKeyDown, true);
     };
   }, [open]);
 
   const displayName = hub.displayName || hub.username || hub.subject || 'Visitante';
   const initial = displayName.trim().charAt(0).toUpperCase() || 'L';
   const avatarActive =
-    open || page === 'settings' || page === 'history' || page.startsWith('profile:');
+    open ||
+    page === 'settings' ||
+    page === 'history' ||
+    page === 'likes' ||
+    page === 'downloads' ||
+    page === 'explore' ||
+    page.startsWith('profile:');
 
   const navigateAndClose = (action: () => void) => {
     setOpen(false);
@@ -56,6 +72,7 @@ function TopbarProfileMenu() {
   return (
     <div className="topbar-profile" ref={rootRef}>
       <button
+        ref={triggerRef}
         type="button"
         className={`topbar-avatar-btn ${avatarActive ? 'active' : ''}`}
         aria-label="Perfil e configurações"
@@ -63,6 +80,15 @@ function TopbarProfileMenu() {
         aria-expanded={open}
         title={hub.authenticated ? `${displayName} · Perfil e configurações` : 'Perfil e configurações'}
         onClick={() => setOpen(v => !v)}
+        onKeyDown={e => {
+          if (e.key === 'ArrowDown' && !open) {
+            e.preventDefault();
+            setOpen(true);
+            setTimeout(() => {
+              menuRef.current?.querySelector<HTMLButtonElement>('button[role="menuitem"]')?.focus();
+            }, 0);
+          }
+        }}
       >
         {hub.authenticated && hub.avatarUrl ? (
           <img src={hub.avatarUrl} alt={displayName} className="topbar-avatar-img" />
@@ -78,10 +104,33 @@ function TopbarProfileMenu() {
       <AnimatePresence>
         {open && (
           <motion.div
+            ref={menuRef}
             className="topbar-profile-menu glass"
             role="menu"
             aria-label="Menu do perfil"
             {...menuMotion(reduced)}
+            onKeyDown={e => {
+              const items = Array.from(
+                menuRef.current?.querySelectorAll<HTMLButtonElement>(
+                  'button[role="menuitem"]:not(:disabled)',
+                ) || [],
+              );
+              if (!items.length) return;
+              const idx = items.indexOf(document.activeElement as HTMLButtonElement);
+              if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
+                e.preventDefault();
+                e.stopPropagation();
+                const next =
+                  e.key === 'Home'
+                    ? 0
+                    : e.key === 'End'
+                      ? items.length - 1
+                      : (idx + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+                items[next]?.focus();
+              } else if (e.key === 'Tab') {
+                setOpen(false);
+              }
+            }}
           >
             <div className="topbar-profile-header">
               <span className="topbar-profile-thumb" aria-hidden="true">
@@ -140,6 +189,36 @@ function TopbarProfileMenu() {
                 <span>Entrar</span>
               </button>
             )}
+
+            <button
+              type="button"
+              role="menuitem"
+              className={page === 'likes' ? 'active' : ''}
+              onClick={() => navigateAndClose(() => setPage('likes'))}
+            >
+              <Heart size={15} />
+              <span>Curtidas</span>
+            </button>
+
+            <button
+              type="button"
+              role="menuitem"
+              className={page === 'downloads' ? 'active' : ''}
+              onClick={() => navigateAndClose(() => setPage('downloads'))}
+            >
+              <Download size={15} />
+              <span>Downloads</span>
+            </button>
+
+            <button
+              type="button"
+              role="menuitem"
+              className={page === 'explore' ? 'active' : ''}
+              onClick={() => navigateAndClose(() => setPage('explore'))}
+            >
+              <Compass size={15} />
+              <span>Explorar</span>
+            </button>
 
             <button
               type="button"
@@ -238,8 +317,17 @@ export default function GlassSearch({
         {!filter && <kbd>Ctrl K</kbd>}
         {filter && (
           <button
+            type="button"
             aria-label="Limpar pesquisa"
-            onClick={() => useApp.setState({ filter: '' })}
+            onClick={() => {
+              useApp.setState({ filter: '' });
+              useApp.getState().setSearchSession({
+                query: '',
+                result: { items: [], next: {}, notices: [] },
+                users: [],
+              });
+              inputRef.current?.focus();
+            }}
           >
             <X size={14} />
           </button>

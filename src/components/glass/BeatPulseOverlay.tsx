@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { getAudioReactiveFrame, type AudioReactiveFrame } from '../../lib/audioGraph';
+import { useReducedUI } from '../../lib/motion';
 import { useApp } from '../../stores/app';
 
 export interface BeatDetectorState {
@@ -360,9 +361,7 @@ export function BeatPulseOverlay() {
   const playing = useApp(s => s.playing);
   const accentColor = useApp(s => s.data.preferences.accent ?? '');
   const theme = useApp(s => s.data.preferences.theme ?? 'dark');
-  const reduced = useApp(
-    s => Boolean(s.data.preferences.reducedMotion || s.data.preferences.performance),
-  );
+  const reduced = useReducedUI();
   const active = uiStyle === 'beat';
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const playingRef = useRef(playing);
@@ -428,6 +427,7 @@ export function BeatPulseOverlay() {
     }
 
     let rafId = 0;
+    let windowVisible = true;
     let lastTs = performance.now();
     let detector = createBeatDetectorState();
     let nextRipple = 0;
@@ -440,7 +440,33 @@ export function BeatPulseOverlay() {
       strength: 0,
     }));
 
+    const scheduleTick = () => {
+      if (!rafId && !document.hidden && windowVisible) {
+        lastTs = performance.now();
+        rafId = requestAnimationFrame(tick);
+      }
+    };
+
+    const syncVisibility = () => {
+      if (document.hidden || !windowVisible) {
+        if (rafId) {
+          cancelAnimationFrame(rafId);
+          rafId = 0;
+        }
+      } else {
+        scheduleTick();
+      }
+    };
+
+    const offVisualVisibility = window.glass?.onVisualVisibility?.(visible => {
+      windowVisible = visible;
+      syncVisibility();
+    });
+    document.addEventListener('visibilitychange', syncVisibility);
+
     const tick = (now: number) => {
+      rafId = 0;
+      if (document.hidden || !windowVisible) return;
       const dt = Math.max(1, Math.min(64, now - lastTs));
       lastTs = now;
 
@@ -506,13 +532,15 @@ export function BeatPulseOverlay() {
         );
       }
 
-      rafId = requestAnimationFrame(tick);
+      scheduleTick();
     };
 
     palette = readAccentPalette(accentColor);
-    rafId = requestAnimationFrame(tick);
+    scheduleTick();
     return () => {
       cancelAnimationFrame(rafId);
+      offVisualVisibility?.();
+      document.removeEventListener('visibilitychange', syncVisibility);
       window.removeEventListener('resize', onResize);
       root.style.setProperty('--beat-flash', '0');
       root.style.setProperty('--beat-glow', '0.10');

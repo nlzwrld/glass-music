@@ -131,7 +131,7 @@ export default function OnlineCatalog({ expanded = false }: { expanded?: boolean
         id: 'personal:recent-vibe',
         source: 'youtube',
         title: 'Para você',
-        items: personalTracks.slice(0, 8),
+        items: personalTracks.slice(0, 6),
       },
     ];
     if (personalTracks.length > 6) {
@@ -160,7 +160,10 @@ export default function OnlineCatalog({ expanded = false }: { expanded?: boolean
         </div>
         <button
           className="button secondary"
-          onClick={() => useApp.getState().setPage('settings')}
+          onClick={() => {
+            useApp.getState().setSettingsTab('privacy');
+            useApp.getState().setPage('settings');
+          }}
         >
           Configurações
         </button>
@@ -168,7 +171,7 @@ export default function OnlineCatalog({ expanded = false }: { expanded?: boolean
     );
 
   if (!configured) {
-    if (tracks.length > 0) return null;
+    if (tracks.length > 0 && !expanded) return null;
     return (
       <section className="catalog-intro" role="status">
         <Cloud size={18} />

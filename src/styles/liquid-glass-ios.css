@@ -208,3 +208,27 @@ html[data-theme='light'] .optical-root .glass-material.lyrics-panel {
 html[data-performance='true'] .optical-root :is(.modal, .queue-panel, .expanded-player, .glass-context-menu, .toast, .playback-error, .welcome-screen, .lyrics-panel, .modal-backdrop) {
   backdrop-filter: none !important;
 }
+
+/* Adaptive Contrast Guards for White & Dark Artwork on Liquid Glass */
+html[data-ui-style='glass'] .expanded-art {
+  border: 1px solid rgba(140, 160, 172, 0.24);
+  box-shadow: 0 22px 54px rgba(0, 0, 0, 0.34);
+}
+
+html[data-ui-style='glass'][data-theme='light'] .expanded-art {
+  border-color: rgba(20, 38, 52, 0.14);
+  box-shadow: 0 18px 44px rgba(15, 30, 44, 0.16);
+}
+
+html[data-ui-style='glass'][data-theme='light'] .play-main {
+  background: rgba(25, 46, 57, 0.9);
+  border-color: rgba(25, 46, 57, 0.25);
+  color: #f6fafb;
+  box-shadow: 0 6px 18px rgba(15, 30, 44, 0.18);
+}
+
+html[data-ui-style='glass']:not([data-theme='light']) .expanded-player .play-main {
+  background: rgba(240, 245, 247, 0.92);
+  color: #0e171d;
+  border-color: rgba(255, 255, 255, 0.45);
+}

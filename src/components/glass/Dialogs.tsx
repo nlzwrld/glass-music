@@ -155,22 +155,39 @@ export default function Dialogs() {
     setError('');
     setBusy(false);
     if (!dialog) return;
-    const prev = document.activeElement as HTMLElement;
-    setTimeout(() => box.current?.querySelector<HTMLElement>('input,button')?.focus(), 0);
-    return () => prev?.focus();
+    const prev = document.activeElement as HTMLElement | null;
+    setTimeout(() => {
+      const root = box.current;
+      if (!root) return;
+      const target =
+        root.querySelector<HTMLElement>(
+          '[autofocus]:not([disabled]), input:not([type="file"]):not([hidden]):not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not(.modal-close):not([disabled]), button:not([disabled])',
+        );
+      target?.focus();
+    }, 0);
+    return () => {
+      if (prev && prev.isConnected) prev.focus();
+    };
   }, [dialog]);
 
   useEffect(() => {
     if (!dialog) return;
     const key = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !busy) useApp.getState().setDialog(null);
+      if (e.key === 'Escape' && !busy) {
+        e.preventDefault();
+        e.stopPropagation();
+        useApp.getState().setDialog(null);
+        return;
+      }
       if (e.key === 'Tab') {
-        const nodes = box.current?.querySelectorAll<HTMLElement>(
-          'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href]',
-        );
-        if (!nodes?.length) return;
-        const first = nodes[0],
-          last = nodes[nodes.length - 1];
+        const nodes = Array.from(
+          box.current?.querySelectorAll<HTMLElement>(
+            'button:not([disabled]):not([hidden]),input:not([disabled]):not([type="file"]):not([hidden]),select:not([disabled]):not([hidden]),textarea:not([disabled]):not([hidden]),a[href]',
+          ) || [],
+        ).filter(el => el.offsetParent !== null || el === document.activeElement);
+        if (!nodes.length) return;
+        const first = nodes[0]!,
+          last = nodes[nodes.length - 1]!;
         if (e.shiftKey && document.activeElement === first) {
           e.preventDefault();
           last.focus();
@@ -180,8 +197,8 @@ export default function Dialogs() {
         }
       }
     };
-    window.addEventListener('keydown', key);
-    return () => window.removeEventListener('keydown', key);
+    window.addEventListener('keydown', key, true);
+    return () => window.removeEventListener('keydown', key, true);
   }, [dialog, busy]);
 
   const close = () => {
@@ -451,6 +468,7 @@ export default function Dialogs() {
                     className="button primary"
                     onClick={() => {
                       close();
+                      useApp.getState().setSettingsTab('privacy');
                       useApp.getState().setPage('settings');
                     }}
                   >

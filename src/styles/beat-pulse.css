@@ -185,3 +185,15 @@ html[data-ui-style='beat'][data-theme='light'][data-platform='android'] .mobile-
 html[data-ui-style='beat'][data-theme='light'][data-mobile='true'] .mobile-bottom-nav {
   background: rgba(246, 248, 252, 0.88) !important;
 }
+
+html[data-ui-style='beat'][data-performance='true'] :is(.titlebar, .sidebar, .topbar, .track-card, .quick-tile, .library-playlist-card, .settings-section, .track-table, .player, .mobile-bottom-nav) {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  html[data-ui-style='beat'] :is(.titlebar, .sidebar, .topbar, .track-card, .quick-tile, .library-playlist-card, .settings-section, .track-table, .player, .mobile-bottom-nav) {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}

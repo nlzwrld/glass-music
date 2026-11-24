@@ -60,8 +60,14 @@ export function isAndroidPlatform(userAgent?: string): boolean {
   return /\bAndroid\b/i.test(ua);
 }
 
-export function isMobileViewport(width?: number, userAgent?: string): boolean {
+export function isMobileViewport(
+  width?: number,
+  userAgent?: string,
+  isDesktopMini?: boolean,
+): boolean {
   if (isAndroidPlatform(userAgent)) return true;
+  const mini = isDesktopMini ?? useApp.getState().mini;
+  if (mini) return false;
   const w =
     width ??
     (typeof window !== 'undefined' && typeof window.innerWidth === 'number'
@@ -300,25 +306,24 @@ export function createAudioFocusManager(controls: {
 }
 
 export function useAndroidBetaLifecycle(): { isMobile: boolean; isAndroid: boolean } {
-  const [isMobile, setIsMobile] = useState(() => isMobileViewport());
+  const mini = useApp(s => s.mini);
   const [isAndroid] = useState(() => isAndroidPlatform());
-  const track = useApp(s => s.queue[s.index]);
-  const playing = useApp(s => s.playing);
-  const playbackIntent = useApp(s => s.playbackIntent);
-  const position = useApp(s => s.position);
-  const duration = useApp(s => s.duration);
+  const [isMobile, setIsMobile] = useState(() => isMobileViewport(undefined, undefined, mini));
 
   useEffect(() => {
+    const computeMobile = () => isMobileViewport(undefined, undefined, useApp.getState().mini);
+    const nextInitial = computeMobile();
+    setIsMobile(nextInitial);
     document.documentElement.dataset.platform = isAndroid ? 'android' : 'desktop';
-    document.documentElement.dataset.mobile = String(isMobile);
+    document.documentElement.dataset.mobile = String(nextInitial);
     const onResize = () => {
-      const nextMobile = isMobileViewport();
+      const nextMobile = computeMobile();
       setIsMobile(nextMobile);
       document.documentElement.dataset.mobile = String(nextMobile);
     };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
-  }, [isAndroid, isMobile]);
+  }, [isAndroid, mini]);
 
   useEffect(() => {
     let preDuckVolume: number | null = null;
@@ -341,20 +346,21 @@ export function useAndroidBetaLifecycle(): { isMobile: boolean; isAndroid: boole
       },
     });
 
-    const unregister = window.LiquidHubAndroid?.isNativeBridgeReady?.()
-      ? () => {}
-      : registerMediaSessionBridge({
-          onPlay: () => transport.play(),
-          onPause: () => transport.pause(),
-          onPreviousTrack: () => useApp.getState().previous(),
-          onNextTrack: () => useApp.getState().next(true),
-          onSeekTo: sec => transport.seek(sec),
-          onSeekBy: delta => {
-            const nextSec = Math.max(0, (useApp.getState().position || 0) + delta);
-            transport.seek(nextSec);
-          },
-          onStop: () => transport.pause(),
-        });
+    const unregister =
+      !isAndroid || window.LiquidHubAndroid?.isNativeBridgeReady?.()
+        ? () => {}
+        : registerMediaSessionBridge({
+            onPlay: () => transport.play(),
+            onPause: () => transport.pause(),
+            onPreviousTrack: () => useApp.getState().previous(),
+            onNextTrack: () => useApp.getState().next(true),
+            onSeekTo: sec => transport.seek(sec),
+            onSeekBy: delta => {
+              const nextSec = Math.max(0, (useApp.getState().position || 0) + delta);
+              transport.seek(nextSec);
+            },
+            onStop: () => transport.pause(),
+          });
 
     const onNativeMediaAction = (e: Event) => {
       const detail = (e as CustomEvent<{ action?: string; positionMs?: number }>).detail;
@@ -408,13 +414,27 @@ export function useAndroidBetaLifecycle(): { isMobile: boolean; isAndroid: boole
       window.removeEventListener('liquid:audio-focus', onCustomAudioFocus);
       navigator.mediaDevices?.removeEventListener?.('devicechange', onDeviceChange);
     };
-  }, []);
+  }, [isAndroid]);
 
   useEffect(() => {
-    // Keep Android ForegroundService & WakeLock active across buffering and track transitions
-    const effectivePlaying = Boolean(track) && (playing || playbackIntent);
-    syncMediaSessionMetadata(track, effectivePlaying, position, duration || track?.duration || 0);
-  }, [track, playing, playbackIntent, position, duration]);
+    const shouldSyncAndroid = () => isAndroid || Boolean(window.LiquidHubAndroid);
+    const pushSync = (s = useApp.getState()) => {
+      if (!shouldSyncAndroid()) return;
+      const track = s.queue[s.index];
+      // Keep Android ForegroundService & WakeLock active across buffering and track transitions
+      const effectivePlaying = Boolean(track) && (s.playing || s.playbackIntent);
+      syncMediaSessionMetadata(
+        track,
+        effectivePlaying,
+        s.position,
+        s.duration || track?.duration || 0,
+      );
+    };
+    pushSync();
+    return useApp.subscribe(state => {
+      pushSync(state);
+    });
+  }, [isAndroid]);
 
   return { isMobile, isAndroid };
 }

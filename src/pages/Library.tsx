@@ -383,7 +383,7 @@ export default function Library() {
                   </button>
                   <GlassContextMenu
                     label={`Opções de ${p.name}`}
-                    items={[
+                    getItems={() => [
                       {
                         label: 'Compartilhar / Colaborar',
                         icon: <Users size={15} />,
@@ -563,10 +563,14 @@ export default function Library() {
         ? [...new Set(data.history.map(h => h.id))]
         : undefined);
 
-  const tracks = (
-    ids ? ids.map(id => data.tracks.find(t => t.id === id)).filter(t => !!t) : data.tracks
-  ).filter(
-    t => !q || `${t.title} ${t.artist}`.toLocaleLowerCase('pt-BR').includes(q),
+  const baseTracks = ids
+    ? ids.map(id => data.tracks.find(t => t.id === id)).filter(t => !!t)
+    : page === 'local'
+      ? data.tracks.filter(t => t.source === 'local')
+      : data.tracks;
+
+  const tracks = baseTracks.filter(
+    t => !q || `${t.title} ${t.artist} ${t.album || ''}`.toLocaleLowerCase('pt-BR').includes(q),
   );
 
   const totalDur = formatTotalDuration(tracks.reduce((sum, t) => sum + (t.duration || 0), 0));
@@ -684,12 +688,6 @@ export default function Library() {
                   Abrir compartilhada
                 </button>
               )}
-              <IconButton
-                label="Alterar foto da playlist"
-                onClick={() => openCoverPicker(playlist.id)}
-              >
-                <Camera size={15} />
-              </IconButton>
               <IconButton
                 label="Editar playlist"
                 onClick={() =>

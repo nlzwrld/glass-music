@@ -22,6 +22,7 @@ export function LyricsWindowBridge() {
           playing: s.playing,
           lyricsAvailable: s.lyricsAvailable,
           lyricsChecking: s.lyricsChecking,
+          currentLyrics: s.currentLyrics,
           preferences: {
             ...s.data.preferences,
             appearance: { ...s.data.preferences.appearance, customImage: '' },

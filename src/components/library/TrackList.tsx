@@ -2,7 +2,7 @@ import { GlassContextMenu } from '../glass/materials';
 import { trackActions } from './trackActions';
 import { moveWithinPlaylist } from '../../lib/playlist';
 import { warmTrack, cancelWarmTrack, shufflePlay } from '../../lib/playback';
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   Play,
@@ -17,6 +17,7 @@ import {
   ChevronUp,
   ChevronDown,
   Trash2,
+  LocateFixed,
 } from 'lucide-react';
 import { canPlay, type Track } from '../../../shared/types';
 import { useApp, formatTime } from '../../stores/app';
@@ -88,13 +89,22 @@ export default function TrackList({
   const hasSnippets = tracks.some(t => !!t.lyricSnippet);
   const mobileRow = isMobileViewport();
   const rowHeight = mobileRow ? (hasSnippets ? 70 : 64) : hasSnippets ? 56 : 48;
-  const playableCount = tracks.filter(t => canPlay(t) && t.available !== false).length;
+  const playableCount = useMemo(
+    () => tracks.filter(t => canPlay(t) && t.available !== false).length,
+    [tracks],
+  );
+  const likedSet = useMemo(() => new Set(likes), [likes]);
+  const downloadingSet = useMemo(() => new Set(downloadingIds), [downloadingIds]);
+  const activeIndexInList = useMemo(
+    () => (current ? tracks.findIndex(t => t.id === current.id) : -1),
+    [tracks, current?.id],
+  );
 
   const virtual = useVirtualizer({
     count: tracks.length,
     getScrollElement: () => parent.current,
     estimateSize: () => rowHeight,
-    overscan: 10,
+    overscan: 8,
   });
 
   if (!tracks.length)
@@ -119,6 +129,17 @@ export default function TrackList({
         <span>Título</span>
         <span>Álbum / Origem</span>
         <span className="col-quick-shuffle">
+          {activeIndexInList >= 0 && tracks.length > 8 && (
+            <button
+              type="button"
+              className="tracklist-shuffle-btn tracklist-locate-btn"
+              aria-label="Localizar faixa atual na lista"
+              title="Ir para a música tocando agora"
+              onClick={() => virtual.scrollToIndex(activeIndexInList, { align: 'center' })}
+            >
+              <LocateFixed size={12} />
+            </button>
+          )}
           {showHeaderShuffle && playableCount > 1 && (
             <button
               type="button"
@@ -146,26 +167,33 @@ export default function TrackList({
             const track = tracks[row.index]!,
               active = current?.id === track.id;
             const playable = canPlay(track);
-            const liked = likes.includes(track.id);
-            const isDownloading = downloadingIds.includes(track.id);
+            const liked = likedSet.has(track.id);
+            const isDownloading = downloadingSet.has(track.id);
             const prevTrack = row.index > 0 ? tracks[row.index - 1] : undefined;
             const nextTrack = row.index < tracks.length - 1 ? tracks[row.index + 1] : undefined;
-            const contextItems = trackActions(track, tracks, playlistId);
-            if (onRemoveTrack && !playlistId) {
-              contextItems.push({
-                label: 'Remover da playlist',
-                icon: <Trash2 size={17} />,
-                danger: true,
-                action: () => void onRemoveTrack(track),
-              });
-            }
             return (
               <div
                 data-track-item
                 data-track-id={track.id}
-                tabIndex={0}
+                tabIndex={-1}
                 onPointerEnter={() => warmTrack(track)}
                 onPointerLeave={cancelWarmTrack}
+                onKeyDown={e => {
+                  if (e.target === e.currentTarget && e.key === 'Enter') {
+                    e.preventDefault();
+                    const live = useApp.getState();
+                    const liveActive = live.queue[live.index]?.id === track.id;
+                    if (
+                      liveActive &&
+                      playable &&
+                      (!effectiveContextId || live.queueContext === effectiveContextId)
+                    ) {
+                      transport.toggle();
+                    } else {
+                      live.play(track, tracks, { contextId: effectiveContextId });
+                    }
+                  }
+                }}
                 className={`track-row ${active ? 'current' : ''} ${track.available === false ? 'unavailable' : ''} ${draggingId === track.id ? 'dragging' : ''} ${dropTargetId === track.id ? 'drop-target' : ''}`}
                 key={track.id}
                 style={{
@@ -285,12 +313,25 @@ export default function TrackList({
 
                 <button
                   className="track-identity"
-                  onClick={() =>
-                    active && playable && (!effectiveContextId || queueContext === effectiveContextId)
-                      ? transport.toggle()
-                      : useApp.getState().play(track, tracks, { contextId: effectiveContextId })
+                  title={
+                    track.available === false
+                      ? track.reason || 'Esta faixa está indisponível'
+                      : undefined
                   }
-                  aria-label={`${playable ? 'Reproduzir' : 'Abrir'} ${track.title}`}
+                  onClick={() => {
+                    const live = useApp.getState();
+                    const liveActive = live.queue[live.index]?.id === track.id;
+                    if (
+                      liveActive &&
+                      playable &&
+                      (!effectiveContextId || live.queueContext === effectiveContextId)
+                    ) {
+                      transport.toggle();
+                    } else {
+                      live.play(track, tracks, { contextId: effectiveContextId });
+                    }
+                  }}
+                  aria-label={`${track.available === false ? 'Indisponível:' : playable ? 'Reproduzir' : 'Abrir'} ${track.title}`}
                 >
                   <div className="row-cover">
                     <Cover track={track} />
@@ -308,6 +349,9 @@ export default function TrackList({
                     <strong>{track.title}</strong>
                     <small className="track-subline">
                       <OfflineIndicator offline={track.offline} downloading={isDownloading} />
+                      {track.available === false && (
+                        <span className="unavailable-pill">Indisponível</span>
+                      )}
                       <span>
                         {track.lyricSnippet
                           ? `${track.artist} · “${track.lyricSnippet}”`
@@ -350,6 +394,7 @@ export default function TrackList({
                   <IconButton
                     label={`Curtir ${track.title}`}
                     active={liked}
+                    aria-pressed={liked}
                     onClick={() =>
                       void useApp
                         .getState()
@@ -359,15 +404,28 @@ export default function TrackList({
                   >
                     <Heart size={15} fill={liked ? 'currentColor' : 'none'} />
                   </IconButton>
-                  <IconButton
-                    label={`Adicionar ${track.title} à playlist`}
-                    onClick={() => useApp.getState().setDialog({ type: 'add', track })}
-                  >
-                    <Plus size={15} />
-                  </IconButton>
+                  {playable && (
+                    <IconButton
+                      label={`Adicionar ${track.title} à playlist`}
+                      onClick={() => useApp.getState().setDialog({ type: 'add', track })}
+                    >
+                      <Plus size={15} />
+                    </IconButton>
+                  )}
                   <GlassContextMenu
                     label={`Opções de ${track.title}`}
-                    items={contextItems}
+                    getItems={() => {
+                      const contextItems = trackActions(track, tracks, playlistId);
+                      if (onRemoveTrack && !playlistId) {
+                        contextItems.push({
+                          label: 'Remover da playlist',
+                          icon: <Trash2 size={17} />,
+                          danger: true,
+                          action: () => void onRemoveTrack(track),
+                        });
+                      }
+                      return contextItems;
+                    }}
                   />
                 </div>
 

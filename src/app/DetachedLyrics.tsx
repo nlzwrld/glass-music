@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { useApp } from '../stores/app';
-import type { Track, Preferences } from '../../shared/types';
+import type { LyricsResult, Track, Preferences } from '../../shared/types';
 import Lyrics from '../components/player/Lyrics';
 import { OpticalEngine } from '../components/glass/v3/OpticalEngine';
 
@@ -12,7 +12,20 @@ interface LyricsSyncPayload {
   playing: boolean;
   lyricsAvailable?: boolean;
   lyricsChecking?: boolean;
+  currentLyrics?: LyricsResult | null;
   preferences: Preferences;
+}
+
+function applyDetachedTheme(prefs: Preferences) {
+  const isSystemLight =
+    typeof window !== 'undefined' && matchMedia('(prefers-color-scheme: light)').matches;
+  const resolvedTheme =
+    prefs.theme === 'system' ? (isSystemLight ? 'light' : 'dark') : prefs.theme;
+  document.documentElement.dataset.uiStyle = prefs.uiStyle ?? 'matte';
+  document.documentElement.dataset.theme = resolvedTheme === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.motion = prefs.reducedMotion ? 'reduced' : 'full';
+  document.documentElement.dataset.performance = String(Boolean(prefs.performance));
+  document.documentElement.style.setProperty('--user-accent', prefs.accent || '#52b79a');
 }
 
 export default function DetachedLyrics() {
@@ -20,9 +33,7 @@ export default function DetachedLyrics() {
 
   useEffect(() => {
     void window.glass.bootstrap().then(data => {
-      document.documentElement.dataset.uiStyle = data.preferences.uiStyle ?? 'matte';
-      document.documentElement.dataset.theme =
-        data.preferences.theme === 'light' ? 'light' : 'dark';
+      applyDetachedTheme(data.preferences);
       useApp.setState({ data, ready: true, lyricsOpen: true });
     });
 
@@ -35,7 +46,7 @@ export default function DetachedLyrics() {
       if (p.track && p.lyricsAvailable) hadValidTrack = true;
       // Gracefully close detached lyrics if playback moves to a track with no lyrics
       if (hadValidTrack && (!p.track || (p.lyricsAvailable === false && !p.lyricsChecking))) {
-        useApp.setState({ lyricsOpen: false, lyricsAvailable: false });
+        useApp.setState({ lyricsOpen: false, lyricsAvailable: false, currentLyrics: null });
         void invoke('call', { action: 'closeLyrics' }).catch(() => {});
         return;
       }
@@ -46,13 +57,11 @@ export default function DetachedLyrics() {
         playing: p.playing,
         lyricsAvailable: p.lyricsAvailable ?? s.lyricsAvailable,
         lyricsChecking: p.lyricsChecking ?? false,
+        ...(p.currentLyrics !== undefined ? { currentLyrics: p.currentLyrics } : {}),
         data: { ...s.data, preferences: p.preferences },
         lyricsOpen: true,
       }));
-      document.documentElement.dataset.uiStyle = p.preferences.uiStyle ?? 'matte';
-      document.documentElement.dataset.theme =
-        p.preferences.theme === 'light' ? 'light' : 'dark';
-      document.documentElement.dataset.motion = p.preferences.reducedMotion ? 'reduced' : 'full';
+      applyDetachedTheme(p.preferences);
     }).then(fn => {
       if (disposed) fn();
       else off = fn;

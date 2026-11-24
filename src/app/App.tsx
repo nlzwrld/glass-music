@@ -49,6 +49,8 @@ const SharedPlaylist = lazy(() => import('../pages/SharedPlaylist'));
 export default function App() {
   const ready = useApp(s => s.ready),
     page = useApp(s => s.page),
+    navigationIndex = useApp(s => s.navigationIndex),
+    navigationMotion = useApp(s => s.navigationMotion),
     p = useApp(s => s.data.preferences),
     toast = useApp(s => s.toast),
     mini = useApp(s => s.mini),
@@ -256,7 +258,23 @@ export default function App() {
         setTimeout(() => searchInput.current?.focus(), 0);
       }
       if (e.key === 'Escape') {
-        useApp.setState({ expanded: false, queueOpen: false, lyricsOpen: false });
+        if (
+          e.defaultPrevented ||
+          useApp.getState().dialog ||
+          Boolean(
+            document.querySelector(
+              '[aria-modal="true"], [role="menu"], .glass-context-menu, .topbar-profile-menu, .auth-modal-backdrop, .jam-invite-backdrop',
+            ),
+          )
+        ) {
+          return;
+        }
+        const curr = useApp.getState();
+        if (curr.lyricsOpen || curr.queueOpen) {
+          useApp.setState({ lyricsOpen: false, queueOpen: false });
+        } else if (curr.expanded) {
+          useApp.setState({ expanded: false });
+        }
       }
     };
     window.addEventListener('keydown', key);
@@ -264,8 +282,18 @@ export default function App() {
   }, [mini, lockedByAuth, p.onboardingDone]);
 
   useEffect(() => {
-    document.querySelector('.main-scroll')?.scrollTo({ top: 0 });
-  }, [page]);
+    const scroller = document.querySelector('.main-scroll');
+    if (!scroller) return;
+    if (navigationMotion === 'traverse') {
+      const targetTop = useApp.getState().scrollPositions[navigationIndex] ?? 0;
+      scroller.scrollTo({ top: targetTop });
+      const raf = requestAnimationFrame(() => {
+        scroller.scrollTo({ top: targetTop });
+      });
+      return () => cancelAnimationFrame(raf);
+    }
+    scroller.scrollTo({ top: 0 });
+  }, [page, navigationIndex, navigationMotion]);
 
   const external = !!track && track.source !== 'local';
   const collapsed = useApp(s => s.collapsed),

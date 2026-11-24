@@ -8,7 +8,19 @@ import { IconButton } from '../glass/controls';
 import { isAndroidPlatform } from '../../lib/androidBeta';
 import { transport } from './engine';
 
-export default function Lyrics({
+export default function Lyrics(props: {
+  detached?: boolean;
+  pinned?: boolean;
+  onTogglePin?: () => void;
+  onSeek?: (position: number) => void;
+  onClose?: () => void;
+} = {}) {
+  const open = useApp(s => s.lyricsOpen);
+  if (!open && !props.detached) return null;
+  return <LyricsPanel {...props} />;
+}
+
+function LyricsPanel({
   detached = false,
   pinned = true,
   onTogglePin,
@@ -20,9 +32,8 @@ export default function Lyrics({
   onTogglePin?: () => void;
   onSeek?: (position: number) => void;
   onClose?: () => void;
-} = {}) {
-  const open = useApp(s => s.lyricsOpen),
-    track = useApp(s => s.queue[s.index]),
+}) {
+  const track = useApp(s => s.queue[s.index]),
     cachedCurrent = useApp(s => s.currentLyrics),
     position = useApp(s => s.position);
   const allowed = useApp(
@@ -39,11 +50,26 @@ export default function Lyrics({
   const current = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
+    if (detached) return;
+    const prevFocus = document.activeElement as HTMLElement | null;
+    return () => {
+      if (prevFocus && prevFocus.isConnected && prevFocus !== document.body) {
+        prevFocus.focus();
+      }
+    };
+  }, [detached]);
+
+  useEffect(() => {
     setError('');
     setOffset(0);
     setFollow(true);
     if (!track || !allowed) {
       setResult(null);
+      setBusy(false);
+      return;
+    }
+    if (cachedCurrent && cachedCurrent.title) {
+      setResult(cachedCurrent);
       setBusy(false);
       return;
     }
@@ -62,20 +88,18 @@ export default function Lyrics({
     return () => {
       active = false;
     };
-  }, [track?.id, track?.title, track?.artist, track?.duration, allowed]);
+  }, [track?.id, track?.title, track?.artist, track?.duration, allowed, cachedCurrent]);
 
   const lines = useMemo(() => parseLRC(result?.syncedLyrics || ''), [result]);
   const index = activeLyric(lines, position + offset);
 
   useEffect(() => {
-    if (open && follow)
+    if (follow)
       current.current?.scrollIntoView({
         block: 'center',
         behavior: reduced ? 'instant' : 'smooth',
       });
-  }, [index, open, follow, reduced]);
-
-  if (!open) return null;
+  }, [index, follow, reduced]);
 
   return (
     <GlassMaterial
@@ -85,7 +109,14 @@ export default function Lyrics({
       aria-label="Letras da música"
     >
       <header data-tauri-drag-region={detached ? true : undefined}>
-        <h2>Letra</h2>
+        <div className="lyrics-header-title" data-tauri-drag-region={detached ? true : undefined}>
+          <h2>Letra</h2>
+          {track && (
+            <small className="lyrics-track-context" title={`${track.title} · ${track.artist}`}>
+              {track.title} · {track.artist}
+            </small>
+          )}
+        </div>
         <div className="lyrics-header-actions">
           {!follow && (
             <IconButton label="Acompanhar letra" onClick={() => setFollow(true)}>

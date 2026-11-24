@@ -201,13 +201,17 @@ export default function Home() {
                   <button
                     type="button"
                     className="quick-tile-main"
-                    onClick={() =>
-                      activeHere && queueContext === 'home:recent'
-                        ? transport.toggle()
-                        : useApp.getState().play(track, recentTracks.length ? recentTracks : data.tracks, {
-                            contextId: 'home:recent',
-                          })
-                    }
+                    onClick={() => {
+                      const live = useApp.getState();
+                      const liveActive = live.queue[live.index]?.id === track.id;
+                      if (liveActive && live.queueContext === 'home:recent') {
+                        transport.toggle();
+                      } else {
+                        live.play(track, recentTracks.length ? recentTracks : data.tracks, {
+                          contextId: 'home:recent',
+                        });
+                      }
+                    }}
                   >
                     <span className="quick-tile-art">
                       <Cover track={track} />
@@ -218,26 +222,16 @@ export default function Home() {
                     </span>
                   </button>
                   {isPlayingHere && <EqBars />}
-                  <button
-                    type="button"
+                  <span
                     className={`quick-tile-play ${isPlayingHere ? 'visible' : ''}`}
-                    aria-label={
-                      isPlayingHere ? `Pausar ${track.title}` : `Reproduzir ${track.title}`
-                    }
-                    onClick={() =>
-                      activeHere && queueContext === 'home:recent'
-                        ? transport.toggle()
-                        : useApp.getState().play(track, recentTracks.length ? recentTracks : data.tracks, {
-                            contextId: 'home:recent',
-                          })
-                    }
+                    aria-hidden="true"
                   >
                     {isPlayingHere ? (
                       <Pause size={13} fill="currentColor" />
                     ) : (
                       <Play size={13} fill="currentColor" className="play-icon-optical" />
                     )}
-                  </button>
+                  </span>
                 </div>
               );
             })}
@@ -347,24 +341,28 @@ export default function Home() {
         </section>
       )}
 
-      {!hasContent && filter === 'playlists' && (
-        <div className="home-empty-actions">
-          <button
-            type="button"
-            className="button primary"
-            onClick={() => useApp.getState().setDialog({ type: 'playlist' })}
-          >
-            <Plus size={15} />
-            Nova playlist
-          </button>
-          <button
-            type="button"
-            className="button secondary"
-            onClick={() => useApp.getState().setDialog({ type: 'link' })}
-          >
-            <Link2 size={14} />
-            Importar link
-          </button>
+      {data.playlists.length === 0 && filter === 'playlists' && (
+        <div className="empty-state">
+          <h3>Nenhuma playlist criada</h3>
+          <p>Organize suas músicas favoritas ou importe uma coleção por link.</p>
+          <div className="home-empty-actions" style={{ justifyContent: 'center', marginTop: 16 }}>
+            <button
+              type="button"
+              className="button primary"
+              onClick={() => useApp.getState().setDialog({ type: 'playlist' })}
+            >
+              <Plus size={15} />
+              Nova playlist
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => useApp.getState().setDialog({ type: 'link' })}
+            >
+              <Link2 size={14} />
+              Importar link
+            </button>
+          </div>
         </div>
       )}
 

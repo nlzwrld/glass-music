@@ -12,7 +12,9 @@
 body{font-size:calc(14px * var(--ui-scale))}h1{font-size:calc(30px * var(--ui-scale));font-weight:600;letter-spacing:-1px}h2{font-size:calc(18px * var(--ui-scale));font-weight:600}h3{font-size:calc(14px * var(--ui-scale));font-weight:550}
 button,input,select{font-family:inherit}svg.lucide{stroke-width:1.65}
 button{transition:background var(--motion-hover),color var(--motion-hover),box-shadow var(--motion-hover),transform var(--motion-press)}button:active:not(:disabled){transform:scale(.97)}
-button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible,[role="button"]:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
+input[type=range]:focus-visible{outline:none}input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 3px var(--focus),0 1px 5px #00000050}
+html[data-theme=light] .button.primary{background:var(--text);color:#f6fafb;border-color:transparent}
 /* The environment owns the full client area; spacing belongs to its content.
    Padding on .app used to expose Acrylic as a 14px frame around colored modes. */
 .app{padding:0;border:0;border-radius:0}.optical-root{gap:14px;padding:14px;border-radius:0}.app-body{gap:22px}.titlebar{height:24px;margin-top:-8px;margin-bottom:-7px}.titlebar button{height:29px}
@@ -57,7 +59,7 @@ html[data-motion=reduced] *,html[data-performance=true] *{animation-duration:.00
 /* Local fallbacks never retain the previous shared framebuffer. */
 html[data-optical-engine=css] .optical-surfaces{visibility:hidden!important}
 html[data-optical-engine=webgl] .play-main[data-optic=css]{background:#c3e7ec14;backdrop-filter:blur(4px)}
-.glass-context-menu{z-index:35}.modal-backdrop{z-index:40}.toast{z-index:90}
+.glass-context-menu{z-index:180}.modal-backdrop{z-index:40}.toast{z-index:90}
 .swatch-ambient{background:radial-gradient(ellipse at 20% 10%,#78929a,#3b515d 60%,#233540)}
 .appearance-controls{display:grid;grid-template-columns:1fr;column-gap:32px}.appearance-controls .setting-row{min-width:0}.appearance-controls .setting-range{gap:8px}.appearance-controls .setting-range input{width:130px}
 @media(min-width:1440px){.appearance-controls{grid-template-columns:repeat(2,minmax(0,1fr))}.appearance-controls .setting-row{gap:12px}.appearance-controls .setting-range input{width:120px}}

@@ -11,7 +11,11 @@ import {
   type CollectionPreview,
   type DownloadProgressEvent,
   type LyricsResult,
+  type SearchKind,
+  type SearchResult,
+  type SearchSource,
   type ShuffleMode,
+  type UserSearchItem,
 } from '../../shared/types';
 import { hasValidLyrics, resolveTrackLyrics } from '../lib/lyrics';
 import { normalizePrimaryArtist, pickSmartShuffleIndex } from '../lib/smartShuffle';
@@ -73,6 +77,14 @@ type Dialog =
   | { type: 'confirm'; title: string; text: string; action: () => Promise<void> }
   | null;
 
+export interface SearchSessionState {
+  query: string;
+  kind: SearchKind;
+  source: SearchSource;
+  result: SearchResult;
+  users: UserSearchItem[];
+}
+
 interface State {
   searchBusy: boolean;
   ready: boolean;
@@ -84,6 +96,12 @@ interface State {
   filter: string;
   navigation: Page[];
   navigationIndex: number;
+  navigationMotion: 'push' | 'traverse';
+  scrollPositions: Record<number, number>;
+  collectionSnapshots: Record<number, CollectionPreview>;
+  searchSession: SearchSessionState;
+  lastVolume: number;
+  setSearchSession(patch: Partial<SearchSessionState>): void;
   navigate(direction: -1 | 1): void;
   sideOpen: boolean;
   dialog: Dialog;
@@ -326,6 +344,21 @@ let autoplayContinuation: Promise<boolean> | null = null;
 let collectionPreviewGeneration = 0;
 let lyricsProbeSeq = 0;
 
+function readMainScrollTop(): number {
+  if (typeof document === 'undefined') return 0;
+  return document.querySelector('.main-scroll')?.scrollTop ?? 0;
+}
+
+function shiftIndexedMap<T>(map: Record<number, T>, trimmed: number): Record<number, T> {
+  if (trimmed <= 0) return { ...map };
+  const next: Record<number, T> = {};
+  for (const [k, v] of Object.entries(map)) {
+    const shifted = Number(k) - trimmed;
+    if (shifted >= 0) next[shifted] = v;
+  }
+  return next;
+}
+
 export const useApp = create<State>((set, get) => ({
   searchBusy: false,
   ready: false,
@@ -338,6 +371,21 @@ export const useApp = create<State>((set, get) => ({
   toast: '',
   navigation: ['home'],
   navigationIndex: 0,
+  navigationMotion: 'push',
+  scrollPositions: {},
+  collectionSnapshots: {},
+  searchSession: {
+    query: '',
+    kind: 'all',
+    source: 'all',
+    result: { items: [], next: {}, notices: [] },
+    users: [],
+  },
+  lastVolume: defaults.volume > 0 ? defaults.volume : 65,
+  setSearchSession: patch =>
+    set(curr => ({
+      searchSession: { ...curr.searchSession, ...patch },
+    })),
   sideOpen: false,
   queue: [],
   index: -1,
@@ -373,7 +421,12 @@ export const useApp = create<State>((set, get) => ({
         window.glass.bootstrap(),
         window.glass.integrations(),
       ]);
-      set({ data, integrations, ready: true });
+      set({
+        data,
+        integrations,
+        ready: true,
+        lastVolume: data.preferences.volume > 0 ? data.preferences.volume : 65,
+      });
     } catch (e) {
       set({ ready: true, error: String(e) });
     }
@@ -384,26 +437,44 @@ export const useApp = create<State>((set, get) => ({
       set({ expanded: false });
       return;
     }
-    const navigation = [...s.navigation.slice(0, s.navigationIndex + 1), page].slice(-80);
+    const curScroll = readMainScrollTop();
+    const rawNav = [...s.navigation.slice(0, s.navigationIndex + 1), page];
+    const navigation = rawNav.slice(-80);
+    const trimmed = rawNav.length - navigation.length;
+    const scrollPositions = shiftIndexedMap(
+      { ...s.scrollPositions, [s.navigationIndex]: curScroll },
+      trimmed,
+    );
+    const collectionSnapshots = shiftIndexedMap(s.collectionSnapshots, trimmed);
+    const nextIndex = navigation.length - 1;
+    scrollPositions[nextIndex] = 0;
     set({
       page,
-      filter: page === 'search' ? s.filter : '',
       expanded: false,
       navigation,
-      navigationIndex: navigation.length - 1,
+      navigationIndex: nextIndex,
+      navigationMotion: 'push',
+      scrollPositions,
+      collectionSnapshots,
     });
   },
   setSettingsTab: settingsTab => set({ settingsTab }),
   navigate: direction => {
     const s = get(),
       index = s.navigationIndex + direction;
-    if (index >= 0 && index < s.navigation.length)
+    if (index >= 0 && index < s.navigation.length) {
+      const curScroll = readMainScrollTop();
+      const targetPage = s.navigation[index]!;
+      const snapshot = targetPage === 'collection' ? s.collectionSnapshots[index] : undefined;
       set({
-        page: s.navigation[index],
+        page: targetPage,
         navigationIndex: index,
-        filter: '',
+        navigationMotion: 'traverse',
         expanded: false,
+        scrollPositions: { ...s.scrollPositions, [s.navigationIndex]: curScroll },
+        ...(snapshot ? { preview: snapshot, previewBusy: false } : {}),
       });
+    }
   },
   setDialog: dialog => set({ dialog }),
   message: toast => {
@@ -417,7 +488,22 @@ export const useApp = create<State>((set, get) => ({
   mutate: async command => {
     try {
       const data = await window.glass.library(command);
-      set({ data: { ...data, preferences: get().data.preferences } });
+      set(curr => {
+        const nextState: Partial<State> = {
+          data: { ...data, preferences: curr.data.preferences },
+        };
+        if (command.action === 'delete') {
+          const deletedPage = `playlist:${command.id}`;
+          const filtered = curr.navigation.filter(p => p !== deletedPage);
+          const navigation: Page[] = filtered.length ? filtered : ['library'];
+          nextState.navigation = navigation;
+          nextState.navigationIndex = Math.min(curr.navigationIndex, navigation.length - 1);
+          if (curr.page === deletedPage) {
+            nextState.page = 'library';
+          }
+        }
+        return nextState;
+      });
       if (
         ['create', 'rename', 'delete', 'add', 'remove', 'move', 'reorder', 'like'].includes(
           command.action,
@@ -455,7 +541,11 @@ export const useApp = create<State>((set, get) => ({
     };
     const syncPreferences = (extra: Partial<State> = {}) => {
       const preferences = projectPreferences();
-      set(curr => ({ ...extra, data: { ...curr.data, preferences } }));
+      set(curr => ({
+        ...extra,
+        ...(preferences.volume > 0 ? { lastVolume: preferences.volume } : {}),
+        data: { ...curr.data, preferences },
+      }));
     };
     const needShuffleRecompute =
       'shuffle' in patch || 'repeat' in patch || 'shuffleMode' in patch;
@@ -559,20 +649,55 @@ export const useApp = create<State>((set, get) => ({
     const generation = ++collectionPreviewGeneration;
     if (!get().data.preferences.onlineConsent) {
       set({ previewBusy: false });
+      get().setSettingsTab('privacy');
       get().setPage('settings');
       get().message('Ative o acesso online nas configurações para abrir esta coleção.');
       return;
     }
+    const initial = get();
+    const shouldPushSecondCollection =
+      initial.page === 'collection' &&
+      !initial.previewBusy &&
+      Boolean(initial.preview?.url && initial.preview.url !== url);
     set({
       previewBusy: true,
       preview: fallbackTitle
         ? { name: fallbackTitle, artwork: '', url, tracks: [], warning: '', skipped: 0 }
         : null,
     });
-    get().setPage('collection');
+    if (shouldPushSecondCollection) {
+      const cur = get();
+      const curScroll = readMainScrollTop();
+      const rawNav = [...cur.navigation.slice(0, cur.navigationIndex + 1), 'collection' as Page];
+      const navigation = rawNav.slice(-80);
+      const trimmed = rawNav.length - navigation.length;
+      const scrollPositions = shiftIndexedMap(
+        { ...cur.scrollPositions, [cur.navigationIndex]: curScroll },
+        trimmed,
+      );
+      const collectionSnapshots = shiftIndexedMap(cur.collectionSnapshots, trimmed);
+      const nextIndex = navigation.length - 1;
+      scrollPositions[nextIndex] = 0;
+      set({
+        navigation,
+        navigationIndex: nextIndex,
+        navigationMotion: 'push',
+        scrollPositions,
+        collectionSnapshots,
+      });
+    } else {
+      get().setPage('collection');
+    }
+    const targetNavIndex = get().navigationIndex;
     try {
       const preview = await window.glass.previewCollection(url);
-      if (generation === collectionPreviewGeneration) set({ preview, previewBusy: false });
+      if (generation === collectionPreviewGeneration) {
+        set(curr => ({
+          preview,
+          previewBusy: false,
+          collectionSnapshots: { ...curr.collectionSnapshots, [targetNavIndex]: preview },
+        }));
+      }
     } catch (e) {
       if (generation !== collectionPreviewGeneration) return;
       set({ previewBusy: false });
@@ -949,7 +1074,7 @@ export const useApp = create<State>((set, get) => ({
         currentLyrics: null,
         lyricsOpen: false,
       });
-      void window.glass?.closeLyrics?.().catch(() => {});
+      if (typeof window !== 'undefined') void window.glass?.closeLyrics?.().catch(() => {});
       return false;
     } catch {
       if (seq !== lyricsProbeSeq) return get().lyricsAvailable;
@@ -959,7 +1084,7 @@ export const useApp = create<State>((set, get) => ({
         currentLyrics: null,
         lyricsOpen: false,
       });
-      void window.glass?.closeLyrics?.().catch(() => {});
+      if (typeof window !== 'undefined') void window.glass?.closeLyrics?.().catch(() => {});
       return false;
     }
   },
@@ -986,6 +1111,7 @@ export const useApp = create<State>((set, get) => ({
       return;
     }
     if (track.source !== 'local' && !track.offline && !get().data.preferences.onlineConsent) {
+      get().setSettingsTab('privacy');
       get().setPage('settings');
       get().message('Ative as integrações após ler os termos de privacidade.');
       return;
@@ -1290,12 +1416,14 @@ export const useApp = create<State>((set, get) => ({
     const s = get();
     if (!s.queue.length) return;
     if (s.position > 4) {
+      const current = s.queue[s.index];
       set({
         revision: s.revision + 1,
         position: 0,
         autoAdvance: false,
         playbackIntent: true,
         error: '',
+        ...(current && !s.playing ? { status: initialPlaybackStatus(current) } : {}),
       });
       return;
     }
@@ -1313,6 +1441,7 @@ export const useApp = create<State>((set, get) => ({
           duration: prevTrack.duration,
           playing: false,
           playbackIntent: true,
+          status: initialPlaybackStatus(prevTrack),
           error: '',
           revision: s.revision + 1,
           lyricsAvailable: false,
@@ -1344,6 +1473,7 @@ export const useApp = create<State>((set, get) => ({
       duration: targetTrack.duration,
       playing: false,
       playbackIntent: true,
+      status: initialPlaybackStatus(targetTrack),
       error: '',
       revision: s.revision + 1,
       ...(sameTrack ? {} : { lyricsAvailable: false, currentLyrics: null }),
@@ -1625,6 +1755,7 @@ export async function handleDirectLink(raw: string) {
     return;
   }
   if (!s.data.preferences.onlineConsent) {
+    s.setSettingsTab('privacy');
     s.setPage('settings');
     s.message('Ative o acesso online para reproduzir ou importar links.');
     return;

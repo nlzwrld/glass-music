@@ -129,6 +129,7 @@ export function OpticalEngine({ children }: { children: ReactNode }) {
   }, [lab]);
 
   useEffect(() => {
+    if (uiStyle !== 'glass' && !lab) return;
     let cancelled = false;
     const url = coverURL(artwork ? ({ artwork } as Parameters<typeof coverURL>[0]) : undefined);
     void getPalette(url).then(next => {
@@ -144,7 +145,7 @@ export function OpticalEngine({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [artwork]);
+  }, [artwork, uiStyle, lab]);
 
   useEffect(() => {
     custom.current = undefined;
@@ -187,6 +188,35 @@ export function OpticalEngine({ children }: { children: ReactNode }) {
     const scene = source.current!,
       canvas = surface.current!,
       root = canvas.parentElement!;
+    const html = document.documentElement;
+    if (uiStyle !== 'glass' && !lab) {
+      html.dataset.opticalEngine = 'css';
+      html.dataset.glassQuality = 'economy';
+      if (prefersContrastMore) html.dataset.glassContrast = 'high';
+      else delete html.dataset.glassContrast;
+      setReady(false);
+      root.style.setProperty(
+        '--appearance-tint',
+        surfaceTint(current.current.settings, html.dataset.theme === 'light'),
+      );
+      root.style.setProperty('--audio-bass', '0.000');
+      (window as unknown as { __glassOptics: unknown }).__glassOptics = {
+        mode: 'css',
+        quality: 'economy',
+        gpu: 'inactive',
+        draws: 0,
+        uploads: 0,
+        lastDrawMs: 0,
+        bass: 0,
+        contexts: 0,
+        source: [1, 1],
+        lab: false,
+        palette: palette.current.value,
+        paletteStats: { ...paletteStats },
+      };
+      invalidate.current = () => {};
+      return;
+    }
     let disposed = false,
       windowVisible = true,
       raf = 0,
@@ -200,7 +230,6 @@ export function OpticalEngine({ children }: { children: ReactNode }) {
       settings.quality === 'auto' ? 'balanced' : settings.quality;
     let capability = 'fallback',
       maxTexture = 4096;
-    const html = document.documentElement;
     const status = (value: string) => {
       html.dataset.opticalEngine = value;
       setReady(value === 'webgl');
@@ -463,7 +492,7 @@ export function OpticalEngine({ children }: { children: ReactNode }) {
       renderer.current?.dispose();
       renderer.current = null;
     };
-  }, [disabled, reduced, performanceMode, settings.quality, uiStyle, prefersContrastMore, prefersReducedTransparency, isMobileTouch]);
+  }, [disabled, reduced, performanceMode, settings.quality, uiStyle, lab, prefersContrastMore, prefersReducedTransparency, isMobileTouch]);
 
   const setSettings = (patch: Partial<OpticalSettings>) => {
     const next = normalizeOptics({ ...settings, ...patch });

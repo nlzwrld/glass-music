@@ -83,11 +83,20 @@ export default function DetachedJam() {
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    const syncDocTheme = (prefs: JamWindowSnapshot['preferences']) => {
+      const isSystemLight =
+        typeof window !== 'undefined' && matchMedia('(prefers-color-scheme: light)').matches;
+      const resolved =
+        prefs.theme === 'system' ? (isSystemLight ? 'light' : 'dark') : prefs.theme;
+      document.documentElement.dataset.uiStyle = prefs.uiStyle ?? 'matte';
+      document.documentElement.dataset.theme = resolved === 'light' ? 'light' : 'dark';
+      document.documentElement.dataset.motion = prefs.reducedMotion ? 'reduced' : 'full';
+      document.documentElement.dataset.performance = String(Boolean(prefs.performance));
+      document.documentElement.style.setProperty('--user-accent', prefs.accent || '#52b79a');
+    };
+
     void window.glass.bootstrap().then(data => {
-      document.documentElement.dataset.uiStyle = data.preferences.uiStyle ?? 'matte';
-      document.documentElement.dataset.theme =
-        data.preferences.theme === 'light' ? 'light' : 'dark';
-      document.documentElement.dataset.motion = data.preferences.reducedMotion ? 'reduced' : 'full';
+      syncDocTheme(data.preferences);
       useApp.setState({ data, ready: true });
     });
 
@@ -97,12 +106,7 @@ export default function DetachedJam() {
     void listen<JamWindowSnapshot>('jam-state', e => {
       const payload = e.payload;
       setSnap(payload);
-      document.documentElement.dataset.uiStyle = payload.preferences.uiStyle ?? 'matte';
-      document.documentElement.dataset.theme =
-        payload.preferences.theme === 'light' ? 'light' : 'dark';
-      document.documentElement.dataset.motion = payload.preferences.reducedMotion
-        ? 'reduced'
-        : 'full';
+      syncDocTheme(payload.preferences);
     }).then(fn => {
       if (disposed) fn();
       else off = fn;

@@ -11,7 +11,7 @@ import {
   type LanJamAnnouncement,
 } from '../../shared/jam';
 import type { Preferences, Track } from '../../shared/types';
-import { useJam, type PendingJoinRequestState } from '../components/jam/state';
+import { jamClient, useJam, type PendingJoinRequestState } from '../components/jam/state';
 import { useAccounts } from '../stores/accounts';
 import { useApp } from '../stores/app';
 import { isAndroidPlatform } from './androidBeta';
@@ -432,7 +432,6 @@ export function JamWindowBridge() {
         case 'resync': {
           const s = jam.session;
           if (!s) return;
-          const { jamClient } = await import('../components/jam/state');
           if (s.host) {
             const app = useApp.getState();
             await jamClient.update({

@@ -17,30 +17,31 @@ export default function TrackCard({
   list?: Track[];
   contextId?: string | null;
 }) {
-  const downloading = useApp(s => s.downloadingIds.includes(track.id));
-  const current = useApp(s => s.queue[s.index]);
-  const playing = useApp(s => s.playing);
-  const queueContext = useApp(s => s.queueContext);
-  const savedOffline = useApp(
-    s => Boolean(track.offline || s.data.tracks.find(t => t.id === track.id)?.offline),
-  );
   const playable = canPlay(track);
-  const isActive = playable && current?.id === track.id;
-  const isPlayingHere = isActive && playing;
+  const downloading = useApp(s => s.downloadingIds.includes(track.id));
+  const isActive = useApp(s => playable && s.queue[s.index]?.id === track.id);
+  const isPlayingHere = useApp(
+    s => playable && s.queue[s.index]?.id === track.id && s.playing,
+  );
+  const savedOffline = useApp(
+    s => Boolean(track.offline || s.data.tracks.some(t => t.id === track.id && t.offline)),
+  );
 
   const triggerPlay = () => {
-    if (isActive && (!contextId || queueContext === contextId)) {
+    const live = useApp.getState();
+    const liveActive = playable && live.queue[live.index]?.id === track.id;
+    if (liveActive && (!contextId || live.queueContext === contextId)) {
       transport.toggle();
       return;
     }
-    useApp.getState().play(track, list, contextId ? { contextId } : undefined);
+    live.play(track, list, contextId ? { contextId } : undefined);
   };
 
   return (
     <GlassCard
       data-track-item
-      className={`track-card ${isActive ? 'is-playing' : ''}`}
-      tabIndex={0}
+      className={`track-card ${isActive ? 'is-playing' : ''} ${track.available === false ? 'unavailable' : ''}`}
+      tabIndex={-1}
     >
       <div className="card-art">
         <button
@@ -61,18 +62,20 @@ export default function TrackCard({
             )}
           </span>
         </button>
-        <button
-          className="card-add"
-          aria-label={`Salvar ${track.title} em playlist`}
-          title="Adicionar à playlist"
-          onClick={() => useApp.getState().setDialog({ type: 'add', track })}
-        >
-          <Plus size={14} />
-        </button>
+        {playable && (
+          <button
+            className="card-add"
+            aria-label={`Salvar ${track.title} em playlist`}
+            title="Adicionar à playlist"
+            onClick={() => useApp.getState().setDialog({ type: 'add', track })}
+          >
+            <Plus size={14} />
+          </button>
+        )}
         <div className="card-menu">
           <GlassContextMenu
             label={`Opções de ${track.title}`}
-            items={trackActions(track, list || [track])}
+            getItems={() => trackActions(track, list || [track])}
           />
         </div>
       </div>

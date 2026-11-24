@@ -53,6 +53,65 @@ export function shouldRenderLyricsButton(state: {
   return Boolean(state.hasActive && state.lyricsAvailable);
 }
 
+export function getUpcomingQueueItems(state: {
+  queue: Track[];
+  index: number;
+  queueShuffled: boolean;
+  shufflePlayed: number[];
+  shuffleNext: number | null;
+  shuffle: boolean;
+}): Array<{ t: Track; idx: number }> {
+  const { queue, index, queueShuffled, shufflePlayed, shuffleNext, shuffle } = state;
+  if (!queue.length) return [];
+  if (index < 0) return queue.map((t, idx) => ({ t, idx }));
+  if (!queueShuffled && shuffle) {
+    const seen = new Set<number>([index]);
+    const ordered: Array<{ t: Track; idx: number }> = [];
+    if (
+      shuffleNext !== null &&
+      shuffleNext >= 0 &&
+      shuffleNext < queue.length &&
+      shuffleNext !== index &&
+      queue[shuffleNext]?.available !== false
+    ) {
+      seen.add(shuffleNext);
+      ordered.push({ t: queue[shuffleNext]!, idx: shuffleNext });
+    }
+    for (let idx = 0; idx < queue.length; idx++) {
+      if (!seen.has(idx) && !shufflePlayed.includes(idx)) {
+        seen.add(idx);
+        ordered.push({ t: queue[idx]!, idx });
+      }
+    }
+    return ordered;
+  }
+  const items: Array<{ t: Track; idx: number }> = [];
+  for (let idx = index + 1; idx < queue.length; idx++) {
+    items.push({ t: queue[idx]!, idx });
+  }
+  return items;
+}
+
+export function describePlaybackStatus(
+  status: string,
+  playbackIntent: boolean,
+  isJamGuest: boolean,
+): string {
+  if (status === 'Sincronizando fonte de áudio...') return 'Sincronizando áudio…';
+  if (status === 'Buscando recomendações no seu estilo…') return 'Buscando recomendações…';
+  if (status === 'Carregando' && playbackIntent) return 'Carregando…';
+  if (status === 'Fim da fila') return 'Fim da fila';
+  if (isJamGuest) return 'Sincronizado na JAM';
+  return '';
+}
+
+function formatAccessibleTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0 segundos';
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return m > 0 ? `${m} min ${s} s` : `${s} s`;
+}
+
 function useDisplayTrack() {
   return useApp(
     s =>
@@ -82,7 +141,6 @@ export function PlaybackControls({
   const isGlass = (p.uiStyle ?? 'matte') === 'glass';
   const wantsPlayback = playing || playbackIntent;
   const preparing =
-    !playing &&
     playbackIntent &&
     (status === 'Carregando' || status === 'Sincronizando fonte de áudio...');
 
@@ -165,6 +223,7 @@ export function PlaybackControls({
       <IconButton
         label={`Repetir: ${p.repeat === 'off' ? 'desligado' : p.repeat === 'all' ? 'fila' : 'uma faixa'}`}
         active={p.repeat !== 'off'}
+        aria-pressed={p.repeat !== 'off'}
         className="repeat-transport-btn"
         onClick={() =>
           setPreferencesFromUI({
@@ -184,13 +243,69 @@ export function Seekbar({ compact = false }: { compact?: boolean }) {
     measuredDuration = useApp(s => s.duration),
     track = useApp(s => s.queue[s.index]),
     preview = useDisplayTrack();
-  const duration = track ? measuredDuration : preview?.duration || 0;
+  const [draftPosition, setDraftPosition] = useState<number | null>(null);
+  const isDragging = useRef(false);
+  const draftRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    setDraftPosition(null);
+    draftRef.current = null;
+    if (isDragging.current) {
+      isDragging.current = false;
+      transport.setScrubbing(false);
+    }
+  }, [track?.id]);
+
+  useEffect(() => {
+    return () => {
+      if (isDragging.current) {
+        isDragging.current = false;
+        transport.setScrubbing(false);
+      }
+    };
+  }, []);
+
+  const commitScrub = () => {
+    if (!isDragging.current) return;
+    isDragging.current = false;
+    transport.setScrubbing(false);
+    const target = draftRef.current;
+    draftRef.current = null;
+    setDraftPosition(null);
+    if (target !== null) {
+      transport.seek(target);
+    }
+  };
+
+  useEffect(() => {
+    if (draftPosition === null && !isDragging.current) return;
+    const onGlobalRelease = () => commitScrub();
+    window.addEventListener('pointerup', onGlobalRelease);
+    window.addEventListener('pointercancel', onGlobalRelease);
+    return () => {
+      window.removeEventListener('pointerup', onGlobalRelease);
+      window.removeEventListener('pointercancel', onGlobalRelease);
+    };
+  }, [draftPosition !== null]);
+
+  const duration = track ? measuredDuration || track.duration || 0 : preview?.duration || 0;
   const knownDuration = Number.isFinite(duration) && duration > 0;
-  const elapsed = track ? position : 0;
+  const maxVal = knownDuration ? duration : 1;
+  const baseElapsed = track ? position : 0;
+  const shownElapsed = Math.max(
+    0,
+    Math.min(draftPosition !== null ? draftPosition : baseElapsed, maxVal),
+  );
+  const progressPct = knownDuration ? Math.max(0, Math.min(100, (shownElapsed / duration) * 100)) : 0;
+
   return (
-    <div className={`seek ${compact ? 'compact-seek' : ''}`}>
+    <div
+      className={`seek ${compact ? 'compact-seek' : ''} ${draftPosition !== null ? 'is-scrubbing' : ''}`}
+      onTouchStart={e => e.stopPropagation()}
+      onTouchMove={e => e.stopPropagation()}
+    >
       <time>
-        {formatTime(elapsed)}
+        {formatTime(shownElapsed)}
         {compact && (
           <>
             <span> / </span>
@@ -200,17 +315,45 @@ export function Seekbar({ compact = false }: { compact?: boolean }) {
       </time>
       <GlassSlider
         aria-label="Posição da música"
+        aria-valuetext={`${formatAccessibleTime(shownElapsed)} de ${knownDuration ? formatAccessibleTime(duration) : 'duração desconhecida'}`}
         min={0}
-        max={knownDuration ? duration : 1}
-        step={0.25}
-        value={Math.min(elapsed, knownDuration ? duration : 1)}
+        max={maxVal}
+        step={0.5}
+        value={shownElapsed}
         disabled={!track || !knownDuration}
+        onPointerDown={() => {
+          if (!track || !knownDuration) return;
+          isDragging.current = true;
+          draftRef.current = shownElapsed;
+          transport.setScrubbing(true);
+        }}
+        onPointerUp={commitScrub}
+        onPointerCancel={commitScrub}
+        onLostPointerCapture={commitScrub}
+        onBlur={commitScrub}
+        onKeyDown={e => {
+          if (!track || !knownDuration) return;
+          let delta = 0;
+          if (e.key === 'PageUp') delta = 15;
+          else if (e.key === 'PageDown') delta = -15;
+          else if (e.shiftKey && e.key === 'ArrowRight') delta = 10;
+          else if (e.shiftKey && e.key === 'ArrowLeft') delta = -10;
+          if (delta !== 0) {
+            e.preventDefault();
+            const target = Math.max(0, Math.min(duration, shownElapsed + delta));
+            transport.seek(target);
+          }
+        }}
         onChange={e => {
           const n = Number(e.target.value);
-          transport.seek(n);
-          useApp.setState({ position: n });
+          if (isDragging.current) {
+            draftRef.current = n;
+            setDraftPosition(n);
+          } else {
+            transport.seek(n);
+          }
         }}
-        style={{ '--progress': `${knownDuration ? (elapsed / duration) * 100 : 0}%` } as React.CSSProperties}
+        style={{ '--progress': `${progressPct}%` } as React.CSSProperties}
       />
       {!compact && <time>{knownDuration ? formatTime(duration) : '—:—'}</time>}
     </div>
@@ -219,16 +362,19 @@ export function Seekbar({ compact = false }: { compact?: boolean }) {
 
 export function VolumeControl() {
   const volume = useApp(s => s.data.preferences.volume);
+  const lastVolume = useApp(s => s.lastVolume);
   return (
     <div className="volume-control">
       <IconButton
         label={volume ? 'Silenciar' : 'Ativar som'}
-        onClick={() => setPreferencesFromUI({ volume: volume ? 0 : 65 })}
+        aria-pressed={volume === 0}
+        onClick={() => setPreferencesFromUI({ volume: volume ? 0 : lastVolume || 65 })}
       >
         {volume ? <Volume2 size={16} /> : <VolumeX size={16} />}
       </IconButton>
       <GlassSlider
         aria-label="Volume"
+        aria-valuetext={volume === 0 ? 'Silenciado (0%)' : `${volume}%`}
         min={0}
         max={100}
         value={volume}
@@ -244,7 +390,7 @@ export function TrackMenu({ track, label }: { track?: Track; label: string }) {
     <GlassContextMenu
       label={label}
       disabled={!track}
-      items={
+      getItems={() =>
         track
           ? [
               {
@@ -322,7 +468,12 @@ function Favorite({ label, track }: { label: string; track?: Track }) {
 
 function AuxiliaryControls() {
   const queueOpen = useApp(s => s.queueOpen),
-    queueCount = useApp(s => Math.max(0, s.queue.length - (s.index >= 0 ? 1 : 0))),
+    queue = useApp(s => s.queue),
+    index = useApp(s => s.index),
+    queueShuffled = useApp(s => s.queueShuffled),
+    shufflePlayed = useApp(s => s.shufflePlayed),
+    shuffleNext = useApp(s => s.shuffleNext),
+    shuffle = useApp(s => s.data.preferences.shuffle),
     lyricsOpen = useApp(s => s.lyricsOpen),
     lyricsAvailable = useApp(s => s.lyricsAvailable),
     hasActive = useApp(s => !!s.queue[s.index]),
@@ -332,6 +483,18 @@ function AuxiliaryControls() {
     jamListeners = useJam(s => s.room?.members.length ?? (s.session ? 1 : 0)),
     jamPendingReqCount = useJam(s => (s.session?.host ? s.room?.pendingRequestCount ?? 0 : 0));
 
+  const queueCount = useMemo(
+    () =>
+      getUpcomingQueueItems({
+        queue,
+        index,
+        queueShuffled,
+        shufflePlayed,
+        shuffleNext,
+        shuffle,
+      }).length,
+    [queue, index, queueShuffled, shufflePlayed, shuffleNext, shuffle],
+  );
   const showLyrics = shouldRenderLyricsButton({ hasActive, lyricsAvailable });
 
   return (
@@ -372,6 +535,7 @@ function AuxiliaryControls() {
             <IconButton
               label="Letras"
               active={lyricsOpen}
+              aria-expanded={lyricsOpen}
               onClick={() => {
                 if (mini)
                   void window.glass
@@ -399,6 +563,7 @@ function AuxiliaryControls() {
       <IconButton
         label={mini ? 'Sair do mini-player' : 'Mini-player'}
         active={mini}
+        aria-pressed={mini}
         onClick={() => {
           void window.glass
             .window(mini ? 'restore' : 'mini')
@@ -424,9 +589,10 @@ export function SidePlayer() {
     active = useApp(s => s.queue[s.index]),
     queue = useApp(s => s.queue),
     index = useApp(s => s.index),
+    queueShuffled = useApp(s => s.queueShuffled),
     shufflePlayed = useApp(s => s.shufflePlayed),
     shuffleNext = useApp(s => s.shuffleNext),
-    preferences = useApp(s => s.data.preferences),
+    data = useApp(s => s.data),
     downloadingIds = useApp(s => s.downloadingIds);
   const isDownloading = !!track && downloadingIds.includes(track.id);
   const nextIdx = useMemo(
@@ -435,13 +601,14 @@ export function SidePlayer() {
         {
           queue,
           index,
+          queueShuffled,
           shufflePlayed,
           shuffleNext,
-          data: { tracks: [], likes: [], history: [], preferences },
+          data,
         },
         false,
       ),
-    [queue, index, shufflePlayed, shuffleNext, preferences],
+    [queue, index, queueShuffled, shufflePlayed, shuffleNext, data],
   );
   const nextTrack = nextIdx >= 0 ? queue[nextIdx] : undefined;
 
@@ -516,77 +683,95 @@ export function SidePlayer() {
   );
 }
 
+function MobileMiniProgress({
+  hasActive,
+  fallbackDuration,
+}: {
+  hasActive: boolean;
+  fallbackDuration: number;
+}) {
+  const position = useApp(s => s.position);
+  const duration = useApp(s => s.duration);
+  const totalDuration = hasActive ? duration || fallbackDuration : fallbackDuration;
+  const progressPct =
+    hasActive && Number.isFinite(totalDuration) && totalDuration > 0
+      ? Math.max(0, Math.min(100, (position / totalDuration) * 100))
+      : 0;
+  return (
+    <div className="mobile-mini-progress" aria-hidden="true">
+      <span style={{ width: `${progressPct}%` }} />
+    </div>
+  );
+}
+
 export default function GlassPlayer() {
   const track = useDisplayTrack(),
     active = useApp(s => s.queue[s.index]),
     playing = useApp(s => s.playing),
     playbackIntent = useApp(s => s.playbackIntent),
     status = useApp(s => s.status),
-    position = useApp(s => s.position),
-    duration = useApp(s => s.duration),
+    mini = useApp(s => s.mini),
     downloadingIds = useApp(s => s.downloadingIds),
     sideOpen = useApp(s => s.sideOpen),
     error = useApp(s => s.error),
-    jamActive = useJam(s => Boolean(s.session)),
+    jamSession = useJam(s => s.session),
     reduced = useReducedUI();
-  const [mobile, setMobile] = useState(() => isMobileViewport());
+  const jamActive = Boolean(jamSession);
+  const isJamGuest = Boolean(jamSession && !jamSession.host);
+  const [mobile, setMobile] = useState(() => isMobileViewport(undefined, undefined, mini));
   const touchOrigin = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
-    const onResize = () => setMobile(isMobileViewport());
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, []);
+    const sync = () => setMobile(isMobileViewport(undefined, undefined, useApp.getState().mini));
+    sync();
+    window.addEventListener('resize', sync);
+    return () => window.removeEventListener('resize', sync);
+  }, [mini]);
 
   const isDownloading = !!track && downloadingIds.includes(track.id);
   const wantsPlayback = playing || playbackIntent;
   const preparing =
-    !playing &&
     playbackIntent &&
     (status === 'Carregando' || status === 'Sincronizando fonte de áudio...');
-  const totalDuration = active ? duration || active.duration || 0 : track?.duration || 0;
-  const progressPct =
-    active && Number.isFinite(totalDuration) && totalDuration > 0
-      ? Math.max(0, Math.min(100, (position / totalDuration) * 100))
-      : 0;
+  const statusLabel = active ? describePlaybackStatus(status, playbackIntent, isJamGuest) : '';
 
   if (mobile) {
     return (
-      <GlassMaterial
-        as="footer"
-        variant="thick"
-        material="floating"
-        className="player mobile-mini-player"
-        aria-label="Controles de reprodução"
-        onTouchStart={e => {
-          const t = e.touches[0];
-          if (t) touchOrigin.current = { x: t.clientX, y: t.clientY };
-        }}
-        onTouchEnd={e => {
-          const start = touchOrigin.current;
-          touchOrigin.current = null;
-          const end = e.changedTouches[0];
-          if (!start || !end || !active) return;
-          const dx = end.clientX - start.x;
-          const dy = end.clientY - start.y;
-          if (dy < -48 && Math.abs(dy) > Math.abs(dx)) {
-            useApp.setState({ expanded: true });
-          } else if (Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(dy) * 1.4) {
-            if (dx < 0) useApp.getState().next(true);
-            else useApp.getState().previous();
-          }
-        }}
-      >
-        <PlayerEngine />
-        <button
-          type="button"
-          className="mobile-mini-hit"
-          aria-label="Abrir player expandido"
-          disabled={!active}
-          onClick={() => active && useApp.setState({ expanded: true })}
+      <>
+        <GlassMaterial
+          as="footer"
+          variant="thick"
+          material="floating"
+          className="player mobile-mini-player"
+          aria-label="Controles de reprodução"
+          onTouchStart={e => {
+            const t = e.touches[0];
+            if (t) touchOrigin.current = { x: t.clientX, y: t.clientY };
+          }}
+          onTouchEnd={e => {
+            const start = touchOrigin.current;
+            touchOrigin.current = null;
+            const end = e.changedTouches[0];
+            if (!start || !end || !active) return;
+            const dx = end.clientX - start.x;
+            const dy = end.clientY - start.y;
+            if (dy < -48 && Math.abs(dy) > Math.abs(dx)) {
+              useApp.setState({ expanded: true });
+            } else if (Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+              if (dx < 0) useApp.getState().next(true);
+              else useApp.getState().previous();
+            }
+          }}
         >
-          <span className="mobile-mini-cover">
-            <AnimatePresence mode="wait" initial={false}>
+          <PlayerEngine />
+          <button
+            type="button"
+            className="mobile-mini-hit"
+            aria-label="Abrir player expandido"
+            disabled={!active}
+            onClick={() => active && useApp.setState({ expanded: true })}
+          >
+            <span className="mobile-mini-cover">
               <motion.div
                 key={track?.id || 'empty'}
                 className="cover-transition-frame"
@@ -594,52 +779,58 @@ export default function GlassPlayer() {
               >
                 <Cover track={track} />
               </motion.div>
-            </AnimatePresence>
-          </span>
-          <span className="mobile-mini-meta">
-            <strong>{track?.title || 'Nenhuma faixa'}</strong>
-            <small>
-              {track && <OfflineIndicator offline={track.offline} downloading={isDownloading} />}
-              <span>{track?.artist || 'Toque em uma música para ouvir'}</span>
-            </small>
-          </span>
-        </button>
-        <div className="mobile-mini-actions">
-          <Favorite label="Curtir música atual" track={track} />
-          <button
-            type="button"
-            className="mobile-mini-play"
-            aria-label={wantsPlayback ? 'Pausar' : 'Reproduzir'}
-            disabled={!track}
-            onClick={() => {
-              if (active) transport.toggle();
-              else if (track)
-                useApp
-                  .getState()
-                  .play(track, useApp.getState().data.tracks.filter(t => t.kind === 'track'));
-            }}
-          >
-            {preparing ? (
-              <LoaderCircle className="spinner" size={18} />
-            ) : wantsPlayback ? (
-              <Pause size={18} fill="currentColor" />
-            ) : (
-              <Play size={18} fill="currentColor" />
-            )}
+            </span>
+            <span className="mobile-mini-meta">
+              <strong>{track?.title || 'Nenhuma faixa'}</strong>
+              <small>
+                {track && <OfflineIndicator offline={track.offline} downloading={isDownloading} />}
+                <span>{track?.artist || 'Toque em uma música para ouvir'}</span>
+                {statusLabel && (
+                  <span className="player-status-pill" role="status">
+                    {statusLabel}
+                  </span>
+                )}
+              </small>
+            </span>
           </button>
-          <IconButton
-            label="Próxima faixa"
-            disabled={!active}
-            onClick={() => useApp.getState().next(true)}
-          >
-            <SkipForward size={18} fill="currentColor" />
-          </IconButton>
-        </div>
-        <div className="mobile-mini-progress" aria-hidden="true">
-          <span style={{ width: `${progressPct}%` }} />
-        </div>
+          <div className="mobile-mini-actions">
+            <Favorite label="Curtir música atual" track={track} />
+            <button
+              type="button"
+              className="mobile-mini-play"
+              aria-label={wantsPlayback ? 'Pausar' : 'Reproduzir'}
+              disabled={!track}
+              onClick={() => {
+                if (active) transport.toggle();
+                else if (track)
+                  useApp
+                    .getState()
+                    .play(track, useApp.getState().data.tracks.filter(t => t.kind === 'track'));
+              }}
+            >
+              {preparing ? (
+                <LoaderCircle className="spinner" size={18} />
+              ) : wantsPlayback ? (
+                <Pause size={18} fill="currentColor" />
+              ) : (
+                <Play size={18} fill="currentColor" />
+              )}
+            </button>
+            <IconButton
+              label="Próxima faixa"
+              disabled={!active}
+              onClick={() => useApp.getState().next(true)}
+            >
+              <SkipForward size={18} fill="currentColor" />
+            </IconButton>
+          </div>
+          <MobileMiniProgress
+            hasActive={Boolean(active)}
+            fallbackDuration={active?.duration || track?.duration || 0}
+          />
+        </GlassMaterial>
         {error && (
-          <div className="playback-error" role="alert">
+          <div className="playback-error mobile-playback-error" role="alert">
             <span>{error}</span>
             {active && (
               <button
@@ -657,7 +848,7 @@ export default function GlassPlayer() {
             </IconButton>
           </div>
         )}
-      </GlassMaterial>
+      </>
     );
   }
 
@@ -677,45 +868,45 @@ export default function GlassPlayer() {
           disabled={!active}
           onClick={() => useApp.setState({ expanded: true })}
         >
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.div
-              key={track?.id || 'empty'}
-              className="cover-transition-frame"
-              {...coverMotion(reduced)}
-            >
-              <Cover track={track} />
-            </motion.div>
-          </AnimatePresence>
+          <motion.div
+            key={track?.id || 'empty'}
+            className="cover-transition-frame"
+            {...coverMotion(reduced)}
+          >
+            <Cover track={track} />
+          </motion.div>
           <span>
             <Maximize2 size={14} />
           </span>
         </button>
         <div className="now-info">
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.div
-              key={track?.id || 'empty-info'}
-              className="now-info-motion"
-              initial={reduced ? false : { opacity: 0, y: 3 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={reduced ? { opacity: 1 } : { opacity: 0, y: -3 }}
-              transition={{ duration: reduced ? 0 : 0.16, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <strong>{track?.title || 'Nenhuma faixa'}</strong>
-              <small className="now-subline">
-                {track && <OfflineIndicator offline={track.offline} downloading={isDownloading} />}
-                <span>{track?.artist || '—'}</span>
-                {track && track.streamProvider && track.source === 'link' && (
-                  <SourceBadge
-                    source={track.source}
-                    url={track.url}
-                    catalogSource={track.catalogSource}
-                    streamProvider={track.streamProvider}
-                    compact
-                  />
-                )}
-              </small>
-            </motion.div>
-          </AnimatePresence>
+          <motion.div
+            key={track?.id || 'empty-info'}
+            className="now-info-motion"
+            initial={reduced ? false : { opacity: 0, y: 2 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: reduced ? 0 : 0.14, ease: [0.22, 1, 0.36, 1] }}
+          >
+            <strong>{track?.title || 'Nenhuma faixa'}</strong>
+            <small className="now-subline">
+              {track && <OfflineIndicator offline={track.offline} downloading={isDownloading} />}
+              <span>{track?.artist || '—'}</span>
+              {track && track.streamProvider && track.source === 'link' && (
+                <SourceBadge
+                  source={track.source}
+                  url={track.url}
+                  catalogSource={track.catalogSource}
+                  streamProvider={track.streamProvider}
+                  compact
+                />
+              )}
+              {statusLabel && (
+                <span className="player-status-pill" role="status">
+                  {statusLabel}
+                </span>
+              )}
+            </small>
+          </motion.div>
         </div>
         <Favorite label="Curtir música atual" track={track} />
         <TrackMenu label="Opções da música atual" track={track} />
@@ -728,21 +919,20 @@ export default function GlassPlayer() {
       </div>
       <div className="player-tools">
         <div className="compact-tools">
-          <IconButton
-            label={jamActive ? 'Abrir JAM ao vivo' : 'Iniciar ou entrar em uma JAM'}
-            active={jamActive}
-            className={jamActive ? 'jam-tool-live' : ''}
-            onClick={() => {
-              if (jamActive) void openJamWindow();
-              else useApp.getState().setDialog({ type: 'jam' });
-            }}
-          >
-            <Radio size={16} />
-          </IconButton>
+          {!jamActive && (
+            <IconButton
+              label="Iniciar ou entrar em uma JAM"
+              active={false}
+              onClick={() => useApp.getState().setDialog({ type: 'jam' })}
+            >
+              <Radio size={16} />
+            </IconButton>
+          )}
           <AuxiliaryControls />
           <IconButton
             label="Mostrar player lateral"
             active={sideOpen}
+            aria-expanded={sideOpen}
             onClick={() => useApp.setState({ sideOpen: !useApp.getState().sideOpen })}
           >
             <PanelRightOpen size={16} />

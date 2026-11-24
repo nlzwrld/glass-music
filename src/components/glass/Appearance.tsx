@@ -21,23 +21,29 @@ export default function Appearance() {
     min: number,
     max: number,
     step: number,
-  ) => (
-    <label className="setting-row" key={key}>
-      <strong>{label}</strong>
-      <span className="setting-range">
-        <input
-          aria-label={label}
-          type="range"
-          min={min}
-          max={max}
-          step={step}
-          value={s[key]}
-          onChange={e => setSettings({ [key]: Number(e.target.value) })}
-        />
-        <output>{s[key].toFixed(step < 1 ? 2 : 0)}</output>
-      </span>
-    </label>
-  );
+  ) => {
+    const pct = max > min ? Math.max(0, Math.min(100, ((s[key] - min) / (max - min)) * 100)) : 0;
+    const formatted = s[key].toFixed(step < 1 ? 2 : 0);
+    return (
+      <label className="setting-row" key={key}>
+        <strong>{label}</strong>
+        <span className="setting-range">
+          <input
+            aria-label={label}
+            aria-valuetext={formatted}
+            type="range"
+            min={min}
+            max={max}
+            step={step}
+            value={s[key]}
+            style={{ '--progress': `${pct}%` } as React.CSSProperties}
+            onChange={e => setSettings({ [key]: Number(e.target.value) })}
+          />
+          <output>{formatted}</output>
+        </span>
+      </label>
+    );
+  };
 
   return (
     <section className="settings-section appearance-settings">
@@ -166,6 +172,11 @@ export default function Appearance() {
         checked={p.reducedMotion}
         onChange={reducedMotion => pref({ reducedMotion })}
       />
+      <Toggle
+        label="Modo de desempenho"
+        checked={p.performance}
+        onChange={performance => pref({ performance })}
+      />
 
       {isGlass && (
         <>
@@ -268,10 +279,12 @@ export default function Appearance() {
               <span className="setting-range">
                 <input
                   aria-label="Opacidade do vidro"
+                  aria-valuetext={`${p.glass}%`}
                   type="range"
                   min={0}
                   max={100}
                   value={p.glass}
+                  style={{ '--progress': `${p.glass}%` } as React.CSSProperties}
                   onChange={e => pref({ glass: Number(e.target.value) })}
                 />
                 <output>{p.glass}%</output>
@@ -282,11 +295,13 @@ export default function Appearance() {
               <span className="setting-range">
                 <input
                   aria-label="Movimento do fundo"
+                  aria-valuetext={`${Math.round(s.backgroundMotion * 100)}%`}
                   type="range"
                   min={0}
                   max={1}
                   step={0.05}
                   value={s.backgroundMotion}
+                  style={{ '--progress': `${Math.round(s.backgroundMotion * 100)}%` } as React.CSSProperties}
                   onChange={e => setSettings({ backgroundMotion: Number(e.target.value) })}
                 />
                 <output>{Math.round(s.backgroundMotion * 100)}%</output>
@@ -297,11 +312,17 @@ export default function Appearance() {
               <span className="setting-range">
                 <input
                   aria-label="Intensidade do gradiente"
+                  aria-valuetext={`${Math.round(s.gradientIntensity * 100)}%`}
                   type="range"
                   min={0.1}
                   max={1}
                   step={0.05}
                   value={s.gradientIntensity}
+                  style={
+                    {
+                      '--progress': `${Math.round(((s.gradientIntensity - 0.1) / 0.9) * 100)}%`,
+                    } as React.CSSProperties
+                  }
                   onChange={e => setSettings({ gradientIntensity: Number(e.target.value) })}
                 />
                 <output>{Math.round(s.gradientIntensity * 100)}%</output>
@@ -344,15 +365,10 @@ export default function Appearance() {
               checked={s.audioReactive !== false}
               onChange={audioReactive => setSettings({ audioReactive })}
             />
-            <Toggle
-              label="Modo de desempenho"
-              checked={p.performance}
-              onChange={performance => pref({ performance })}
-            />
           </div>
 
           <details className="advanced-appearance">
-            <summary style={{ display: 'none' }}>Ajustes óticos avançados</summary>
+            <summary>Ajustes óticos avançados</summary>
             {range('refraction', 'Refração', 0, 12, 0.1)}
             {range('ior', 'Índice de refração', 1, 2, 0.01)}
             {range('fresnel', 'Fresnel', 0, 1, 0.01)}
