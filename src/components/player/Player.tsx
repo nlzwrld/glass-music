@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   Check,
@@ -233,6 +233,18 @@ export function Queue() {
   const reduced = useReducedUI();
   const dragFrom = useRef<number | null>(null);
 
+  const panel = useRef<HTMLElement>(null);
+  const focusAfterRemoval = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const position = focusAfterRemoval.current;
+    if (position === null) return;
+    focusAfterRemoval.current = null;
+    const buttons = panel.current?.querySelectorAll<HTMLButtonElement>('[data-remove-track]');
+    const target = buttons?.[Math.min(position, buttons.length - 1)] ??
+      panel.current?.querySelector<HTMLButtonElement>('[data-close-queue]');
+    target?.focus();
+  }, [queue]);
+
   const current = index >= 0 ? queue[index] : undefined;
   const upcoming = queue
     .map((t, idx) => ({ t, idx }))
@@ -243,6 +255,7 @@ export function Queue() {
       {open && (
         <motion.aside
           key="queue-drawer"
+          ref={panel}
           className="queue-panel glass"
           aria-label="Fila"
           {...drawerMotion(reduced, 'x')}
@@ -260,7 +273,7 @@ export function Queue() {
                   Limpar
                 </button>
               )}
-              <IconButton label="Fechar fila" onClick={() => useApp.setState({ queueOpen: false })}>
+              <IconButton data-close-queue label="Fechar fila" onClick={() => useApp.setState({ queueOpen: false })}>
                 <X size={16} />
               </IconButton>
             </div>
@@ -351,7 +364,11 @@ export function Queue() {
                         </span>
                         <IconButton
                           label={`Remover ${t.title} da fila`}
-                          onClick={() => useApp.getState().removeQueue(idx)}
+                          data-remove-track
+                          onClick={() => {
+                            focusAfterRemoval.current = pos;
+                            useApp.getState().removeQueue(idx);
+                          }}
                         >
                           <X size={14} />
                         </IconButton>

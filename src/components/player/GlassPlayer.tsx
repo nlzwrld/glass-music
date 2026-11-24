@@ -186,7 +186,19 @@ export function Seekbar({ compact = false }: { compact?: boolean }) {
     preview = useDisplayTrack();
   const duration = track ? measuredDuration : preview?.duration || 0;
   const knownDuration = Number.isFinite(duration) && duration > 0;
-  const elapsed = track ? position : 0;
+  const drag = useRef<{ trackId: string; value: number } | null>(null);
+  const [previewPosition, setPreviewPosition] = useState<number | null>(null);
+  const elapsed = track ? (drag.current?.trackId === track.id ? previewPosition ?? position : position) : 0;
+  const endDrag = (commit: boolean) => {
+    const pending = drag.current;
+    drag.current = null;
+    setPreviewPosition(null);
+    if (commit && pending && pending.trackId === track?.id && knownDuration) {
+      const value = Math.min(pending.value, duration);
+      transport.seek(value);
+      useApp.setState({ position: value });
+    }
+  };
   return (
     <div className={`seek ${compact ? 'compact-seek' : ''}`}>
       <time>
@@ -205,8 +217,23 @@ export function Seekbar({ compact = false }: { compact?: boolean }) {
         step={0.25}
         value={Math.min(elapsed, knownDuration ? duration : 1)}
         disabled={!track || !knownDuration}
+        aria-valuetext={formatTime(elapsed)}
+        onPointerDown={event => {
+          if (!event.isPrimary || event.button !== 0 || !track || !knownDuration) return;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          drag.current = { trackId: track.id, value: elapsed };
+          setPreviewPosition(elapsed);
+        }}
+        onPointerUp={event => { if (event.isPrimary) endDrag(true); }}
+        onPointerCancel={() => endDrag(false)}
+        onLostPointerCapture={() => endDrag(false)}
         onChange={e => {
           const n = Number(e.target.value);
+          if (drag.current) {
+            drag.current.value = n;
+            setPreviewPosition(n);
+            return;
+          }
           transport.seek(n);
           useApp.setState({ position: n });
         }}

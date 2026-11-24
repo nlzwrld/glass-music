@@ -75,7 +75,9 @@ export default function DetachedJam() {
 
   // Queue / recommendations / chat
   const [queueQuery, setQueueQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<Track[]>([]);
+  const [searchResults, setSearchResults] = useState<Track[] | null>(null);
+  const activeSearch = useRef<string | null>(null);
+  const [searchError, setSearchError] = useState(false);
   const [searching, setSearching] = useState(false);
   const [selectedPlaylistId, setSelectedPlaylistId] = useState('');
   const [chatText, setChatText] = useState('');
@@ -110,6 +112,8 @@ export default function DetachedJam() {
 
     return () => {
       disposed = true;
+      if (activeSearch.current) void window.glass.cancelSearch(activeSearch.current).catch(() => {});
+      activeSearch.current = null;
       off?.();
     };
   }, []);
@@ -162,23 +166,30 @@ export default function DetachedJam() {
   const handleSearchQueue = async (e: React.FormEvent) => {
     e.preventDefault();
     const q = queueQuery.trim();
-    if (!q) {
-      setSearchResults([]);
-      return;
-    }
+    if (!q || activeSearch.current) return;
+    const requestId = crypto.randomUUID();
+    activeSearch.current = requestId;
+    setSearchError(false);
+    setSearchResults(null);
     setSearching(true);
     try {
       const res = await window.glass.search({
         query: q,
         kind: 'track',
         source: 'all',
-        requestId: `jam-win-q-${Date.now()}`,
+        requestId,
       });
-      setSearchResults((res.items || []).filter(t => canJam(t)).slice(0, 6));
+      if (activeSearch.current !== requestId) return;
+      const items = (res.items || []).filter(t => canJam(t)).slice(0, 6);
+      if (!items.length && res.notices?.length) setSearchError(true);
+      else setSearchResults(items);
     } catch {
-      setSearchResults([]);
+      if (activeSearch.current === requestId) setSearchError(true);
     } finally {
-      setSearching(false);
+      if (activeSearch.current === requestId) {
+        activeSearch.current = null;
+        setSearching(false);
+      }
     }
   };
 
@@ -471,7 +482,7 @@ export default function DetachedJam() {
     const jamQueue = room.jamQueue || [];
     const recommendations = room.recommendations || [];
     const messages = room.messages || [];
-    const candidateTracks = searchResults.length ? searchResults : snap.libraryTracks;
+    const candidateTracks = queueQuery.trim() ? (searchResults ?? []) : snap.libraryTracks;
     const canQueueAdd = isHost || perms.allowQueueAdd;
     const canVoteSkip = isHost || perms.allowVoteSkip;
     const canChat = isHost || perms.allowChat;
@@ -677,13 +688,23 @@ export default function DetachedJam() {
                       aria-label="Buscar música para fila da JAM"
                       placeholder="Buscar música online para a fila…"
                       value={queueQuery}
-                      onChange={e => setQueueQuery(e.target.value)}
+                      onChange={e => {
+                        const pending = activeSearch.current;
+                        activeSearch.current = null;
+                        if (pending) void window.glass.cancelSearch(pending).catch(() => {});
+                        setQueueQuery(e.target.value);
+                        setSearchResults(null);
+                        setSearchError(false);
+                        setSearching(false);
+                      }}
                     />
                     <button type="submit" className="button secondary" disabled={searching}>
                       <Search size={13} />
                       {searching ? 'Buscando…' : 'Buscar'}
                     </button>
                   </form>
+                  {searchError && <p role="alert">A busca falhou. Tente buscar novamente.</p>}
+                  {searchResults?.length === 0 && <p role="status">Nenhuma música encontrada para a fila.</p>}
                   {candidateTracks.length > 0 && (
                     <div className="jam-pick-list">
                       {candidateTracks.map(t => (
