@@ -404,10 +404,14 @@ export function PlayerEngine() {
         update({ status: 'Carregando' });
       }
     };
+    let lastStorePos = -1;
+    let lastStoreDur = -1;
+    let lastMediaSyncTs = 0;
     const onSeeked = () => {
       fadingOut = false;
       recentSeekPosition = null;
       recentSeekUntil = 0;
+      lastStorePos = -1;
       if (!el.paused && !fade.current.isFadingOut()) graph.current?.level(el, 1, 0.06);
     };
     const onTime = () => {
@@ -417,29 +421,42 @@ export function PlayerEngine() {
           ? recentSeekPosition
           : el.currentTime;
       if (!scrubbing) {
-        update({ position: effectivePos, duration });
+        if (
+          Math.abs(effectivePos - lastStorePos) >= 0.22 ||
+          duration !== lastStoreDur ||
+          effectivePos <= 0.05
+        ) {
+          lastStorePos = effectivePos;
+          lastStoreDur = duration;
+          update({ position: effectivePos, duration });
+        }
       } else if (duration > 0 && duration !== useApp.getState().duration) {
+        lastStoreDur = duration;
         update({ duration });
       }
-      notifier.current?.onPlaybackUpdate({
-        isPlaying: !el.paused,
-        currentTime: effectivePos,
-        mode: resolveNotificationMode(useApp.getState().data.preferences),
-        isFocused: isAppWindowFocused(),
-      });
-      if (
-        'mediaSession' in navigator &&
-        !hasNativeAndroidMedia() &&
-        duration > 0 &&
-        effectivePos <= duration
-      ) {
-        try {
-          navigator.mediaSession.setPositionState({
-            duration,
-            playbackRate: el.playbackRate || 1,
-            position: Math.max(0, effectivePos),
-          });
-        } catch {}
+      const nowMs = performance.now();
+      if (nowMs - lastMediaSyncTs >= 1000) {
+        lastMediaSyncTs = nowMs;
+        notifier.current?.onPlaybackUpdate({
+          isPlaying: !el.paused,
+          currentTime: effectivePos,
+          mode: resolveNotificationMode(useApp.getState().data.preferences),
+          isFocused: isAppWindowFocused(),
+        });
+        if (
+          'mediaSession' in navigator &&
+          !hasNativeAndroidMedia() &&
+          duration > 0 &&
+          effectivePos <= duration
+        ) {
+          try {
+            navigator.mediaSession.setPositionState({
+              duration,
+              playbackRate: el.playbackRate || 1,
+              position: Math.max(0, effectivePos),
+            });
+          } catch {}
+        }
       }
       const p = useApp.getState().data.preferences,
         remaining = duration - effectivePos;

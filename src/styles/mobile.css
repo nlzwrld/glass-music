@@ -48,22 +48,24 @@ html[data-platform='android'] .app-body > .sidebar,
 html[data-mobile='true'] .app-body > .sidebar,
 html[data-platform='android'] .side-player,
 html[data-mobile='true'] .side-player,
-html[data-platform='android'] .navigation-controls button:last-child,
-html[data-mobile='true'] .navigation-controls button:last-child,
-html[data-platform='android'] .navigation-controls button:first-child:disabled,
-html[data-mobile='true'] .navigation-controls button:first-child:disabled,
+html[data-platform='android'] .navigation-controls .sidebar-toggle,
+html[data-mobile='true'] .navigation-controls .sidebar-toggle,
+html[data-platform='android'] .navigation-controls button[aria-label='Avançar'],
+html[data-mobile='true'] .navigation-controls button[aria-label='Avançar'],
+html[data-platform='android'] .navigation-controls button[aria-label='Voltar']:disabled,
+html[data-mobile='true'] .navigation-controls button[aria-label='Voltar']:disabled,
 html[data-platform='android'] .global-search kbd,
 html[data-mobile='true'] .global-search kbd {
   display: none !important;
 }
 
-html[data-platform='android'] .navigation-controls:not(:has(button:first-child:not(:disabled))),
-html[data-mobile='true'] .navigation-controls:not(:has(button:first-child:not(:disabled))) {
+html[data-platform='android'] .navigation-controls:not(:has(button[aria-label='Voltar']:not(:disabled))),
+html[data-mobile='true'] .navigation-controls:not(:has(button[aria-label='Voltar']:not(:disabled))) {
   display: none !important;
 }
 
-html[data-platform='android'] .navigation-controls button:first-child:not(:disabled),
-html[data-mobile='true'] .navigation-controls button:first-child:not(:disabled) {
+html[data-platform='android'] .navigation-controls button[aria-label='Voltar']:not(:disabled),
+html[data-mobile='true'] .navigation-controls button[aria-label='Voltar']:not(:disabled) {
   width: 38px !important;
   height: 38px !important;
   flex: none !important;

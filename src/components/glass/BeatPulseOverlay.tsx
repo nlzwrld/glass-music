@@ -30,10 +30,10 @@ export function createBeatDetectorState(): BeatDetectorState {
 }
 
 /**
- * Musical dual-band bass-onset & sub-bass envelope detector (pure & unit-testable).
- * - Smooth fast attack (~16ms) and velvety exponential release (~240ms) eliminate robotic stiffness.
- * - Adaptive auto-gain (`peakEnvelope`) ensures kicks hit clearly across both dynamic and loud tracks.
- * - Sustained sub-bass energy buoys continuous motion and atmospheric glow between kick hits.
+ * Strict bass-only onset & sub-bass envelope detector (pure & unit-testable).
+ * - Triggers exclusively on genuine sub-bass / kick transients (~26–112 Hz).
+ * - Ignores midrange/vocal energy so singing, guitars, snares and hi-hats never false-pulse.
+ * - Fast attack (~14ms) and clean release (~185ms) return calmly to rest between kicks.
  */
 export function stepBeatDetector(
   state: BeatDetectorState,
@@ -43,69 +43,69 @@ export function stepBeatDetector(
   const dt = Math.max(1, Math.min(100, Number.isFinite(dtMs) ? dtMs : 16.6));
   const rawBass = Math.max(0, Math.min(1, sample.bass || 0));
   const rawSub = Math.max(0, Math.min(1, sample.subBass ?? rawBass));
-  const energy = Math.max(0, Math.min(1, sample.energy || 0));
+  const lowDrive = rawSub * 0.62 + rawBass * 0.38;
 
-  // Auto-gain peak tracker so quiet intros & heavy drops both feel alive
-  const peakTau = rawBass > state.peakEnvelope ? 90 : 2400;
+  // Bounded peak tracker (never over-amplifies quiet midrange leakage)
+  const peakTau = lowDrive > state.peakEnvelope ? 80 : 2200;
   const nextPeak = Math.max(
-    0.38,
-    state.peakEnvelope + (rawBass - state.peakEnvelope) * (1 - Math.exp(-dt / peakTau)),
+    0.58,
+    state.peakEnvelope + (lowDrive - state.peakEnvelope) * (1 - Math.exp(-dt / peakTau)),
   );
-  const normBass = Math.min(1, rawBass / Math.max(0.38, nextPeak));
-  const normSub = Math.min(1, rawSub / Math.max(0.38, nextPeak));
+  const normBass = Math.min(1, rawBass / nextPeak);
+  const normSub = Math.min(1, rawSub / nextPeak);
 
-  // Smooth rolling bass baseline for transient onset (flux) detection
-  const baseTau = rawBass > state.baseline ? 240 : 480;
+  // Rolling low-end baseline for transient kick flux detection
+  const baseTau = lowDrive > state.baseline ? 210 : 420;
   const nextBaseline = Math.max(
-    0.04,
-    state.baseline + (rawBass - state.baseline) * (1 - Math.exp(-dt / baseTau)),
+    0.06,
+    state.baseline + (lowDrive - state.baseline) * (1 - Math.exp(-dt / baseTau)),
   );
 
-  // Continuous sub-bass rumble envelope (fast smooth rise, warm decay)
-  const bassTarget = rawSub > 0.08 ? normSub : 0;
-  const bassTau = bassTarget > state.bass ? 28 : 190;
+  // Sub-bass envelope (active only above strict 0.22 threshold)
+  const bassTarget = rawSub > 0.22 ? normSub : 0;
+  const bassTau = bassTarget > state.bass ? 24 : 165;
   let nextBass = state.bass + (bassTarget - state.bass) * (1 - Math.exp(-dt / bassTau));
   if (nextBass < 0.004) nextBass = 0;
 
-  // Exponential decay for previous kick impulse
-  let nextImpulse = state.impulse * Math.exp(-dt / 220);
+  // Crisp decay for kick impulse
+  let nextImpulse = state.impulse * Math.exp(-dt / 170);
   let cooldownOut = Math.max(0, state.cooldownMs - dt);
   let onsetTrigger = 0;
 
-  const flux = rawBass - state.baseline * 1.15 - 0.03;
-  if (rawBass > 0.12 && flux > 0.032 && cooldownOut <= 0) {
-    const hit = Math.min(1, 0.42 + flux * 1.65 + normBass * 0.32);
+  const flux = lowDrive - state.baseline * 1.18 - 0.06;
+  if (rawBass > 0.28 && flux > 0.065 && cooldownOut <= 0) {
+    const hit = Math.min(1, 0.46 + flux * 1.35 + normBass * 0.28);
     if (hit > nextImpulse) {
       nextImpulse = hit;
     }
     onsetTrigger = hit;
-    cooldownOut = 85;
-  } else if (rawBass > 0.58 && normBass > 0.8 && cooldownOut <= 0) {
-    const hit = Math.min(1, normBass * 0.9);
+    cooldownOut = 125;
+  } else if (rawSub > 0.72 && state.bass < 0.42 && cooldownOut <= 0) {
+    const hit = Math.min(1, normSub * 0.88);
     if (hit > nextImpulse) {
       nextImpulse = hit;
     }
-    onsetTrigger = hit * 0.85;
-    cooldownOut = 105;
+    onsetTrigger = hit * 0.82;
+    cooldownOut = 140;
   }
 
   if (nextImpulse < 0.004) nextImpulse = 0;
 
-  // Smooth visual flash: fast liquid attack toward impulse, velvet release, buoyed by deep sub-bass
-  const sustainFloor = nextBass > 0.18 ? (nextBass - 0.18) * 0.48 : 0;
+  // Punchy attack (~14ms) and clean decay (~185ms) driven strictly by bass kicks
+  const sustainFloor = nextBass > 0.42 ? (nextBass - 0.42) * 0.34 : 0;
   const flashTarget = Math.max(nextImpulse, sustainFloor);
-  const flashTau = flashTarget > state.flash ? 16 : 240;
+  const flashTau = flashTarget > state.flash ? 14 : 185;
   let nextFlash = state.flash + (flashTarget - state.flash) * (1 - Math.exp(-dt / flashTau));
   if (nextFlash < 0.004) nextFlash = 0;
 
-  // Deep atmospheric glow tracking sustained bass + energy
-  const targetGlow = Math.min(1, nextBass * 0.56 + energy * 0.24 + nextFlash * 0.34);
-  const glowTau = targetGlow > state.glow ? 55 : 280;
+  // Atmospheric glow tracks ONLY bass & kick flash (never midrange energy)
+  const targetGlow = Math.min(1, nextBass * 0.52 + nextFlash * 0.48);
+  const glowTau = targetGlow > state.glow ? 42 : 210;
   let nextGlow = state.glow + (targetGlow - state.glow) * (1 - Math.exp(-dt / glowTau));
   if (nextGlow < 0.004) nextGlow = 0;
 
-  // Continuous fluid motion phase that glides steadily and accelerates on kicks & basslines
-  const angularVelocity = 0.36 + nextBass * 1.25 + nextFlash * 1.85;
+  // Calm phase when no bass is present; accelerates smoothly on real bass hits
+  const angularVelocity = 0.06 + nextBass * 1.05 + nextFlash * 1.75;
   const nextPhase = (state.phase + (dt / 1000) * angularVelocity) % (Math.PI * 200);
 
   return {
@@ -258,8 +258,12 @@ function drawFluidBeatFrame(
 
   const dim = Math.max(w, h);
   const alphaScale = isLight ? 0.42 : 1.0;
+  const activity = Math.min(1, bass * 0.65 + flash * 0.95 + glow * 0.4);
+  if (activity <= 0.006 && !ripples.some(r => r.active)) {
+    return;
+  }
 
-  // 4 organic orbiting orbs moving across the entire viewport (never static in corners)
+  // Orbs stay subtle at rest and bloom crisply ONLY on genuine bass/kick energy
   const orbs: Array<{
     x: number;
     y: number;
@@ -268,69 +272,40 @@ function drawFluidBeatFrame(
     alpha: number;
   }> = [
     {
-      // Primary deep sub-bass orb sweeping wide across the screen
       x: w * (0.5 + 0.34 * Math.sin(phase * 0.58 + 0.3)),
       y: h * (0.48 + 0.32 * Math.cos(phase * 0.43 + 0.1)),
-      radius: dim * (0.38 + bass * 0.14 + flash * 0.11),
+      radius: dim * (0.34 + bass * 0.16 + flash * 0.14),
       color: palette.core,
-      alpha: (0.16 + glow * 0.22 + bass * 0.16 + flash * 0.18) * alphaScale,
+      alpha: (0.02 + glow * 0.16 + bass * 0.2 + flash * 0.24) * alphaScale,
     },
     {
-      // Counter-orbiting harmonic companion
       x: w * (0.5 + 0.37 * Math.cos(phase * 0.49 + 2.1)),
       y: h * (0.52 + 0.3 * Math.sin(phase * 0.64 + 1.0)),
-      radius: dim * (0.34 + bass * 0.12 + flash * 0.1),
+      radius: dim * (0.31 + bass * 0.13 + flash * 0.12),
       color: palette.coolShift,
-      alpha: (0.14 + glow * 0.2 + bass * 0.14 + flash * 0.16) * alphaScale,
+      alpha: (0.015 + glow * 0.14 + bass * 0.16 + flash * 0.2) * alphaScale,
     },
     {
-      // Expressive kick-punch orb weaving in a dynamic figure-8 across the canvas
       x: w * (0.5 + 0.39 * Math.sin(phase * 0.84 + 3.4)),
       y: h * (0.5 + 0.28 * Math.sin(phase * 1.12 + 0.6)),
-      radius: dim * (0.26 + bass * 0.1 + flash * 0.16),
+      radius: dim * (0.24 + bass * 0.12 + flash * 0.2),
       color: palette.bright,
-      alpha: (0.1 + glow * 0.14 + flash * 0.34) * alphaScale,
-    },
-    {
-      // Warm atmospheric undertow gliding across opposite quadrants
-      x: w * (0.5 + 0.31 * Math.cos(phase * 0.36 + 4.5)),
-      y: h * (0.54 + 0.31 * Math.cos(phase * 0.55 + 2.4)),
-      radius: dim * (0.36 + bass * 0.13 + glow * 0.08),
-      color: palette.warmShift,
-      alpha: (0.12 + glow * 0.18 + bass * 0.16 + flash * 0.12) * alphaScale,
+      alpha: (bass * 0.1 + flash * 0.38) * alphaScale,
     },
   ];
 
   for (let i = 0; i < orbs.length; i++) {
     const o = orbs[i]!;
+    if (o.alpha <= 0.004) continue;
     const grad = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, o.radius);
     grad.addColorStop(0, rgba(o.color, o.alpha));
-    grad.addColorStop(0.45, rgba(o.color, o.alpha * 0.42));
+    grad.addColorStop(0.45, rgba(o.color, o.alpha * 0.4));
     grad.addColorStop(1, rgba(o.color, 0));
     ctx.fillStyle = grad;
     ctx.beginPath();
     ctx.arc(o.x, o.y, o.radius, 0, Math.PI * 2);
     ctx.fill();
   }
-
-  // Sweeping diagonal aurora bass ribbon that drifts and breathes with sub-bass
-  ctx.save();
-  const ribbonX = w * (0.5 + 0.22 * Math.sin(phase * 0.31));
-  const ribbonY = h * (0.5 + 0.18 * Math.cos(phase * 0.27));
-  ctx.translate(ribbonX, ribbonY);
-  ctx.rotate(phase * 0.16 + bass * 0.18);
-  ctx.scale(1.65, 0.42 + bass * 0.14 + flash * 0.12);
-  const ribRadius = dim * (0.34 + glow * 0.12);
-  const ribGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, ribRadius);
-  const ribAlpha = (0.09 + bass * 0.16 + flash * 0.16) * alphaScale;
-  ribGrad.addColorStop(0, rgba(palette.bright, ribAlpha));
-  ribGrad.addColorStop(0.55, rgba(palette.core, ribAlpha * 0.36));
-  ribGrad.addColorStop(1, rgba(palette.core, 0));
-  ctx.fillStyle = ribGrad;
-  ctx.beginPath();
-  ctx.arc(0, 0, ribRadius, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
 
   // Soft expanding radial bass ripples spawned on genuine kick onsets
   for (let i = 0; i < ripples.length; i++) {
@@ -358,37 +333,41 @@ function drawFluidBeatFrame(
 
 export function BeatPulseOverlay() {
   const uiStyle = useApp(s => s.data.preferences.uiStyle ?? 'matte');
+  const beatPulse = useApp(s => s.data.preferences.beatPulse);
+  const performanceMode = useApp(s => s.data.preferences.performance);
   const playing = useApp(s => s.playing);
   const accentColor = useApp(s => s.data.preferences.accent ?? '');
   const theme = useApp(s => s.data.preferences.theme ?? 'dark');
   const reduced = useReducedUI();
-  const active = uiStyle === 'beat';
+  const active = Boolean((beatPulse ?? uiStyle === 'beat') && !performanceMode && !reduced);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const playingRef = useRef(playing);
+  const wakeRef = useRef<(() => void) | null>(null);
   playingRef.current = playing;
+
+  useEffect(() => {
+    if (playing) wakeRef.current?.();
+  }, [playing]);
 
   useEffect(() => {
     const root = document.documentElement;
     if (!active) {
-      root.style.removeProperty('--beat-flash');
-      root.style.removeProperty('--beat-glow');
-      root.style.removeProperty('--beat-bass');
+      wakeRef.current = null;
       return;
     }
 
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d', { alpha: true });
-    let lastAccentRaw =
-      document.documentElement.style.getPropertyValue('--user-accent').trim() || accentColor || '';
+    let lastAccentRaw = root.style.getPropertyValue('--user-accent').trim() || accentColor || '';
     let palette = readAccentPalette(accentColor);
     let isLight = root.dataset.theme === 'light';
 
     const syncSize = () => {
       if (!canvas) return { w: 320, h: 200 };
       const rect = canvas.getBoundingClientRect();
-      // Compact internal buffer scaled smoothly by GPU -> silky soft gradients at <1% CPU
-      const targetW = Math.max(160, Math.min(640, Math.round((rect.width || window.innerWidth) * 0.45)));
-      const targetH = Math.max(120, Math.min(420, Math.round((rect.height || window.innerHeight) * 0.45)));
+      // Compact internal buffer scaled smoothly by GPU -> zero main-thread lag
+      const targetW = Math.max(160, Math.min(480, Math.round((rect.width || window.innerWidth) * 0.36)));
+      const targetH = Math.max(120, Math.min(320, Math.round((rect.height || window.innerHeight) * 0.36)));
       if (canvas.width !== targetW || canvas.height !== targetH) {
         canvas.width = targetW;
         canvas.height = targetH;
@@ -398,33 +377,9 @@ export function BeatPulseOverlay() {
 
     syncSize();
     const onResize = () => {
-      const { w, h } = syncSize();
-      if (reduced && ctx) {
-        drawFluidBeatFrame(
-          ctx,
-          w,
-          h,
-          palette,
-          1.2,
-          playingRef.current ? 0.24 : 0.1,
-          0,
-          playingRef.current ? 0.28 : 0.12,
-          [],
-          isLight,
-        );
-      }
+      syncSize();
     };
     window.addEventListener('resize', onResize, { passive: true });
-
-    if (reduced) {
-      root.style.setProperty('--beat-flash', '0');
-      root.style.setProperty('--beat-bass', playing ? '0.22' : '0.08');
-      root.style.setProperty('--beat-glow', playing ? '0.28' : '0.12');
-      onResize();
-      return () => {
-        window.removeEventListener('resize', onResize);
-      };
-    }
 
     let rafId = 0;
     let windowVisible = true;
@@ -446,6 +401,7 @@ export function BeatPulseOverlay() {
         rafId = requestAnimationFrame(tick);
       }
     };
+    wakeRef.current = scheduleTick;
 
     const syncVisibility = () => {
       if (document.hidden || !windowVisible) {
@@ -453,7 +409,7 @@ export function BeatPulseOverlay() {
           cancelAnimationFrame(rafId);
           rafId = 0;
         }
-      } else {
+      } else if (playingRef.current) {
         scheduleTick();
       }
     };
@@ -474,44 +430,38 @@ export function BeatPulseOverlay() {
         const frame = getAudioReactiveFrame();
         detector = stepBeatDetector(detector, frame, dt);
       } else {
-        // Gentle calm ambient drift when paused so the backdrop stays alive and smooth
         detector = {
           ...detector,
-          bass: detector.bass * Math.exp(-dt / 320),
-          impulse: detector.impulse * Math.exp(-dt / 260),
-          flash: detector.flash * Math.exp(-dt / 280),
-          glow: detector.glow + (0.14 - detector.glow) * (1 - Math.exp(-dt / 420)),
-          phase: (detector.phase + (dt / 1000) * 0.18) % (Math.PI * 200),
+          bass: detector.bass * Math.exp(-dt / 180),
+          impulse: detector.impulse * Math.exp(-dt / 150),
+          flash: detector.flash * Math.exp(-dt / 160),
+          glow: detector.glow * Math.exp(-dt / 190),
           cooldownMs: Math.max(0, detector.cooldownMs - dt),
           onsetTrigger: 0,
         };
       }
 
-      // Spawn expanding radial bass ripple at the active moving kick-orb position
-      if (detector.onsetTrigger > 0.24) {
+      if (detector.onsetTrigger > 0.34) {
         const slot = ripples[nextRipple % ripples.length]!;
         nextRipple++;
         slot.active = true;
-        slot.x = 0.5 + 0.36 * Math.sin(detector.phase * 0.84 + 3.4);
-        slot.y = 0.5 + 0.26 * Math.sin(detector.phase * 1.12 + 0.6);
+        slot.x = 0.5 + 0.34 * Math.sin(detector.phase * 0.84 + 3.4);
+        slot.y = 0.5 + 0.24 * Math.sin(detector.phase * 1.12 + 0.6);
         slot.ageMs = 0;
-        slot.maxMs = 620 + (1 - detector.onsetTrigger) * 180;
+        slot.maxMs = 560 + (1 - detector.onsetTrigger) * 160;
         slot.strength = detector.onsetTrigger;
       }
 
+      let hasActiveRipple = false;
       for (let i = 0; i < ripples.length; i++) {
         const r = ripples[i]!;
         if (!r.active) continue;
         r.ageMs += dt;
         if (r.ageMs >= r.maxMs) r.active = false;
+        else hasActiveRipple = true;
       }
 
-      root.style.setProperty('--beat-flash', detector.flash.toFixed(3));
-      root.style.setProperty('--beat-glow', detector.glow.toFixed(3));
-      root.style.setProperty('--beat-bass', detector.bass.toFixed(3));
-
       if (ctx && canvas) {
-        // Zero-reflow live accent sync (picks up both user color choice and autoAccent changes immediately)
         const liveAccent = root.style.getPropertyValue('--user-accent').trim() || accentColor || '';
         if (liveAccent && liveAccent !== lastAccentRaw) {
           lastAccentRaw = liveAccent;
@@ -532,21 +482,32 @@ export function BeatPulseOverlay() {
         );
       }
 
-      scheduleTick();
+      // Sleep rAF completely when paused and settled -> 0% idle CPU/GPU
+      const settled =
+        !playingRef.current &&
+        !hasActiveRipple &&
+        detector.bass < 0.004 &&
+        detector.flash < 0.004 &&
+        detector.glow < 0.004;
+      if (!settled) {
+        scheduleTick();
+      }
     };
 
     palette = readAccentPalette(accentColor);
-    scheduleTick();
+    if (playingRef.current) {
+      scheduleTick();
+    } else if (ctx && canvas) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
     return () => {
+      wakeRef.current = null;
       cancelAnimationFrame(rafId);
       offVisualVisibility?.();
       document.removeEventListener('visibilitychange', syncVisibility);
       window.removeEventListener('resize', onResize);
-      root.style.setProperty('--beat-flash', '0');
-      root.style.setProperty('--beat-glow', '0.10');
-      root.style.setProperty('--beat-bass', '0');
     };
-  }, [active, accentColor, theme, reduced]);
+  }, [active, accentColor, theme]);
 
   if (!active) return null;
 

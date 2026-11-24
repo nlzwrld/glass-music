@@ -206,22 +206,10 @@ export default function OnlineCatalog({ expanded = false }: { expanded?: boolean
           </div>
         </section>
       )}
-      {rankedResult.sections.map((section, idx) => (
+      {rankedResult.sections.map(section => (
         <section className="catalog-section" key={section.id} aria-label={section.title}>
           <div className="section-heading">
             <h2>{section.title}</h2>
-            {idx === 0 && (
-              <button
-                type="button"
-                className="text-button"
-                disabled={loading}
-                aria-label="Atualizar recomendações e descobertas"
-                onClick={() => setRetry(n => n + 1)}
-              >
-                <RefreshCw size={13} className={loading ? 'spinner' : ''} />
-                {loading ? 'Atualizando…' : 'Atualizar'}
-              </button>
-            )}
           </div>
           {section.items.length ? (
             <div className="catalog-grid">

@@ -89,11 +89,8 @@ export function CollectionPlaybackActions({
         ) : (
           <Shuffle size={15} />
         )}
-        {playlistShuffleActive && (
-          <span
-            className={`action-active-dot ${activeMode === 'smart' ? 'is-smart' : ''}`}
-            aria-hidden="true"
-          />
+        {playlistShuffleActive && activeMode !== 'smart' && (
+          <span className="action-active-dot" aria-hidden="true" />
         )}
       </button>
     </div>

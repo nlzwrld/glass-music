@@ -54,6 +54,7 @@ export default function Appearance() {
           onClick={() => {
             pref({
               uiStyle: 'matte',
+              beatPulse: false,
               theme: 'dark',
               accent: '#52b79a',
               glass: 20,
@@ -77,13 +78,12 @@ export default function Appearance() {
             [
               ['matte', 'Fosco'],
               ['glass', 'Liquid Glass'],
-              ['beat', 'Pulso'],
             ] as const
           ).map(([mode, label]) => (
             <button
               key={mode}
-              aria-pressed={uiStyle === mode}
-              className={uiStyle === mode ? 'selected' : ''}
+              aria-pressed={(uiStyle === 'glass' ? 'glass' : 'matte') === mode}
+              className={(uiStyle === 'glass' ? 'glass' : 'matte') === mode ? 'selected' : ''}
               onClick={() => pref({ uiStyle: mode })}
             >
               {label}
@@ -166,6 +166,12 @@ export default function Appearance() {
         label="Sidebar compacta"
         checked={s.sidebarCompact}
         onChange={sidebarCompact => setSettings({ sidebarCompact })}
+      />
+      <Toggle
+        label="Efeito Pulse"
+        description="Pulsa apenas na batida dos graves."
+        checked={Boolean(p.beatPulse ?? uiStyle === 'beat')}
+        onChange={beatPulse => pref({ beatPulse, ...(uiStyle === 'beat' ? { uiStyle: 'matte' } : {}) })}
       />
       <Toggle
         label="Reduzir animações"

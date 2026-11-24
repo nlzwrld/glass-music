@@ -358,8 +358,22 @@ describe('Phase 1: Unified Play & Shuffle buttons and duplicate-control removal'
     expect(activeHtml).toContain('aria-label="Pausar coleção"');
     expect(activeHtml).toContain('aria-label="Reproduzir coleção no aleatório"');
     expect(activeHtml).toContain('is-active');
+    expect(activeHtml).toContain('is-smart');
     expect(activeHtml).toContain('aria-pressed="true"');
-    expect(activeHtml).toContain('action-active-dot');
+    // Smart shuffle must NOT render the bottom indicator bar
+    expect(activeHtml).not.toContain('action-active-dot');
+
+    useApp.setState({ queueShuffleMode: 'standard' });
+    const standardHtml = renderToStaticMarkup(
+      createElement(CollectionPlaybackActions, {
+        tracks: [t1, t2],
+        activeHere: true,
+        playing: true,
+        isPlaylist: false,
+        contextId: 'collection:demo',
+      }),
+    );
+    expect(standardHtml).toContain('action-active-dot');
   });
 
   it('hides duplicate header shuffle button in TrackList when showHeaderShuffle is false', () => {

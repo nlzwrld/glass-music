@@ -41,7 +41,7 @@ test('existing local audio remains playable offline with the optical engine',asy
   await gate.getByLabel('E-mail').fill('local-qa@liquidhub.dev');
   await gate.getByLabel('Senha (mínimo 12 caracteres)').fill('LocalOfflinePass!2026');
   await gate.getByRole('button',{name:'Criar conta',exact:true}).click();
-  await expect(page.locator('.sidebar .brand')).toBeVisible({timeout:15000});
+  await expect(page.locator('.sidebar')).toBeVisible({timeout:15000});
   await openProfileMenuPage(page, 'Configurações');
   await page.getByRole('switch',{name:'Acesso online'}).click();
   await expect.poll(async()=>(await page.evaluate(()=>window.glass.bootstrap())).preferences.onlineConsent).toBe(false);

@@ -175,7 +175,8 @@ export const trackSchema = z
 
 export const preferencesSchema = z
   .object({
-    uiStyle: z.enum(['matte', 'glass']).optional(),
+    uiStyle: z.enum(['matte', 'glass', 'beat']).optional(),
+    beatPulse: z.boolean().optional(),
     transition: z.enum(['off', 'fade', 'crossfade']).optional(),
     transitionSeconds: z.number().min(0.5).max(10).optional(),
     volumeBoost: z.number().min(0).max(12).optional(),

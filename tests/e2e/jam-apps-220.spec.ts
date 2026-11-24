@@ -104,7 +104,7 @@ async function unlockWithEmail(page: Page, email: string, name: string) {
   await gate.getByLabel('E-mail').fill(email);
   await gate.getByLabel('Senha (mínimo 12 caracteres)').fill('JamE2ePassword!2026');
   await gate.getByRole('button', { name: 'Criar conta', exact: true }).click();
-  await expect(page.locator('.sidebar .brand')).toBeVisible({ timeout: 15000 });
+  await expect(page.locator('.sidebar')).toBeVisible({ timeout: 15000 });
 }
 
 test('two actual app windows follow JAM play pause seek track changes, link bridge, raw code lookup and cold/warm deep links', async () => {

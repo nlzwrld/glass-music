@@ -174,11 +174,8 @@ export function PlaybackControls({
         ) : (
           <Shuffle size={15} />
         )}
-        {p.shuffle && (
-          <span
-            className={`transport-active-dot ${shuffleMode === 'smart' ? 'is-smart' : ''}`}
-            aria-hidden="true"
-          />
+        {p.shuffle && shuffleMode !== 'smart' && (
+          <span className="transport-active-dot" aria-hidden="true" />
         )}
       </IconButton>
       <IconButton

@@ -406,23 +406,51 @@ html:not([data-ui-style='glass']) .glass-material::before {
   display: none !important;
 }
 
-/* Native-style Minimalist Titlebar */
+/* Native-style Minimalist Titlebar with Top-Left Liquid Hub Brand */
 html:not([data-ui-style='glass']) .titlebar {
-  height: 28px;
+  height: 34px;
   margin: 0;
+  padding: 0 0 0 8px;
   background: var(--m-frame);
   border-bottom: 1px solid var(--m-border-subtle);
   align-items: center;
+  gap: 8px;
 }
 
-html:not([data-ui-style='glass']) .titlebar button {
-  width: 40px;
-  height: 28px;
+html:not([data-ui-style='glass']) .titlebar-brand {
+  height: 26px;
+  padding: 0 6px;
+  gap: 7px;
+  border-radius: 5px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--m-text);
+}
+
+html:not([data-ui-style='glass']) .titlebar-brand:hover {
+  background: var(--m-hover);
+  color: var(--m-text);
+}
+
+html:not([data-ui-style='glass']) .titlebar-brand-mark {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: var(--m-surface);
+  border: 1px solid var(--m-border);
+  box-shadow: none;
+  color: var(--m-text);
+}
+
+html:not([data-ui-style='glass']) .titlebar .window-control-btn {
+  width: 42px;
+  height: 34px;
   border-radius: 0;
   color: var(--m-text-sec);
 }
 
-html:not([data-ui-style='glass']) .titlebar button:hover {
+html:not([data-ui-style='glass']) .titlebar .window-control-btn:hover {
   background: var(--m-hover);
   color: var(--m-text);
 }

@@ -450,7 +450,6 @@ describe('Phase 4 — Transições Spotify, Liquid Glass, Reorganização das Co
     }
 
     for (const consumer of [
-      'src/components/sidebar/Sidebar.tsx',
       'src/components/glass/Welcome.tsx',
       'src/components/auth/AuthModal.tsx',
       'src/app/App.tsx',
@@ -458,6 +457,7 @@ describe('Phase 4 — Transições Spotify, Liquid Glass, Reorganização das Co
     ]) {
       expect(readFileSync(join(ROOT, consumer), 'utf8')).toContain('LiquidHubLogo');
     }
+    expect(readFileSync(join(ROOT, 'src/app/App.tsx'), 'utf8')).toContain('titlebar-brand');
   });
 
   it('reorganizes Settings into 9 clean searchable categories while preserving Phase 2 & Phase 3A removal invariants', () => {
@@ -484,5 +484,28 @@ describe('Phase 4 — Transições Spotify, Liquid Glass, Reorganização das Co
     expect(settingsSrc).not.toContain('Armazenamento offline');
     expect(settingsSrc).not.toContain('Limpar downloads');
     expect(settingsSrc).not.toContain('JamSettings');
+  });
+
+  it('enforces UI polish: top-left Liquid Hub brand, logo-only origin badges, no Para você refresh, Beat Pulse toggle option, and collapsible Contas vinculadas', () => {
+    const appearanceSrc = readFileSync(join(ROOT, 'src/components/glass/Appearance.tsx'), 'utf8');
+    expect(appearanceSrc).not.toContain("['beat', 'Pulso']");
+    expect(appearanceSrc).toContain('label="Efeito Pulse"');
+
+    const catalogSrc = readFileSync(join(ROOT, 'src/components/library/OnlineCatalog.tsx'), 'utf8');
+    expect(catalogSrc).not.toContain('Atualizar recomendações e descobertas');
+
+    const trackListSrc = readFileSync(join(ROOT, 'src/components/library/TrackList.tsx'), 'utf8');
+    expect(trackListSrc).toContain('displayAlbumTitle');
+    expect(trackListSrc).not.toContain('compact={!!track.album}');
+
+    const accountSrc = readFileSync(
+      join(ROOT, 'src/components/library/AccountConnections.tsx'),
+      'utf8',
+    );
+    expect(accountSrc).toContain('Contas vinculadas');
+    expect(accountSrc).toContain('Plataformas vinculadas');
+    expect(accountSrc).toContain('identitiesOpen');
+    expect(accountSrc).toContain('platformsOpen');
+    expect(accountSrc).toContain('editProfileOpen');
   });
 });

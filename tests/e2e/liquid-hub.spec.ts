@@ -155,11 +155,11 @@ test('Liquid Hub rebranding, Zero-Trust PKCE+Ed25519+DPAPI login, Shuffle Play a
     await gate.getByLabel('E-mail').fill('qa_security@liquidhub.dev');
     await gate.getByLabel('Senha (mínimo 12 caracteres)').fill('ZeroTrustVault#2026!');
     await gate.getByRole('button', { name: 'Criar conta', exact: true }).click();
-    await expect(page.locator('.sidebar .brand')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('.sidebar')).toBeVisible({ timeout: 15000 });
 
     // 1. Rebranding verification
     await expect(page).toHaveTitle('Liquid Hub');
-    await expect(page.locator('.sidebar .brand')).toContainText('Liquid Hub');
+    await expect(page.locator('.titlebar-brand')).toContainText('Liquid Hub');
 
     // Deterministic lyrics mock distinguishing lyricless vs synced-lyrics track
     await page.evaluate(() => {

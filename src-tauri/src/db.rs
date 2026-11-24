@@ -15,7 +15,7 @@ pub fn s<'a>(v: &'a Value, key: &str) -> &'a str {
     v[key].as_str().unwrap_or("")
 }
 pub fn defaults() -> Value {
-    json!({"uiStyle":"matte","transition":"fade","transitionSeconds":3,"volumeBoost":0,"limiter":true,"outputDevice":"default","jamEndpoint":"","autoUpdate":true,"autoplay":true,"theme":"dark","glass":20,"blur":24,"accent":"#52b79a","autoAccent":false,"reducedMotion":false,"performance":false,"volume":65,"repeat":"off","shuffle":false,"shuffleMode":"smart","smartShuffleDiscoveries":false,"tray":true,"startup":false,"notifications":false,"notificationMode":"off","globalShortcuts":false,"coverCacheMB":128,"eq":[0,0,0,0,0],"onlineConsent":false,"catalogConsent":false,"onboardingDone":false})
+    json!({"uiStyle":"matte","beatPulse":false,"transition":"fade","transitionSeconds":3,"volumeBoost":0,"limiter":true,"outputDevice":"default","jamEndpoint":"","autoUpdate":true,"autoplay":true,"theme":"dark","glass":20,"blur":24,"accent":"#52b79a","autoAccent":false,"reducedMotion":false,"performance":false,"volume":65,"repeat":"off","shuffle":false,"shuffleMode":"smart","smartShuffleDiscoveries":false,"tray":true,"startup":false,"notifications":false,"notificationMode":"off","globalShortcuts":false,"coverCacheMB":128,"eq":[0,0,0,0,0],"onlineConsent":false,"catalogConsent":false,"onboardingDone":false})
 }
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty()
@@ -273,7 +273,7 @@ pub fn validate_prefs(p: &Value) -> Result<()> {
     }
     if p.get("transition").is_some()&&! ["off","fade","crossfade"].contains(&s(p,"transition")){return Err("Transição inválida.".into());}
     for(key,lo,hi)in [("transitionSeconds",0.5,10.0),("volumeBoost",0.0,12.0)]{if p.get(key).is_some()&&!p[key].as_f64().is_some_and(|n|n.is_finite()&&n>=lo&&n<=hi){return Err("Áudio fora dos limites.".into());}}
-    for key in ["limiter","autoUpdate","autoplay","smartShuffleDiscoveries"]{if p.get(key).is_some()&&!p[key].is_boolean(){return Err("Preferência inválida.".into());}}
+    for key in ["limiter","autoUpdate","autoplay","smartShuffleDiscoveries","beatPulse"]{if p.get(key).is_some()&&!p[key].is_boolean(){return Err("Preferência inválida.".into());}}
     if p.get("outputDevice").is_some()&&(!p["outputDevice"].is_string()||s(p,"outputDevice").len()>300){return Err("Dispositivo inválido.".into());}
     if p.get("jamEndpoint").is_some(){crate::jam::validate_endpoint(s(p,"jamEndpoint"))?;}
     for key in ["termsVersion", "privacyVersion"] {

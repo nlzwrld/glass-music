@@ -88,7 +88,11 @@ export default function DetachedJam() {
         typeof window !== 'undefined' && matchMedia('(prefers-color-scheme: light)').matches;
       const resolved =
         prefs.theme === 'system' ? (isSystemLight ? 'light' : 'dark') : prefs.theme;
-      document.documentElement.dataset.uiStyle = prefs.uiStyle ?? 'matte';
+      const rawStyle = prefs.uiStyle ?? 'matte';
+      document.documentElement.dataset.uiStyle = rawStyle === 'glass' ? 'glass' : 'matte';
+      document.documentElement.dataset.beatPulse = String(
+        Boolean((prefs.beatPulse ?? rawStyle === 'beat') && !prefs.performance),
+      );
       document.documentElement.dataset.theme = resolved === 'light' ? 'light' : 'dark';
       document.documentElement.dataset.motion = prefs.reducedMotion ? 'reduced' : 'full';
       document.documentElement.dataset.performance = String(Boolean(prefs.performance));

@@ -168,7 +168,7 @@ async function launchApp(opts: {
             () =>
               Boolean(
                 (window as any).glass &&
-                  (document.querySelector('.sidebar .brand') ||
+                  (document.querySelector('.sidebar') ||
                     document.querySelector('.auth-gate') ||
                     document.querySelector('.onboarding')),
               ),
@@ -367,7 +367,7 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
     await gate.getByRole('button', { name: 'Criar conta', exact: true }).click();
 
     await waitForAuthenticated(page, 'Ana Costa');
-    await expect(page.locator('.sidebar .brand')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('.sidebar')).toBeVisible({ timeout: 15000 });
     await openProfileMenuPage(page, 'Configurações');
     await expect(page.getByText(/Sessão protegida no cofre do Windows/)).toBeVisible();
     await expect(page.getByText(/Não verificado/)).toBeVisible();
@@ -406,8 +406,9 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
     await gate.getByLabel('Senha').fill('RecoveredPass!2026');
     await gate.getByRole('button', { name: 'Entrar', exact: true }).click();
     await waitForAuthenticated(page, 'Ana Costa');
-    await expect(page.locator('.sidebar .brand')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('.sidebar')).toBeVisible({ timeout: 15000 });
     await openProfileMenuPage(page, 'Configurações');
+    await page.getByRole('button', { name: /Contas vinculadas/ }).click();
 
     // Scenario 8: Vinculação de duas identidades (Ana vincula Discord + GitHub e depois desvincula Discord)
     await page.getByRole('button', { name: 'Vincular Discord', exact: true }).click();
@@ -447,6 +448,7 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
     await gate.getByRole('button', { name: 'Continuar com Discord', exact: true }).click();
     await waitForAuthenticated(page, 'Lucas Discord');
     await openProfileMenuPage(page, 'Configurações');
+    await page.getByRole('button', { name: /Contas vinculadas/ }).click();
 
     // Lucas tem apenas Discord -> botão Desvincular deve ficar desabilitado (não deixa excluir único método)
     await expect(
@@ -521,6 +523,7 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
     await gate.getByRole('button', { name: 'Continuar com GitHub', exact: true }).click();
     await waitForAuthenticated(page, 'Privado GitHub');
     await openProfileMenuPage(page, 'Configurações');
+    await page.getByRole('button', { name: /Contas vinculadas/ }).click();
     await expect(page.locator('[data-hub-provider="github"]')).toContainText(/E-mail privado/);
 
     await browser.close().catch(() => {});
@@ -545,7 +548,7 @@ test('Multi-Provider Auth (Email, Discord, GitHub), Linking, Security Rules, Per
 
     await waitForAuthenticated(page, 'Privado GitHub');
     await expect(page.locator('.auth-gate')).toHaveCount(0);
-    await expect(page.locator('.sidebar .brand')).toBeVisible();
+    await expect(page.locator('.sidebar')).toBeVisible();
     const persistedAudit = await page.evaluate(async () => {
       const status = await window.glass.hubStatus();
       return {

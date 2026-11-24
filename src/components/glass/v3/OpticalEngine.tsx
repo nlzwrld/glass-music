@@ -283,6 +283,8 @@ export function OpticalEngine({ children }: { children: ReactNode }) {
     if (prefersContrastMore) html.dataset.glassContrast = 'high';
     else delete html.dataset.glassContrast;
 
+    let lastTintVar = '';
+    let lastBassVar = '';
     const render = (now: number) => {
       raf = 0;
       clearTimeout(timer);
@@ -343,8 +345,15 @@ export function OpticalEngine({ children }: { children: ReactNode }) {
 
       const opacity = open ? s.opacity : useApp.getState().data.preferences.glass / 100;
       const tint = open ? s.tint : surfaceTint(s, html.dataset.theme === 'light');
-      root.style.setProperty('--appearance-tint', tint);
-      root.style.setProperty('--audio-bass', smoothedBass.toFixed(3));
+      const bassVar = smoothedBass.toFixed(3);
+      if (tint !== lastTintVar) {
+        lastTintVar = tint;
+        root.style.setProperty('--appearance-tint', tint);
+      }
+      if (bassVar !== lastBassVar) {
+        lastBassVar = bassVar;
+        root.style.setProperty('--audio-bass', bassVar);
+      }
       renderer.current?.draw(
         scene,
         root,

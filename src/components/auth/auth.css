@@ -417,6 +417,126 @@
   white-space: nowrap;
 }
 
+.hub-profile-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hub-collapsible-panel {
+  display: grid;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--m-border, rgb(255 255 255 / 0.1));
+}
+
+.hub-inline-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.hub-social-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.account-accordion-block {
+  border-radius: 10px;
+  border: 1px solid var(--m-border, rgb(255 255 255 / 0.1));
+  background: rgb(255 255 255 / 0.02);
+  overflow: hidden;
+}
+
+:root[data-theme='light'] .account-accordion-block {
+  background: rgb(0 0 0 / 0.02);
+}
+
+.account-accordion-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+
+.account-accordion-trigger:hover {
+  background: var(--m-hover, rgb(255 255 255 / 0.05));
+}
+
+.account-accordion-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.account-accordion-copy strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--m-text, var(--text));
+}
+
+.account-accordion-copy small {
+  font-size: 11.5px;
+  color: var(--m-text-sec, var(--muted, #b8c4c8));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-accordion-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
+.account-accordion-icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0.9;
+}
+
+.account-accordion-count {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--m-text-sec, var(--muted, #b8c4c8));
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--m-border, rgb(255 255 255 / 0.1));
+  background: rgb(255 255 255 / 0.03);
+}
+
+:root[data-theme='light'] .account-accordion-count {
+  background: rgb(0 0 0 / 0.03);
+}
+
+.account-accordion-chevron {
+  color: var(--m-text-sec, var(--muted, #b8c4c8));
+  transition: transform 160ms ease;
+}
+
+.account-accordion-trigger.is-open .account-accordion-chevron {
+  transform: rotate(180deg);
+}
+
+.account-accordion-body {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--m-border, rgb(255 255 255 / 0.08));
+}
+
 /* Sidebar bottom account trigger */
 .sidebar-account-btn {
   display: flex;

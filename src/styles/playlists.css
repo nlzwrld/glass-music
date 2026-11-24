@@ -17,7 +17,6 @@
 .collection-action-btn.is-active{color:var(--accent)}
 .collection-action-btn.is-smart{border-color:color-mix(in srgb,var(--accent) 45%,transparent)!important}
 .collection-action-btn .action-active-dot{position:absolute;bottom:4px;left:50%;width:4px;height:4px;border-radius:50%;background:var(--accent);transform:translateX(-50%);pointer-events:none;transition:width .16s ease,border-radius .16s ease}
-.collection-action-btn .action-active-dot.is-smart{width:11px;height:3px;border-radius:99px;box-shadow:0 0 6px var(--accent)}
 @media(pointer:coarse){.collection-action-btn,.playlist-play{width:42px;height:42px;min-width:42px}}
 .playlist-page .library-search{background:#10192380;border:1px solid #ffffff30;border-radius:12px;padding:10px 12px}.playlist-page .library-search input{color:#fff;min-width:0}
 .playlist-page .drag-handle{display:grid;place-items:center;min-height:36px;cursor:grab}.playlist-page .drag-handle:active{cursor:grabbing}

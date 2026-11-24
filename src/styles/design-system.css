@@ -17,7 +17,7 @@ input[type=range]:focus-visible{outline:none}input[type=range]:focus-visible::-w
 html[data-theme=light] .button.primary{background:var(--text);color:#f6fafb;border-color:transparent}
 /* The environment owns the full client area; spacing belongs to its content.
    Padding on .app used to expose Acrylic as a 14px frame around colored modes. */
-.app{padding:0;border:0;border-radius:0}.optical-root{gap:14px;padding:14px;border-radius:0}.app-body{gap:22px}.titlebar{height:24px;margin-top:-8px;margin-bottom:-7px}.titlebar button{height:29px}
+.app{padding:0;border:0;border-radius:0}.optical-root{gap:14px;padding:14px;border-radius:0}.app-body{gap:22px}.titlebar{height:28px;margin-top:-6px;margin-bottom:-4px}.titlebar .window-control-btn{height:29px}
 .optical-scene,.optical-surfaces{border-radius:0}.glass-material{border-radius:var(--material-radius,var(--radius-panel));box-shadow:var(--material-shadow,0 8px 28px #00000014),inset 0 1px 0 rgba(255,255,255,.16);border:1px solid var(--line);backdrop-filter:blur(var(--appearance-blur,14px)) saturate(1.32);-webkit-backdrop-filter:blur(var(--appearance-blur,14px)) saturate(1.32)}
 html[data-theme=light] .glass-material{box-shadow:var(--material-shadow,0 8px 24px rgba(20,38,52,.08)),inset 0 1px 0 rgba(255,255,255,.65)}
 @media(prefers-contrast:more){.glass-material,.modal,.glass-context-menu,.queue-panel,.expanded-player{background:var(--panel)!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important;border-color:var(--text)!important}}

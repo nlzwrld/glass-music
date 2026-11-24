@@ -1247,6 +1247,7 @@ export class ZeroTrustAuthEngine {
     const allowedPrefKeys = new Set([
       'theme',
       'uiStyle',
+      'beatPulse',
       'accent',
       'shuffleMode',
       'smartShuffleDiscoveries',

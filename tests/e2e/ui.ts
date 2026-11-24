@@ -36,7 +36,7 @@ export async function authenticateLocalBroker(
     .getByLabel('Senha (mínimo 12 caracteres)')
     .fill(opts?.password || 'LocalE2EAuthPass!2026');
   await gate.getByRole('button', { name: 'Criar conta', exact: true }).click();
-  await expect(page.locator('.sidebar .brand')).toBeVisible({ timeout: 15000 });
+  await expect(page.locator('.sidebar')).toBeVisible({ timeout: 15000 });
 }
 
 export function sidebarPlaylist(page: Page, name: string) {

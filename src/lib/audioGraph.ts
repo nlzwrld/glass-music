@@ -154,21 +154,23 @@ export interface AudioReactiveFrame {
 
 /**
  * Computes normalized sub-bass & kick-bass energy (0..1) from FFT byte bins (0..255).
- * Targets ~20 Hz – 175 Hz with sub-bass weighting and peak-bin blending so tight 808 kicks
- * and deep basslines hit crisply even at high FFT resolution (fftSize = 2048).
+ * Strictly isolates ~26 Hz – 112 Hz low-end weight and suppresses midrange/vocal spectral leakage
+ * so Beat Pulse triggers exclusively on real bass kicks and 808 sub-bass.
  */
 export function computeBassModulation(
   bins: ArrayLike<number>,
   sampleRate = 48000,
-  fftSize = 2048,
+  fftSize = 4096,
 ): AudioReactiveFrame {
   const count = bins.length;
   if (!count) return { bass: 0, subBass: 0, mid: 0, energy: 0 };
   const hzPerBin = sampleRate / Math.max(32, fftSize);
-  const bassStart = Math.max(1, Math.floor(20 / hzPerBin));
-  const subEnd = Math.min(count - 1, Math.max(bassStart, Math.ceil(95 / hzPerBin)));
-  const bassEnd = Math.min(count - 1, Math.max(subEnd, Math.ceil(175 / hzPerBin)));
-  const midEnd = Math.min(count - 1, Math.max(bassEnd + 1, Math.ceil(2000 / hzPerBin)));
+  const maxKickHz = hzPerBin > 100 ? 380 : 112;
+  const bassStart = Math.max(1, Math.floor(26 / hzPerBin));
+  const subEnd = Math.min(count - 1, Math.max(bassStart, Math.ceil(80 / hzPerBin)));
+  const bassEnd = Math.min(count - 1, Math.max(subEnd, Math.ceil(maxKickHz / hzPerBin)));
+  const midStart = Math.min(count - 1, Math.max(bassEnd + 1, Math.floor(150 / hzPerBin)));
+  const midEnd = Math.min(count - 1, Math.max(midStart, Math.ceil(3200 / hzPerBin)));
 
   let subSum = 0;
   let subPeak = 0;
@@ -185,7 +187,7 @@ export function computeBassModulation(
   let top2 = 0;
   for (let i = bassStart; i <= bassEnd; i++) {
     const v = Math.max(0, Math.min(255, bins[i] || 0));
-    const w = i <= subEnd ? 1.65 : 1.1;
+    const w = i <= subEnd ? 1.85 : 1.0;
     bassSum += v * w;
     bassWeight += 255 * w;
     if (v >= top1) {
@@ -197,25 +199,40 @@ export function computeBassModulation(
   }
 
   let midSum = 0;
-  const midCount = Math.max(1, midEnd - bassEnd);
-  for (let i = bassEnd + 1; i <= midEnd; i++) {
-    midSum += Math.max(0, Math.min(255, bins[i] || 0));
+  let midPeak = 0;
+  const midCount = Math.max(1, midEnd - midStart + 1);
+  for (let i = midStart; i <= midEnd; i++) {
+    const v = Math.max(0, Math.min(255, bins[i] || 0));
+    midSum += v;
+    if (v > midPeak) midPeak = v;
   }
 
   const weightedBass = bassWeight > 0 ? bassSum / bassWeight : 0;
   const peakBass = (top1 + (bassEnd > bassStart ? top2 : top1)) / (2 * 255);
-  const rawSub = (subSum / (subCount * 255)) * 0.45 + (subPeak / 255) * 0.55;
-  const rawBass = Math.max(weightedBass * 0.48 + peakBass * 0.52, rawSub * 0.92);
+  const rawSub = (subSum / (subCount * 255)) * 0.34 + (subPeak / 255) * 0.66;
+  const rawKick = weightedBass * 0.42 + peakBass * 0.58;
+  const lowRaw = rawSub * 0.65 + rawKick * 0.35;
 
-  // Noise-floor gate + musical curve so silence stays calm while real kicks/808s punch
-  const gatedBass = Math.max(0, (rawBass - 0.1) / 0.9);
-  const bass = Math.min(1, Math.pow(gatedBass, 1.2));
+  const midMean = midSum / (midCount * 255);
+  const rawMid = midMean * 0.6 + (midPeak / 255) * 0.4;
 
-  const gatedSub = Math.max(0, (rawSub - 0.1) / 0.9);
-  const subBass = Math.min(1, Math.pow(gatedSub, 1.15));
+  // Suppress false triggers when vocals/guitars/snares (150-3200 Hz) dominate without genuine sub-bass
+  const dominance =
+    rawMid <= 0.18
+      ? 1
+      : Math.max(0, Math.min(1, (rawSub - rawMid * 0.68 + 0.14) / 0.32));
 
-  const mid = Math.min(1, midSum / (midCount * 255));
-  const energy = Math.min(1, bass * 0.65 + subBass * 0.15 + mid * 0.2);
+  // Elevated noise-floor gate (0.36) + deadzone so whispers, vocals, hi-hats and room tone stay strictly at 0
+  const gatedBass = Math.max(0, (lowRaw - 0.36) / 0.64) * dominance;
+  const rawBassOut = Math.min(1, Math.pow(gatedBass, 1.32));
+  const bass = rawBassOut < 0.015 ? 0 : rawBassOut;
+
+  const gatedSub = Math.max(0, (rawSub - 0.36) / 0.64) * dominance;
+  const rawSubOut = Math.min(1, Math.pow(gatedSub, 1.24));
+  const subBass = rawSubOut < 0.015 ? 0 : rawSubOut;
+
+  const mid = Math.min(1, midMean);
+  const energy = Math.min(1, bass * 0.8 + subBass * 0.2);
   return { bass, subBass, mid, energy };
 }
 
@@ -260,11 +277,11 @@ export class AudioGraph {
     if (typeof this.context.createAnalyser === 'function') {
       try {
         const analyser = this.context.createAnalyser();
-        // 2048 FFT gives ~23.4 Hz/bin at 48 kHz so 30–120 Hz sub-bass & 808 kicks resolve cleanly
-        analyser.fftSize = 2048;
-        analyser.smoothingTimeConstant = 0.36;
-        analyser.minDecibels = -82;
-        analyser.maxDecibels = -10;
+        // 4096 FFT gives ~11.7 Hz/bin at 48 kHz with crisp 0.22 smoothing so 28–110 Hz kicks isolate cleanly from vocals
+        analyser.fftSize = 4096;
+        analyser.smoothingTimeConstant = 0.22;
+        analyser.minDecibels = -76;
+        analyser.maxDecibels = -12;
         // Tap PRE-volume (after EQ, before boost) so bass analysis works identically at any volume
         const preVolumeNode = this.filters[this.filters.length - 1] || this.boost;
         preVolumeNode.connect(analyser);

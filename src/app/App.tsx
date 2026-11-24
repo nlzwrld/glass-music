@@ -199,8 +199,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const uiStyle = p.uiStyle ?? 'matte';
+    const rawStyle = p.uiStyle ?? 'matte';
+    const uiStyle = rawStyle === 'glass' ? 'glass' : 'matte';
+    const beatPulseActive = Boolean((p.beatPulse ?? rawStyle === 'beat') && !p.performance);
     document.documentElement.dataset.uiStyle = uiStyle;
+    document.documentElement.dataset.beatPulse = String(beatPulseActive);
     document.documentElement.dataset.theme =
       p.theme === 'system' ? (systemLight ? 'light' : 'dark') : p.theme;
     document.documentElement.dataset.performance = String(p.performance);
@@ -211,7 +214,7 @@ export default function App() {
       p.performance || uiStyle === 'matte' ? '0px' : `${p.blur}px`,
     );
     document.documentElement.style.setProperty('--glass-alpha', `${0.025 + p.glass / 1000}`);
-  }, [p.uiStyle, p.theme, p.performance, p.reducedMotion, p.blur, p.glass, p.accent, systemLight]);
+  }, [p.uiStyle, p.beatPulse, p.theme, p.performance, p.reducedMotion, p.blur, p.glass, p.accent, systemLight]);
 
   useEffect(() => {
     const syncFullscreen = () => {
@@ -321,24 +324,45 @@ export default function App() {
             <header
               className="titlebar"
               data-tauri-drag-region
-              onDoubleClick={() => void window.glass.window('maximize')}
+              onDoubleClick={e => {
+                const el = e.target as HTMLElement;
+                if (el === e.currentTarget || el.hasAttribute('data-tauri-drag-region')) {
+                  void window.glass.window('maximize');
+                }
+              }}
             >
-              <span data-tauri-drag-region />
-              <div>
+              <button
+                type="button"
+                className="titlebar-brand brand"
+                onClick={() => useApp.getState().setPage('home')}
+                aria-label="Liquid Hub início"
+              >
+                <span className="brand-mark titlebar-brand-mark">
+                  <LiquidHubLogo size={16} />
+                </span>
+                <span className="titlebar-brand-name">Liquid Hub</span>
+              </button>
+              <span className="titlebar-drag" data-tauri-drag-region />
+              <div className="titlebar-window-controls">
                 <button
+                  type="button"
+                  className="window-control-btn"
                   aria-label="Minimizar janela"
                   onClick={() => void window.glass.window('minimize')}
                 >
                   <Minus size={15} />
                 </button>
                 <button
+                  type="button"
+                  className="window-control-btn"
                   aria-label="Maximizar janela"
                   onClick={() => void window.glass.window('maximize')}
                 >
                   <Square size={13} />
                 </button>
                 <button
-                  className="window-close"
+                  type="button"
+                  className="window-control-btn window-close"
                   aria-label="Fechar janela"
                   onClick={() => void window.glass.window('close')}
                 >

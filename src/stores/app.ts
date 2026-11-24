@@ -417,10 +417,24 @@ export const useApp = create<State>((set, get) => ({
   downloadsPaused: false,
   boot: async () => {
     try {
-      const [data, integrations] = await Promise.all([
+      const [rawData, integrations] = await Promise.all([
         window.glass.bootstrap(),
         window.glass.integrations(),
       ]);
+      const data =
+        rawData.preferences.uiStyle === 'beat'
+          ? {
+              ...rawData,
+              preferences: {
+                ...rawData.preferences,
+                uiStyle: 'matte' as const,
+                beatPulse: rawData.preferences.beatPulse ?? true,
+              },
+            }
+          : rawData;
+      if (rawData.preferences.uiStyle === 'beat') {
+        void window.glass.preferences(data.preferences).catch(() => {});
+      }
       set({
         data,
         integrations,
@@ -1714,6 +1728,7 @@ export function setPreferencesFromUI(patch: Partial<Preferences>): void {
       const syncableKeys = [
         'theme',
         'uiStyle',
+        'beatPulse',
         'accent',
         'shuffleMode',
         'smartShuffleDiscoveries',

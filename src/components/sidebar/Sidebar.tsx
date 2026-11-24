@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import {
   Home,
   Compass,
@@ -10,8 +11,6 @@ import {
   ListPlus,
   Link2,
   FolderInput,
-  PanelLeftClose,
-  PanelLeftOpen,
   Radio,
 } from 'lucide-react';
 import { motion } from 'motion/react';
@@ -24,7 +23,6 @@ import { GlassContextMenu, GlassSidebar } from '../glass/materials';
 import { useOptics } from '../glass/v3/OpticalEngine';
 import Cover from '../glass/Cover';
 import PlaylistCover from '../library/PlaylistCover';
-import { LiquidHubLogo } from '../brand/LiquidHubLogo';
 import { warmTrack, cancelWarmTrack } from '../../lib/playback';
 
 const nav = [
@@ -49,37 +47,28 @@ export default function Sidebar() {
     jamSession = useJam(s => s.session),
     jamConnected = useJam(s => s.connected),
     jamMembersCount = useJam(s => s.room?.members.length ?? (s.session ? 1 : 0)),
-    { settings, setSettings, reduced } = useOptics();
+    { reduced } = useOptics();
   const isGlass = (data.preferences.uiStyle ?? 'matte') === 'glass';
 
-  const recent = data.history
-    .filter((entry, index, all) => all.findIndex(row => row.id === entry.id) === index)
-    .map(entry => data.tracks.find(track => track.id === entry.id))
-    .filter((track): track is NonNullable<typeof track> => !!track)
-    .slice(0, 20);
+  const recent = useMemo(() => {
+    if (!data.history.length || !data.tracks.length) return [];
+    const trackMap = new Map(data.tracks.map(track => [track.id, track]));
+    const seen = new Set<string>();
+    const out: typeof data.tracks = [];
+    for (const entry of data.history) {
+      if (seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      const found = trackMap.get(entry.id);
+      if (found) {
+        out.push(found);
+        if (out.length >= 20) break;
+      }
+    }
+    return out;
+  }, [data.history, data.tracks]);
 
   return (
     <GlassSidebar aria-label="Barra lateral">
-      <div className="sidebar-brand-row">
-        <button
-          className="brand"
-          onClick={() => setPage('home')}
-          aria-label="Liquid Hub início"
-        >
-          <span className="brand-mark">
-            <LiquidHubLogo size={22} />
-          </span>
-          <span>Liquid Hub</span>
-        </button>
-        <IconButton
-          label={settings.sidebarCompact ? 'Expandir sidebar' : 'Recolher sidebar'}
-          className="sidebar-toggle"
-          onClick={() => setSettings({ sidebarCompact: !settings.sidebarCompact })}
-        >
-          {settings.sidebarCompact ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
-        </IconButton>
-      </div>
-
       <nav aria-label="Navegação principal">
         {nav.map(([id, label, Icon]) => (
           <button

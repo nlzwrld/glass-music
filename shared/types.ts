@@ -307,6 +307,7 @@ export function resolveNotificationMode(
 
 export interface Preferences {
   uiStyle?: 'matte' | 'glass' | 'beat';
+  beatPulse?: boolean;
   transition: 'off' | 'fade' | 'crossfade';
   transitionSeconds: number;
   volumeBoost: number;
@@ -345,6 +346,7 @@ export interface Preferences {
 
 export const defaults: Preferences = {
   uiStyle: 'matte',
+  beatPulse: false,
   transition: 'fade',
   transitionSeconds: 3,
   volumeBoost: 0,

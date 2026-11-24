@@ -19,6 +19,7 @@ import type {
 export const SYNCABLE_PREFERENCE_KEYS = [
   'theme',
   'uiStyle',
+  'beatPulse',
   'accent',
   'shuffleMode',
   'smartShuffleDiscoveries',
@@ -733,6 +734,10 @@ export const useAccounts = create<State>((set, get) => ({
         cloudUpdatedAt > get().lastCloudSyncAt
       ) {
         const nextPrefs = { ...mergedPrefs, ...cloudPrefs };
+        if (nextPrefs.uiStyle === 'beat') {
+          nextPrefs.uiStyle = 'matte';
+          nextPrefs.beatPulse = nextPrefs.beatPulse ?? true;
+        }
         const changed = SYNCABLE_PREFERENCE_KEYS.some(
           k => nextPrefs[k] !== mergedPrefs[k],
         );

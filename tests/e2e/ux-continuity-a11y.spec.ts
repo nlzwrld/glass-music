@@ -128,7 +128,7 @@ test('validates continuity, concurrency, error recovery, keyboard a11y, responsi
     await gate.getByLabel('E-mail').fill('ux-validator@liquidhub.dev');
     await gate.getByLabel('Senha (mínimo 12 caracteres)').fill('UxValidationPass!2026');
     await gate.getByRole('button', { name: 'Criar conta', exact: true }).click();
-    await expect(page.locator('.sidebar .brand')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('.sidebar')).toBeVisible({ timeout: 15000 });
 
     // 1. CONTINUIDADE: Play Track A, navigate across views, minimize & restore
     await navButton(page, 'Biblioteca').click();
@@ -294,7 +294,7 @@ test('validates continuity, concurrency, error recovery, keyboard a11y, responsi
     await waitForCdp(proc, 9392, 90, 200);
     browser = await chromium.connectOverCDP('http://127.0.0.1:9392');
     const page2 = browser.contexts()[0]!.pages()[0]!;
-    await expect(page2.locator('.sidebar .brand')).toBeVisible({ timeout: 15000 });
+    await expect(page2.locator('.sidebar')).toBeVisible({ timeout: 15000 });
     await expect(page2.locator('html')).toHaveAttribute('data-ui-style', 'glass');
     await expect(page2.locator('html')).toHaveAttribute('data-theme', 'light');
     const persisted = await page2.evaluate(() => window.glass.bootstrap());

@@ -1,7 +1,8 @@
 /* ==========================================================================
-   LIQUID HUB — BEAT PULSE THEME (Ambient Fluid Backdrop Strictly Behind UI)
-   Loaded AFTER matte-design-system.css and BEFORE mobile.css so Beat Pulse
-   layers cleanly behind all UI/UX panels without ever covering text or art.
+   LIQUID HUB — BEAT PULSE OPTION (Lightweight Bass-Only Fluid Backdrop)
+   Loaded AFTER matte-design-system.css and BEFORE mobile.css.
+   Zero per-card backdrop-filter or per-frame CSS variable mutations so
+   scrolling, navigation, and playback remain 60fps butter-smooth.
    ========================================================================== */
 
 .beat-pulse-layer {
@@ -11,6 +12,7 @@
   pointer-events: none;
   overflow: hidden;
   border-radius: inherit;
+  contain: strict;
 }
 
 .beat-pulse-canvas {
@@ -20,180 +22,118 @@
   pointer-events: none;
 }
 
-/* Dark Beat Pulse tokens: deep translucent surfaces letting the moving light radiate from behind */
+/* Matte + Beat Pulse: semi-translucent dark/light surfaces over GPU canvas (no expensive blur) */
+html[data-beat-pulse='true']:not([data-ui-style='glass']),
 html[data-ui-style='beat'] {
-  --m-frame: rgba(8, 10, 14, 0.72);
-  --m-bg: rgba(9, 11, 15, 0.44);
-  --m-sidebar: rgba(11, 13, 18, 0.68);
-  --m-surface: rgba(18, 21, 28, 0.76);
-  --m-card: rgba(16, 19, 25, 0.8);
-  --m-elevated: rgba(23, 27, 36, 0.88);
-  --m-hover: rgba(34, 40, 52, 0.84);
-  --m-active: rgba(44, 52, 66, 0.9);
-  --m-border-subtle: rgba(255, 255, 255, 0.08);
-  --m-border: rgba(255, 255, 255, 0.13);
-  --m-border-strong: rgba(255, 255, 255, 0.24);
+  --m-frame: rgba(11, 12, 16, 0.88);
+  --m-bg: rgba(12, 13, 18, 0.62);
+  --m-sidebar: rgba(14, 16, 21, 0.84);
+  --m-surface: rgba(20, 23, 30, 0.86);
+  --m-card: rgba(19, 22, 29, 0.88);
+  --m-elevated: rgba(25, 29, 38, 0.94);
+  --m-hover: rgba(34, 39, 50, 0.9);
+  --m-active: rgba(44, 51, 64, 0.94);
 }
 
+html[data-beat-pulse='true'][data-theme='light']:not([data-ui-style='glass']),
 html[data-ui-style='beat'][data-theme='light'] {
-  --m-frame: rgba(236, 240, 246, 0.78);
-  --m-bg: rgba(246, 248, 252, 0.62);
-  --m-sidebar: rgba(238, 242, 248, 0.74);
-  --m-surface: rgba(255, 255, 255, 0.8);
-  --m-card: rgba(255, 255, 255, 0.82);
-  --m-elevated: rgba(255, 255, 255, 0.92);
-  --m-hover: rgba(230, 236, 244, 0.88);
-  --m-active: rgba(218, 226, 236, 0.92);
-  --m-border-subtle: rgba(15, 23, 42, 0.08);
-  --m-border: rgba(15, 23, 42, 0.13);
-  --m-border-strong: rgba(15, 23, 42, 0.24);
+  --m-frame: rgba(238, 241, 247, 0.9);
+  --m-bg: rgba(246, 248, 252, 0.72);
+  --m-sidebar: rgba(240, 243, 249, 0.86);
+  --m-surface: rgba(255, 255, 255, 0.88);
+  --m-card: rgba(255, 255, 255, 0.9);
+  --m-elevated: rgba(255, 255, 255, 0.95);
 }
 
-/* Deep base beneath the canvas */
+html[data-beat-pulse='true']:not([data-ui-style='glass']) body,
 html[data-ui-style='beat'] body {
-  background: #07080b;
+  background: #090a0d;
 }
 
+html[data-beat-pulse='true'][data-theme='light']:not([data-ui-style='glass']) body,
 html[data-ui-style='beat'][data-theme='light'] body {
-  background: #e9edf4;
+  background: #eaedf4;
 }
 
+html[data-beat-pulse='true']:not([data-ui-style='glass']) .app,
 html[data-ui-style='beat'] .app {
   position: relative;
   isolation: isolate;
-  background: #07080b !important;
+  background: #090a0d !important;
 }
 
+html[data-beat-pulse='true'][data-theme='light']:not([data-ui-style='glass']) .app,
 html[data-ui-style='beat'][data-theme='light'] .app {
-  background: #e9edf4 !important;
+  background: #eaedf4 !important;
 }
 
 /* Force ALL UI/UX chrome & content strictly ABOVE .beat-pulse-layer (z-index: 0) */
+html[data-beat-pulse='true'] .optical-root,
 html[data-ui-style='beat'] .optical-root {
   position: relative;
   z-index: 1;
+}
+
+html[data-beat-pulse='true']:not([data-ui-style='glass']) .optical-root,
+html[data-ui-style='beat'] .optical-root {
   background: transparent !important;
 }
 
-html[data-ui-style='beat'] .titlebar {
-  position: relative;
-  z-index: 2;
-  background: var(--m-frame) !important;
-  backdrop-filter: blur(16px) saturate(1.15) !important;
-  -webkit-backdrop-filter: blur(16px) saturate(1.15) !important;
+/* In Liquid Glass mode, let the bass pulse subtly breathe beneath the optical scene */
+html[data-beat-pulse='true'][data-ui-style='glass'] .optical-scene {
+  opacity: 0.8;
 }
 
-html[data-ui-style='beat'] .app-body {
-  position: relative;
-  z-index: 1;
-  background: transparent !important;
-}
-
-html[data-ui-style='beat'] .sidebar {
-  position: relative;
-  z-index: 2;
-  background: var(--m-sidebar) !important;
-  backdrop-filter: blur(18px) saturate(1.18) !important;
-  -webkit-backdrop-filter: blur(18px) saturate(1.18) !important;
-}
-
-html[data-ui-style='beat'] .main-shell {
-  position: relative;
-  z-index: 1;
-  background: var(--m-bg) !important;
-}
-
+html[data-beat-pulse='true']:not([data-ui-style='glass']) .app-body,
+html[data-ui-style='beat'] .app-body,
+html[data-beat-pulse='true']:not([data-ui-style='glass']) .main-scroll,
 html[data-ui-style='beat'] .main-scroll {
   position: relative;
   z-index: 1;
   background: transparent !important;
 }
 
+html[data-beat-pulse='true']:not([data-ui-style='glass']) .titlebar,
+html[data-ui-style='beat'] .titlebar {
+  position: relative;
+  z-index: 2;
+  background: var(--m-frame) !important;
+}
+
+html[data-beat-pulse='true']:not([data-ui-style='glass']) .sidebar,
+html[data-ui-style='beat'] .sidebar {
+  position: relative;
+  z-index: 2;
+  background: var(--m-sidebar) !important;
+}
+
+html[data-beat-pulse='true']:not([data-ui-style='glass']) .main-shell,
+html[data-ui-style='beat'] .main-shell {
+  position: relative;
+  z-index: 1;
+  background: var(--m-bg) !important;
+}
+
+html[data-beat-pulse='true']:not([data-ui-style='glass']) .topbar,
 html[data-ui-style='beat'] .topbar {
   position: relative;
   z-index: 3;
-  background: color-mix(in srgb, var(--m-frame) 72%, transparent) !important;
-  backdrop-filter: blur(14px) saturate(1.15) !important;
-  -webkit-backdrop-filter: blur(14px) saturate(1.15) !important;
+  background: var(--m-frame) !important;
 }
 
-/* Translucent crisp cards & sections so the moving backdrop frames UI cleanly */
-html[data-ui-style='beat'] .track-card,
-html[data-ui-style='beat'] .quick-tile,
-html[data-ui-style='beat'] .library-playlist-card,
-html[data-ui-style='beat'] .settings-section,
-html[data-ui-style='beat'] .track-table {
-  background: var(--m-card);
-  border-color: color-mix(
-    in srgb,
-    var(--user-accent, #52b79a) calc(4% + var(--beat-bass, 0) * 14% + var(--beat-flash, 0) * 14%),
-    var(--m-border-subtle)
-  );
-  backdrop-filter: blur(12px) saturate(1.1) !important;
-  -webkit-backdrop-filter: blur(12px) saturate(1.1) !important;
-}
-
-/* Player bar: frosted above backdrop with fluid bass-reactive accent rim (no transition fighting rAF) */
+html[data-beat-pulse='true']:not([data-ui-style='glass']) .player,
 html[data-ui-style='beat'] .player {
   position: relative;
   z-index: 4;
-  background: rgba(10, 12, 17, 0.84) !important;
-  backdrop-filter: blur(20px) saturate(1.22) !important;
-  -webkit-backdrop-filter: blur(20px) saturate(1.22) !important;
-  border-top-color: color-mix(
-    in srgb,
-    var(--user-accent, #52b79a) calc(14% + var(--beat-bass, 0) * 32% + var(--beat-flash, 0) * 44%),
-    var(--m-border-subtle)
-  ) !important;
-  box-shadow: 0 -2px calc(16px + var(--beat-bass, 0) * 16px + var(--beat-flash, 0) * 24px)
-    color-mix(
-      in srgb,
-      var(--user-accent, #52b79a) calc(4% + var(--beat-bass, 0) * 12% + var(--beat-flash, 0) * 18%),
-      transparent
-    ) !important;
+  background: rgba(12, 14, 19, 0.92) !important;
 }
 
+html[data-beat-pulse='true'][data-theme='light']:not([data-ui-style='glass']) .player,
 html[data-ui-style='beat'][data-theme='light'] .player {
-  background: rgba(246, 248, 252, 0.86) !important;
+  background: rgba(246, 248, 252, 0.94) !important;
 }
 
-html[data-ui-style='beat'] .play-main {
-  background: color-mix(
-    in srgb,
-    var(--user-accent, #52b79a) calc(84% + var(--beat-flash, 0) * 16%),
-    #ffffff
-  ) !important;
-  color: #090c0b !important;
-  box-shadow: 0 0 calc(8px + var(--beat-bass, 0) * 10px + var(--beat-flash, 0) * 20px)
-    color-mix(
-      in srgb,
-      var(--user-accent, #52b79a) calc(24% + var(--beat-bass, 0) * 22% + var(--beat-flash, 0) * 42%),
-      transparent
-    ) !important;
-}
-
-/* Mobile Beat Pulse compatibility */
-html[data-ui-style='beat'][data-platform='android'] .mobile-bottom-nav,
-html[data-ui-style='beat'][data-mobile='true'] .mobile-bottom-nav {
+html[data-beat-pulse='true'][data-platform='android'] .mobile-bottom-nav,
+html[data-beat-pulse='true'][data-mobile='true'] .mobile-bottom-nav {
   z-index: 40;
-  background: rgba(10, 12, 17, 0.86) !important;
-  backdrop-filter: blur(20px) saturate(1.25) !important;
-  -webkit-backdrop-filter: blur(20px) saturate(1.25) !important;
-}
-
-html[data-ui-style='beat'][data-theme='light'][data-platform='android'] .mobile-bottom-nav,
-html[data-ui-style='beat'][data-theme='light'][data-mobile='true'] .mobile-bottom-nav {
-  background: rgba(246, 248, 252, 0.88) !important;
-}
-
-html[data-ui-style='beat'][data-performance='true'] :is(.titlebar, .sidebar, .topbar, .track-card, .quick-tile, .library-playlist-card, .settings-section, .track-table, .player, .mobile-bottom-nav) {
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-}
-
-@media (prefers-reduced-transparency: reduce) {
-  html[data-ui-style='beat'] :is(.titlebar, .sidebar, .topbar, .track-card, .quick-tile, .library-playlist-card, .settings-section, .track-table, .player, .mobile-bottom-nav) {
-    backdrop-filter: none !important;
-    -webkit-backdrop-filter: none !important;
-  }
 }

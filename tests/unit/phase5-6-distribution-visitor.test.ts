@@ -155,8 +155,10 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
 
   it('triggers musical beat flashes on bass onsets, moves History/Settings to topbar profile menu, and ships minimalist download site', () => {
     let state = createBeatDetectorState();
-    // Calm passage keeps flash at 0
+    // Calm passage & midrange/vocal energy keep flash strictly at 0
     state = stepBeatDetector(state, { bass: 0.05, mid: 0.05, energy: 0.05 }, 16.6);
+    expect(state.flash).toBe(0);
+    state = stepBeatDetector(state, { bass: 0.14, subBass: 0.1, mid: 0.88, energy: 0.78 }, 16.6);
     expect(state.flash).toBe(0);
 
     // Kick drum transient spikes flash cleanly and advances fluid orbital phase
@@ -175,7 +177,7 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
     // Beat Pulse layer MUST sit strictly underneath the UI (.beat-pulse-layer z-index: 0, .optical-root z-index: 1)
     const pulseCss = readFileSync(resolve(root, 'src', 'styles', 'beat-pulse.css'), 'utf8');
     expect(pulseCss).toMatch(/\.beat-pulse-layer\s*\{[^}]*z-index:\s*0/);
-    expect(pulseCss).toMatch(/html\[data-ui-style='beat'\]\s+\.optical-root\s*\{[^}]*z-index:\s*1/);
+    expect(pulseCss).toMatch(/html\[data-beat-pulse='true'\]\s+\.optical-root[\s\S]*?\{[^}]*z-index:\s*1/);
     const sidebarSrc = readFileSync(resolve(root, 'src', 'components', 'sidebar', 'Sidebar.tsx'), 'utf8');
     expect(sidebarSrc).not.toContain("['history', 'Histórico'");
     expect(sidebarSrc).not.toContain("['settings', 'Configurações'");
@@ -538,7 +540,8 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
     const { pickSyncablePreferences } = await import('../../src/stores/accounts');
     const synced = pickSyncablePreferences({
       theme: 'dark',
-      uiStyle: 'beat',
+      uiStyle: 'matte',
+      beatPulse: true,
       accent: '#7c5cff',
       shuffleMode: 'smart',
       volume: 85,
@@ -548,7 +551,8 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
     });
     expect(synced).toEqual({
       theme: 'dark',
-      uiStyle: 'beat',
+      uiStyle: 'matte',
+      beatPulse: true,
       accent: '#7c5cff',
       shuffleMode: 'smart',
     });
@@ -584,7 +588,8 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
       likes: ['youtube:dQw4w9WgXcQ'],
       preferences: {
         theme: 'dark',
-        uiStyle: 'beat',
+        uiStyle: 'matte',
+        beatPulse: true,
         accent: '#7c5cff',
         volume: 99,
         startup: true,
@@ -601,7 +606,8 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
     expect(pullAndroid.likes).toEqual(['youtube:dQw4w9WgXcQ']);
     expect(pullAndroid.preferences).toEqual({
       theme: 'dark',
-      uiStyle: 'beat',
+      uiStyle: 'matte',
+      beatPulse: true,
       accent: '#7c5cff',
     });
   });

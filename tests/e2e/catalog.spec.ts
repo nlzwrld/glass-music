@@ -74,7 +74,7 @@ test('shared catalog: consent, discovery, search, pagination and recovery withou
     await gate.getByLabel('E-mail').fill('catalog-qa@liquidhub.dev');
     await gate.getByLabel('Senha (mínimo 12 caracteres)').fill('CatalogStrongPass!2026');
     await gate.getByRole('button', { name: 'Criar conta', exact: true }).click();
-    await expect(page.locator('.sidebar .brand')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('.sidebar')).toBeVisible({ timeout: 15000 });
     await page.getByRole('button', { name: 'Início', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Música em alta no YouTube · BR' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Eletrônica no SoundCloud' })).toBeVisible();

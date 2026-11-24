@@ -50,6 +50,14 @@ it('modulates audio-reactive WebGL bass uniform from sub-bass/bass FFT bins whil
   const hiRes = computeBassModulation(sub808, 48000, 2048);
   expect(hiRes.subBass).toBeGreaterThan(0.5);
   expect(hiRes.bass).toBeGreaterThan(0.45);
+
+  // Loud vocals / guitars / snares (160–2500 Hz) with spectral leakage below 110 Hz do NOT falsely pulse
+  const vocalsAndGuitars = new Uint8Array(2048).fill(0);
+  for (let i = 2; i <= 9; i++) vocalsAndGuitars[i] = 95; // low-level spectral bleed
+  for (let i = 14; i <= 180; i++) vocalsAndGuitars[i] = 235; // loud vocals & guitars
+  const vocalFrame = computeBassModulation(vocalsAndGuitars, 48000, 4096);
+  expect(vocalFrame.bass).toBe(0);
+  expect(vocalFrame.subBass).toBe(0);
 });
 
 it('detects Spotify, Deezer, Apple Music, YT Music, Bandcamp and Tidal badges from track URLs', () => {

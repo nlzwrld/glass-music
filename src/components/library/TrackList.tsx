@@ -26,6 +26,25 @@ import { transport } from '../player/engine';
 import Cover from '../glass/Cover';
 import { IconButton, OfflineIndicator, SourceBadge } from '../glass/controls';
 
+const ORIGIN_ALBUM_LABELS = new Set([
+  'spotify',
+  'youtube',
+  'yt music',
+  'youtube music',
+  'soundcloud',
+  'local',
+  'link',
+  'liquid hub',
+  'spotify • yt music',
+  'spotify · yt music',
+]);
+
+function displayAlbumTitle(album?: string): string {
+  const trimmed = album?.trim() ?? '';
+  if (!trimmed) return '';
+  return ORIGIN_ALBUM_LABELS.has(trimmed.toLowerCase()) ? '' : trimmed;
+}
+
 export default function TrackList({
   tracks,
   playlistId,
@@ -362,13 +381,15 @@ export default function TrackList({
                 </button>
 
                 <span className="track-meta-col">
-                  {track.album && <span className="track-album-text">{track.album}</span>}
+                  {displayAlbumTitle(track.album) && (
+                    <span className="track-album-text">{displayAlbumTitle(track.album)}</span>
+                  )}
                   <SourceBadge
                     source={track.source}
                     url={track.url}
                     catalogSource={track.catalogSource}
                     streamProvider={track.streamProvider}
-                    compact={!!track.album}
+                    compact
                   />
                 </span>
 

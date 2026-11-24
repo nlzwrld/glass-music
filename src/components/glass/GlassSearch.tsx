@@ -9,6 +9,8 @@ import {
   LoaderCircle,
   LogIn,
   LogOut,
+  PanelLeftClose,
+  PanelLeftOpen,
   Search,
   Settings,
   UserRound,
@@ -19,6 +21,7 @@ import { useApp, looksLikeMusicLink, handleDirectLink } from '../../stores/app';
 import { useAccounts } from '../../stores/accounts';
 import { menuMotion, useReducedUI } from '../../lib/motion';
 import { GlassMaterial } from './materials';
+import { useOptics } from './v3/OpticalEngine';
 
 function TopbarProfileMenu() {
   const [open, setOpen] = useState(false);
@@ -274,9 +277,19 @@ export default function GlassSearch({
     index = useApp(s => s.navigationIndex),
     count = useApp(s => s.navigation.length),
     busy = useApp(s => s.searchBusy);
+  const { settings, setSettings } = useOptics();
   return (
     <header className="topbar">
       <div className="navigation-controls">
+        <button
+          type="button"
+          className="sidebar-toggle"
+          title={settings.sidebarCompact ? 'Expandir sidebar' : 'Recolher sidebar'}
+          aria-label={settings.sidebarCompact ? 'Expandir sidebar' : 'Recolher sidebar'}
+          onClick={() => setSettings({ sidebarCompact: !settings.sidebarCompact })}
+        >
+          {settings.sidebarCompact ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+        </button>
         <button
           aria-label="Voltar"
           disabled={index === 0}
