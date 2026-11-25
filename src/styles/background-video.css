@@ -1,0 +1,203 @@
+/* ==========================================================================
+   LIQUID HUB — LOCAL BACKGROUND VIDEO LAYER
+   Loaded AFTER beat-pulse.css and BEFORE home-polish.css / mobile.css.
+   Keeps <video> strictly isolated behind UI chrome while preserving card and
+   typography legibility in both Matte (Dark/Light) and Liquid Glass modes.
+   ========================================================================== */
+
+.bg-video-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: inherit;
+  contain: strict;
+}
+
+.bg-video-media {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+}
+
+.bg-video-scrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    rgba(6, 8, 12, 0.36) 0%,
+    rgba(6, 8, 12, 0.22) 48%,
+    rgba(6, 8, 12, 0.44) 100%
+  );
+}
+
+html[data-theme='light'] .bg-video-scrim {
+  background: linear-gradient(
+    180deg,
+    rgba(244, 247, 252, 0.48) 0%,
+    rgba(244, 247, 252, 0.34) 50%,
+    rgba(244, 247, 252, 0.52) 100%
+  );
+}
+
+/* Matte mode + active background video: translucent surfaces so video shows cleanly behind legible chrome */
+html[data-bg-video='true']:not([data-ui-style='glass']) {
+  --m-frame: rgba(9, 11, 16, 0.72);
+  --m-bg: rgba(9, 11, 16, 0.38);
+  --m-sidebar: rgba(11, 13, 19, 0.68);
+  --m-surface: rgba(18, 21, 28, 0.76);
+  --m-card: rgba(16, 19, 26, 0.76);
+  --m-elevated: rgba(23, 27, 36, 0.88);
+  --m-hover: rgba(34, 40, 52, 0.84);
+  --m-active: rgba(44, 52, 66, 0.9);
+}
+
+html[data-bg-video='true'][data-theme='light']:not([data-ui-style='glass']) {
+  --m-frame: rgba(236, 240, 246, 0.78);
+  --m-bg: rgba(246, 248, 252, 0.5);
+  --m-sidebar: rgba(238, 242, 248, 0.72);
+  --m-surface: rgba(255, 255, 255, 0.8);
+  --m-card: rgba(255, 255, 255, 0.8);
+  --m-elevated: rgba(255, 255, 255, 0.92);
+  --m-hover: rgba(226, 232, 240, 0.86);
+  --m-active: rgba(214, 222, 234, 0.92);
+}
+
+html[data-bg-video='true']:not([data-ui-style='glass']) body {
+  background: #090a0d;
+}
+
+html[data-bg-video='true'][data-theme='light']:not([data-ui-style='glass']) body {
+  background: #eaedf4;
+}
+
+html[data-bg-video='true']:not([data-ui-style='glass']) .app {
+  position: relative;
+  isolation: isolate;
+  background: #090a0d !important;
+}
+
+html[data-bg-video='true'][data-theme='light']:not([data-ui-style='glass']) .app {
+  background: #eaedf4 !important;
+}
+
+/* Keep ALL UI chrome strictly above .bg-video-layer (z-index: 0) */
+html[data-bg-video='true'] .optical-root {
+  position: relative;
+  z-index: 1;
+  background: transparent !important;
+}
+
+/* In Liquid Glass mode, soften optical-scene opacity so the video shines cleanly beneath WebGL glass */
+html[data-bg-video='true'][data-ui-style='glass'] .app {
+  position: relative;
+  isolation: isolate;
+}
+
+html[data-bg-video='true'][data-ui-style='glass'] .optical-scene {
+  opacity: 0.15;
+}
+
+html[data-bg-video='true']:not([data-ui-style='glass']) .app-body,
+html[data-bg-video='true']:not([data-ui-style='glass']) .main-scroll {
+  position: relative;
+  z-index: 1;
+  background: transparent !important;
+}
+
+html[data-bg-video='true']:not([data-ui-style='glass']) .titlebar {
+  position: relative;
+  z-index: 2;
+  background: var(--m-frame) !important;
+}
+
+html[data-bg-video='true']:not([data-ui-style='glass']) .sidebar {
+  position: relative;
+  z-index: 2;
+  background: var(--m-sidebar) !important;
+}
+
+html[data-bg-video='true']:not([data-ui-style='glass']) .main-shell {
+  position: relative;
+  z-index: 1;
+  background: var(--m-bg) !important;
+}
+
+html[data-bg-video='true']:not([data-ui-style='glass']) .topbar {
+  position: relative;
+  z-index: 3;
+  background: var(--m-frame) !important;
+}
+
+html[data-bg-video='true']:not([data-ui-style='glass']) .player {
+  position: relative;
+  z-index: 4;
+  background: rgba(12, 14, 19, 0.88) !important;
+}
+
+html[data-bg-video='true'][data-theme='light']:not([data-ui-style='glass']) .player {
+  background: rgba(246, 248, 252, 0.92) !important;
+}
+
+html[data-bg-video='true'][data-platform='android'] .mobile-bottom-nav,
+html[data-bg-video='true'][data-mobile='true'] .mobile-bottom-nav {
+  z-index: 40;
+}
+
+/* Compact Settings sub-controls for Pulse & Background Video */
+.pulse-subcontrols {
+  margin: 0 0 4px 12px;
+  padding: 6px 0 10px 14px;
+  border-left: 2px solid var(--line);
+  border-bottom: 0;
+}
+
+.bg-video-subsection {
+  padding-top: 8px;
+}
+
+.bg-video-picker-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 0 6px;
+}
+
+.bg-video-file-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.bg-video-file-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bg-video-file-note {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.bg-video-missing {
+  color: #f59e0b;
+}
+
+.bg-video-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}

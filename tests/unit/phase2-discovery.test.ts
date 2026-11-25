@@ -589,6 +589,12 @@ describe('Phase 2: Standalone Downloads tab, progress controls & Settings remova
     expect(downloadsSrc).toContain('Remover arquivo');
     expect(downloadsSrc).toContain('Pausar fila');
     expect(downloadsSrc).toContain('Retomar fila');
+    expect(downloadsSrc).not.toContain('Reprodução offline pronta');
+    expect(downloadsSrc).not.toContain('faixas offline');
+    expect(downloadsSrc).not.toContain('Excluir arquivos locais não remove');
+    expect(downloadsSrc).not.toContain('Filtrar downloads por origem');
+    expect(downloadsSrc).not.toContain('placeholder="Filtrar downloads"');
+    expect(downloadsSrc).not.toContain('Baixar para ouvir offline');
     expect(sidebarSrc).toContain("'downloads'");
     expect(settingsSrc).not.toContain('OfflineSettings');
     expect(settingsSrc).not.toContain('Armazenamento offline');

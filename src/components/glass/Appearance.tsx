@@ -1,19 +1,95 @@
-import { useRef } from 'react';
-import { ImagePlus, RotateCcw } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Film, ImagePlus, RotateCcw, Trash2 } from 'lucide-react';
+import {
+  DEFAULT_BACKGROUND_VIDEO_PREFERENCES,
+  DEFAULT_PULSE_PREFERENCES,
+  normalizeBackgroundVideoPreferences,
+  normalizePulsePreferences,
+  type BackgroundVideoPreferences,
+  type PulsePreferences,
+} from '../../lib/musicEvents';
 import { useApp, cleanError, setPreferencesFromUI } from '../../stores/app';
+import {
+  refreshBackgroundVideoInfo,
+  setBackgroundVideoInfo,
+  useBackgroundVideoInfo,
+} from './BackgroundVideoLayer';
 import { Toggle } from './controls';
 import { useOptics } from './v3/OpticalEngine';
 import { glassVisualPresets, opticalDefaults, type OpticalSettings } from './v3/model';
 import { readBackground } from './v3/ambient';
 
+function formatVideoSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1).replace('.', ',')} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2).replace('.', ',')} GB`;
+}
+
 export default function Appearance() {
   const { settings: s, setSettings, setLab } = useOptics(),
     p = useApp(v => v.data.preferences),
     file = useRef<HTMLInputElement>(null);
+  const [videoBusy, setVideoBusy] = useState(false);
+  const videoInfo = useBackgroundVideoInfo();
   const pref = setPreferencesFromUI;
 
   const uiStyle = p.uiStyle ?? 'matte';
   const isGlass = uiStyle === 'glass';
+  const pulseEnabled = Boolean(p.beatPulse ?? uiStyle === 'beat');
+  const pulseCfg = normalizePulsePreferences(p.pulseConfig);
+  const bgVideoCfg = normalizeBackgroundVideoPreferences(p.backgroundVideo);
+
+  useEffect(() => {
+    if (!videoInfo) {
+      void refreshBackgroundVideoInfo();
+    }
+  }, []);
+
+  const updatePulse = (patch: Partial<PulsePreferences>) => {
+    pref({ pulseConfig: normalizePulsePreferences({ ...pulseCfg, ...patch }) });
+  };
+
+  const updateBgVideo = (patch: Partial<BackgroundVideoPreferences>) => {
+    pref({ backgroundVideo: normalizeBackgroundVideoPreferences({ ...bgVideoCfg, ...patch }) });
+  };
+
+  const handlePickVideo = async () => {
+    if (videoBusy || typeof window.glass?.pickBackgroundVideo !== 'function') return;
+    setVideoBusy(true);
+    try {
+      const picked = await window.glass.pickBackgroundVideo();
+      if (picked) {
+        setBackgroundVideoInfo(picked);
+        if (!bgVideoCfg.enabled) {
+          updateBgVideo({ enabled: true });
+        }
+        useApp.getState().message('Vídeo de fundo atualizado.');
+      }
+    } catch (error) {
+      useApp.getState().message(cleanError(error));
+    } finally {
+      setVideoBusy(false);
+    }
+  };
+
+  const handleClearVideo = async () => {
+    if (videoBusy || typeof window.glass?.clearBackgroundVideo !== 'function') return;
+    setVideoBusy(true);
+    try {
+      await window.glass.clearBackgroundVideo();
+      setBackgroundVideoInfo(null);
+      if (bgVideoCfg.enabled) {
+        updateBgVideo({ enabled: false });
+      }
+      useApp.getState().message('Vídeo de fundo removido.');
+    } catch (error) {
+      useApp.getState().message(cleanError(error));
+    } finally {
+      setVideoBusy(false);
+    }
+  };
 
   const range = (
     key: 'blur' | 'specular' | 'refraction' | 'ior' | 'fresnel' | 'edge',
@@ -55,6 +131,8 @@ export default function Appearance() {
             pref({
               uiStyle: 'matte',
               beatPulse: false,
+              pulseConfig: { ...DEFAULT_PULSE_PREFERENCES },
+              backgroundVideo: { ...DEFAULT_BACKGROUND_VIDEO_PREFERENCES },
               theme: 'dark',
               accent: '#52b79a',
               glass: 20,
@@ -170,9 +248,197 @@ export default function Appearance() {
       <Toggle
         label="Efeito Pulse"
         description="Pulsa nos graves e agudos com movimento fluido no fundo."
-        checked={Boolean(p.beatPulse ?? uiStyle === 'beat')}
+        checked={pulseEnabled}
         onChange={beatPulse => pref({ beatPulse, ...(uiStyle === 'beat' ? { uiStyle: 'matte' } : {}) })}
       />
+      {pulseEnabled && (
+        <div className="setting-subsection pulse-subcontrols" aria-label="Ajustes do Efeito Pulse">
+          <Toggle
+            label="Graves"
+            checked={pulseCfg.bass}
+            onChange={bass => updatePulse({ bass })}
+          />
+          <Toggle
+            label="Impactos isolados"
+            checked={pulseCfg.oneShot}
+            onChange={oneShot => updatePulse({ oneShot })}
+          />
+          <Toggle
+            label="Graves sequenciais"
+            checked={pulseCfg.sequentialBass}
+            onChange={sequentialBass => updatePulse({ sequentialBass })}
+          />
+          <Toggle
+            label="Bateria e percussão"
+            checked={pulseCfg.percussion}
+            onChange={percussion => updatePulse({ percussion })}
+          />
+          <Toggle
+            label="Supressão de voz"
+            checked={pulseCfg.vocalSuppression}
+            onChange={vocalSuppression => updatePulse({ vocalSuppression })}
+          />
+          <label className="setting-row">
+            <strong>Sensibilidade do Pulse</strong>
+            <span className="setting-range">
+              <input
+                aria-label="Sensibilidade do Pulse"
+                aria-valuetext={`${pulseCfg.sensitivity.toFixed(2)}x`}
+                type="range"
+                min={0.25}
+                max={2.0}
+                step={0.05}
+                value={pulseCfg.sensitivity}
+                style={
+                  {
+                    '--progress': `${Math.round(((pulseCfg.sensitivity - 0.25) / 1.75) * 100)}%`,
+                  } as React.CSSProperties
+                }
+                onChange={e => updatePulse({ sensitivity: Number(e.target.value) })}
+              />
+              <output>{pulseCfg.sensitivity.toFixed(2)}x</output>
+            </span>
+          </label>
+        </div>
+      )}
+
+      <div className="setting-subsection bg-video-subsection" aria-label="Vídeo de fundo">
+        <Toggle
+          label="Vídeo de fundo"
+          description="Exibe um vídeo local sem áudio atrás da interface."
+          checked={bgVideoCfg.enabled}
+          onChange={enabled => updateBgVideo({ enabled })}
+        />
+        <div className="bg-video-picker-row">
+          <div className="bg-video-file-meta">
+            {videoInfo ? (
+              videoInfo.exists ? (
+                <span className="bg-video-file-name" title={videoInfo.name}>
+                  {videoInfo.name} · {formatVideoSize(videoInfo.size)}
+                </span>
+              ) : (
+                <span className="bg-video-file-name bg-video-missing" title={videoInfo.name}>
+                  Arquivo não encontrado: {videoInfo.name}
+                </span>
+              )
+            ) : (
+              <span className="bg-video-file-name">Nenhum vídeo selecionado</span>
+            )}
+            <span className="bg-video-file-note">MP4 / WebM · áudio silenciado automaticamente</span>
+          </div>
+          <div className="bg-video-actions">
+            <button
+              type="button"
+              className="button secondary"
+              disabled={videoBusy}
+              onClick={() => void handlePickVideo()}
+            >
+              <Film size={14} />
+              {videoInfo ? 'Trocar vídeo' : 'Selecionar vídeo'}
+            </button>
+            {videoInfo && (
+              <button
+                type="button"
+                className="text-button"
+                disabled={videoBusy}
+                onClick={() => void handleClearVideo()}
+              >
+                <Trash2 size={13} />
+                Remover
+              </button>
+            )}
+          </div>
+        </div>
+        {bgVideoCfg.enabled && (
+          <>
+            <Toggle
+              label="Sincronizar velocidade com a batida"
+              checked={bgVideoCfg.beatSync}
+              onChange={beatSync => updateBgVideo({ beatSync })}
+            />
+            <label className="setting-row">
+              <strong>Intensidade da sincronização</strong>
+              <span className="setting-range">
+                <input
+                  aria-label="Intensidade da sincronização"
+                  aria-valuetext={`${Math.round(bgVideoCfg.syncIntensity * 100)}%`}
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={bgVideoCfg.syncIntensity}
+                  style={
+                    {
+                      '--progress': `${Math.round(bgVideoCfg.syncIntensity * 100)}%`,
+                    } as React.CSSProperties
+                  }
+                  onChange={e => updateBgVideo({ syncIntensity: Number(e.target.value) })}
+                />
+                <output>{Math.round(bgVideoCfg.syncIntensity * 100)}%</output>
+              </span>
+            </label>
+            <label className="setting-row">
+              <strong>Velocidade mínima</strong>
+              <span className="setting-range">
+                <input
+                  aria-label="Velocidade mínima"
+                  aria-valuetext={`${bgVideoCfg.minSpeed.toFixed(2)}x`}
+                  type="range"
+                  min={0.25}
+                  max={1.5}
+                  step={0.05}
+                  value={bgVideoCfg.minSpeed}
+                  style={
+                    {
+                      '--progress': `${Math.round(((bgVideoCfg.minSpeed - 0.25) / 1.25) * 100)}%`,
+                    } as React.CSSProperties
+                  }
+                  onChange={e => {
+                    const minSpeed = Number(e.target.value);
+                    updateBgVideo({
+                      minSpeed,
+                      maxSpeed: Math.max(bgVideoCfg.maxSpeed, minSpeed),
+                    });
+                  }}
+                />
+                <output>{bgVideoCfg.minSpeed.toFixed(2)}x</output>
+              </span>
+            </label>
+            <label className="setting-row">
+              <strong>Velocidade máxima</strong>
+              <span className="setting-range">
+                <input
+                  aria-label="Velocidade máxima"
+                  aria-valuetext={`${bgVideoCfg.maxSpeed.toFixed(2)}x`}
+                  type="range"
+                  min={1.0}
+                  max={3.0}
+                  step={0.05}
+                  value={bgVideoCfg.maxSpeed}
+                  style={
+                    {
+                      '--progress': `${Math.round(((bgVideoCfg.maxSpeed - 1.0) / 2.0) * 100)}%`,
+                    } as React.CSSProperties
+                  }
+                  onChange={e => {
+                    const maxSpeed = Number(e.target.value);
+                    updateBgVideo({
+                      maxSpeed,
+                      minSpeed: Math.min(bgVideoCfg.minSpeed, maxSpeed),
+                    });
+                  }}
+                />
+                <output>{bgVideoCfg.maxSpeed.toFixed(2)}x</output>
+              </span>
+            </label>
+            <Toggle
+              label="Repetir vídeo em loop"
+              checked={bgVideoCfg.loop}
+              onChange={loop => updateBgVideo({ loop })}
+            />
+          </>
+        )}
+      </div>
       <Toggle
         label="Reduzir animações"
         checked={p.reducedMotion}

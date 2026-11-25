@@ -292,6 +292,33 @@ export interface DiscoveryCacheEntry<T = unknown> {
 
 export type NotificationMode = 'off' | 'background' | 'always';
 
+export interface PulsePreferences {
+  bass: boolean;
+  oneShot: boolean;
+  sequentialBass: boolean;
+  percussion: boolean;
+  vocalSuppression: boolean;
+  sensitivity: number;
+}
+
+export interface BackgroundVideoPreferences {
+  enabled: boolean;
+  beatSync: boolean;
+  syncIntensity: number;
+  minSpeed: number;
+  maxSpeed: number;
+  loop: boolean;
+}
+
+export interface BackgroundVideoInfo {
+  id: string;
+  name: string;
+  size: number;
+  mime: string;
+  url: string;
+  exists: boolean;
+}
+
 export function resolveNotificationMode(
   prefs: Pick<Preferences, 'notifications' | 'notificationMode'>,
 ): NotificationMode {
@@ -308,6 +335,8 @@ export function resolveNotificationMode(
 export interface Preferences {
   uiStyle?: 'matte' | 'glass' | 'beat';
   beatPulse?: boolean;
+  pulseConfig?: PulsePreferences;
+  backgroundVideo?: BackgroundVideoPreferences;
   transition: 'off' | 'fade' | 'crossfade';
   transitionSeconds: number;
   volumeBoost: number;
@@ -760,6 +789,9 @@ export interface GlassAPI {
   discover(requestId: string): Promise<CatalogResult>;
   cancelSearch(id: string): Promise<void>;
   importAudio(): Promise<Snapshot>;
+  pickBackgroundVideo?(): Promise<BackgroundVideoInfo | null>;
+  clearBackgroundVideo?(): Promise<boolean>;
+  backgroundVideoInfo?(): Promise<BackgroundVideoInfo | null>;
   resolveLink(url: string): Promise<Track>;
   linkPlayback(track: Track, requestId: string): Promise<Track>;
   resolveStream(

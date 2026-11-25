@@ -1,5 +1,13 @@
 import { useEffect, useRef } from 'react';
-import { getAudioReactiveFrame, type AudioReactiveFrame } from '../../lib/audioGraph';
+import type { AudioReactiveFrame } from '../../lib/audioGraph';
+import {
+  EMPTY_PULSE_FRAME,
+  normalizePulsePreferences,
+  subscribeMusicAnalysis,
+  type MusicEvent,
+  type PulseAnalysisFrame,
+} from '../../lib/musicEvents';
+import { ensurePulseEngineRegistered } from '../../lib/pulseEngine';
 import { useReducedUI } from '../../lib/motion';
 import { useApp } from '../../stores/app';
 
@@ -197,9 +205,11 @@ interface PulsePalette {
   coolShift: RGB;
 }
 
+type RippleKind = 'bass_impact' | 'bass_seq' | 'snare' | 'hi_hat' | 'cymbal';
+
 interface RippleSlot {
   active: boolean;
-  kind: 'bass' | 'treble';
+  kind: RippleKind;
   x: number;
   y: number;
   ageMs: number;
@@ -311,10 +321,11 @@ function drawFluidBeatFrame(
   h: number,
   palette: PulsePalette,
   phase: number,
-  bass: number,
-  flash: number,
+  bassSustain: number,
+  bassImpact: number,
+  seqRate: number,
+  percussion: number,
   treble: number,
-  trebleFlash: number,
   glow: number,
   ripples: RippleSlot[],
   isLight: boolean,
@@ -325,7 +336,7 @@ function drawFluidBeatFrame(
   const dim = Math.max(w, h);
   const alphaScale = isLight ? 0.48 : 1.0;
 
-  // Living orbiting orbs: always moving softly in the background, surging deeply on BASS and shimmering crisply on TREBLE
+  // Living orbiting orbs: calm & serene during silence/vocals, surging deeply on bass sustain/impacts and shimmering on percussion/treble
   const orbs: Array<{
     x: number;
     y: number;
@@ -334,36 +345,37 @@ function drawFluidBeatFrame(
     alpha: number;
   }> = [
     {
-      // Primary deep sub-bass orb gliding wide across the backdrop
+      // Primary deep sub-bass sustain & impact orb gliding wide across the backdrop
       x: w * (0.5 + 0.34 * Math.sin(phase * 0.56 + 0.3)),
       y: h * (0.5 + 0.31 * Math.cos(phase * 0.42 + 0.1)),
-      radius: dim * (0.37 + bass * 0.17 + flash * 0.15),
+      radius: dim * (0.34 + bassSustain * 0.19 + bassImpact * 0.16),
       color: palette.core,
-      alpha: (0.16 + glow * 0.18 + bass * 0.24 + flash * 0.28) * alphaScale,
+      alpha: (0.08 + glow * 0.14 + bassSustain * 0.28 + bassImpact * 0.3) * alphaScale,
     },
     {
-      // Warm deep kick undertow orb
+      // Warm kick / sequential bass undertow orb
       x: w * (0.5 + 0.32 * Math.cos(phase * 0.37 + 4.4)),
       y: h * (0.56 + 0.29 * Math.cos(phase * 0.54 + 2.3)),
-      radius: dim * (0.34 + bass * 0.16 + flash * 0.12),
+      radius: dim * (0.31 + bassSustain * 0.15 + bassImpact * 0.14 + seqRate * 0.08),
       color: palette.warmShift,
-      alpha: (0.13 + glow * 0.15 + bass * 0.22 + flash * 0.22) * alphaScale,
+      alpha:
+        (0.07 + glow * 0.12 + bassSustain * 0.22 + bassImpact * 0.24 + seqRate * 0.12) * alphaScale,
     },
     {
-      // Crisp treble / high-frequency shimmer orb orbiting upper-diagonal field
+      // Crisp hi-hat / cymbal shimmer orb orbiting upper-diagonal field
       x: w * (0.5 + 0.38 * Math.cos(phase * 0.62 + 2.0)),
       y: h * (0.44 + 0.3 * Math.sin(phase * 0.74 + 1.1)),
-      radius: dim * (0.28 + treble * 0.12 + trebleFlash * 0.16),
+      radius: dim * (0.26 + treble * 0.16 + percussion * 0.12),
       color: palette.coolShift,
-      alpha: (0.12 + glow * 0.12 + treble * 0.2 + trebleFlash * 0.34) * alphaScale,
+      alpha: (0.06 + glow * 0.1 + treble * 0.34 + percussion * 0.18) * alphaScale,
     },
     {
-      // Expressive kick + high-note highlight orb weaving in a dynamic figure-8
+      // Expressive snare/percussion + bass highlight orb weaving in a dynamic figure-8
       x: w * (0.5 + 0.4 * Math.sin(phase * 0.86 + 3.4)),
       y: h * (0.48 + 0.28 * Math.sin(phase * 1.14 + 0.6)),
-      radius: dim * (0.23 + flash * 0.18 + trebleFlash * 0.14),
+      radius: dim * (0.21 + bassImpact * 0.16 + percussion * 0.16 + treble * 0.1),
       color: palette.bright,
-      alpha: (0.09 + flash * 0.38 + trebleFlash * 0.36) * alphaScale,
+      alpha: (0.05 + bassImpact * 0.32 + percussion * 0.34 + treble * 0.24) * alphaScale,
     },
   ];
 
@@ -379,16 +391,17 @@ function drawFluidBeatFrame(
     ctx.fill();
   }
 
-  // Sweeping diagonal aurora ribbon that continuously flows and reacts to both bass & highs
+  // Sweeping diagonal aurora ribbon reacting smoothly to sustained bass, sequential groove & percussion
   ctx.save();
   const ribbonX = w * (0.5 + 0.22 * Math.sin(phase * 0.31));
   const ribbonY = h * (0.5 + 0.18 * Math.cos(phase * 0.27));
   ctx.translate(ribbonX, ribbonY);
-  ctx.rotate(phase * 0.18 + bass * 0.2 + trebleFlash * 0.12);
-  ctx.scale(1.65, 0.4 + bass * 0.16 + flash * 0.14 + trebleFlash * 0.1);
-  const ribRadius = dim * (0.34 + glow * 0.12);
+  ctx.rotate(phase * 0.18 + bassSustain * 0.22 + seqRate * 0.16 + treble * 0.1);
+  ctx.scale(1.65, 0.36 + bassSustain * 0.18 + bassImpact * 0.14 + percussion * 0.12);
+  const ribRadius = dim * (0.32 + glow * 0.14);
   const ribGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, ribRadius);
-  const ribAlpha = (0.1 + bass * 0.18 + flash * 0.2 + trebleFlash * 0.22) * alphaScale;
+  const ribAlpha =
+    (0.06 + bassSustain * 0.2 + bassImpact * 0.18 + percussion * 0.18 + treble * 0.16) * alphaScale;
   ribGrad.addColorStop(0, rgba(palette.bright, ribAlpha));
   ribGrad.addColorStop(0.55, rgba(palette.core, ribAlpha * 0.38));
   ribGrad.addColorStop(1, rgba(palette.core, 0));
@@ -398,25 +411,46 @@ function drawFluidBeatFrame(
   ctx.fill();
   ctx.restore();
 
-  // Expanding shockwave ripples: wide deep rings for BASS, tighter bright shimmer rings for TREBLE
+  // Classified event shockwave ripples (one-shot bass, sequential bass, snare/tom, hi-hat, cymbal wash)
   for (let i = 0; i < ripples.length; i++) {
     const r = ripples[i]!;
     if (!r.active) continue;
     const t = Math.min(1, r.ageMs / r.maxMs);
-    const isTreble = r.kind === 'treble';
-    const eased = 1 - Math.pow(1 - t, isTreble ? 2.2 : 2.6);
-    const outerR = dim * (isTreble ? 0.05 + eased * 0.38 : 0.08 + eased * 0.62);
+    const isHigh = r.kind === 'hi_hat' || r.kind === 'cymbal';
+    const isSeq = r.kind === 'bass_seq';
+    const isSnare = r.kind === 'snare';
+
+    const eased = 1 - Math.pow(1 - t, isHigh ? 2.15 : isSeq ? 2.35 : 2.65);
+    const maxSpan =
+      r.kind === 'bass_impact'
+        ? 0.64
+        : isSeq
+          ? 0.48
+          : r.kind === 'cymbal'
+            ? 0.52
+            : isSnare
+              ? 0.44
+              : 0.34;
+    const outerR = dim * ((isHigh ? 0.05 : 0.08) + eased * maxSpan);
     const bandWidth = Math.max(
-      isTreble ? 12 : 20,
-      dim * ((isTreble ? 0.085 : 0.16) * (1 - t * 0.4)),
+      isHigh ? 12 : 18,
+      dim * ((r.kind === 'cymbal' ? 0.14 : isHigh ? 0.08 : 0.155) * (1 - t * 0.4)),
     );
     const innerR = Math.max(0, outerR - bandWidth);
-    const fade = Math.sin(Math.min(1, t * 4.2) * (Math.PI / 2)) * Math.pow(1 - t, 1.75);
-    const alpha = r.strength * fade * (isTreble ? 0.36 : 0.38) * alphaScale;
+    const fade = Math.sin(Math.min(1, t * 4.2) * (Math.PI / 2)) * Math.pow(1 - t, 1.72);
+    const alpha = r.strength * fade * (isHigh ? 0.35 : 0.39) * alphaScale;
     if (alpha <= 0.003) continue;
 
-    const ringColor = isTreble ? palette.bright : palette.core;
-    const edgeColor = isTreble ? palette.coolShift : palette.warmShift;
+    const ringColor =
+      r.kind === 'hi_hat'
+        ? palette.bright
+        : r.kind === 'cymbal'
+          ? palette.coolShift
+          : isSnare
+            ? palette.warmShift
+            : palette.core;
+    const edgeColor =
+      isHigh ? palette.coolShift : isSnare || isSeq ? palette.bright : palette.warmShift;
     const ringGrad = ctx.createRadialGradient(r.x * w, r.y * h, innerR, r.x * w, r.y * h, outerR);
     ringGrad.addColorStop(0, rgba(ringColor, 0));
     ringGrad.addColorStop(0.55, rgba(ringColor, alpha));
@@ -431,6 +465,7 @@ function drawFluidBeatFrame(
 export function BeatPulseOverlay() {
   const uiStyle = useApp(s => s.data.preferences.uiStyle ?? 'matte');
   const beatPulse = useApp(s => s.data.preferences.beatPulse);
+  const pulseConfig = useApp(s => s.data.preferences.pulseConfig);
   const performanceMode = useApp(s => s.data.preferences.performance);
   const playing = useApp(s => s.playing);
   const accentColor = useApp(s => s.data.preferences.accent ?? '');
@@ -440,10 +475,14 @@ export function BeatPulseOverlay() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const playingRef = useRef(playing);
   playingRef.current = playing;
+  const pulseConfigRef = useRef(pulseConfig);
+  pulseConfigRef.current = pulseConfig;
 
   useEffect(() => {
     const root = document.documentElement;
     if (!active) return;
+
+    ensurePulseEngineRegistered();
 
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d', { alpha: true });
@@ -474,17 +513,56 @@ export function BeatPulseOverlay() {
     let windowVisible = true;
     let lastTs = performance.now();
     let lastDrawTs = 0;
-    let detector = createBeatDetectorState();
+
+    // Smoothed visual state driven by Pulse 2.0 analysis frames
+    let latestAnalysis: PulseAnalysisFrame = EMPTY_PULSE_FRAME;
+    const queuedEvents: MusicEvent[] = [];
+    let phase = 0;
+    let smoothSustain = 0;
+    let smoothImpact = 0;
+    let smoothSeqRate = 0;
+    let smoothPerc = 0;
+    let smoothTreble = 0;
+    let smoothGlow = 0.06;
+    let seqStepAngle = 0;
+
     let nextRipple = 0;
-    const ripples: RippleSlot[] = Array.from({ length: 6 }, () => ({
+    const ripples: RippleSlot[] = Array.from({ length: 8 }, () => ({
       active: false,
-      kind: 'bass',
+      kind: 'bass_impact',
       x: 0.5,
       y: 0.5,
       ageMs: 0,
       maxMs: 650,
       strength: 0,
     }));
+
+    const spawnRipple = (
+      kind: RippleKind,
+      x: number,
+      y: number,
+      maxMs: number,
+      strength: number,
+    ) => {
+      const slot = ripples[nextRipple % ripples.length]!;
+      nextRipple++;
+      slot.active = true;
+      slot.kind = kind;
+      slot.x = x;
+      slot.y = y;
+      slot.ageMs = 0;
+      slot.maxMs = maxMs;
+      slot.strength = Math.max(0.18, Math.min(1, strength));
+    };
+
+    const unsubscribeAnalysis = subscribeMusicAnalysis('beat-pulse-overlay', frame => {
+      latestAnalysis = frame;
+      if (frame.events.length > 0 && queuedEvents.length < 16) {
+        for (let i = 0; i < frame.events.length && queuedEvents.length < 16; i++) {
+          queuedEvents.push(frame.events[i]!);
+        }
+      }
+    });
 
     const scheduleTick = () => {
       if (!rafId && !document.hidden && windowVisible) {
@@ -525,53 +603,158 @@ export function BeatPulseOverlay() {
       lastTs = now;
       lastDrawTs = now;
 
+      const prefs = normalizePulsePreferences(pulseConfigRef.current);
+
       if (isPlaying) {
-        const frame = getAudioReactiveFrame();
-        detector = stepBeatDetector(detector, frame, dt);
+        const f = latestAnalysis;
+        // Suppress residual shimmer during dominant vocal-only passages with no drum/bass events
+        const vocalCalmFactor =
+          prefs.vocalSuppression && f.vocalLikelihood > 0.62 && f.events.length === 0
+            ? Math.max(0.25, 1 - (f.vocalLikelihood - 0.62) * 1.4)
+            : 1.0;
+
+        const targetSustain = prefs.bass ? f.bassSustain : 0;
+        const targetImpact =
+          prefs.bass && (f.activeSequence ? prefs.sequentialBass : prefs.oneShot)
+            ? f.bassImpact
+            : 0;
+        const targetSeq = prefs.bass && prefs.sequentialBass ? f.bassSequenceRate : 0;
+        const targetPerc = prefs.percussion ? f.percussion * vocalCalmFactor : 0;
+        const targetTreble = prefs.percussion ? f.treble * vocalCalmFactor : 0;
+
+        smoothSustain +=
+          (targetSustain - smoothSustain) * (1 - Math.exp(-dt / (targetSustain > smoothSustain ? 36 : 190)));
+        smoothImpact +=
+          (targetImpact - smoothImpact) * (1 - Math.exp(-dt / (targetImpact > smoothImpact ? 14 : 180)));
+        smoothSeqRate +=
+          (targetSeq - smoothSeqRate) * (1 - Math.exp(-dt / (targetSeq > smoothSeqRate ? 28 : 220)));
+        smoothPerc +=
+          (targetPerc - smoothPerc) * (1 - Math.exp(-dt / (targetPerc > smoothPerc ? 12 : 145)));
+        smoothTreble +=
+          (targetTreble - smoothTreble) * (1 - Math.exp(-dt / (targetTreble > smoothTreble ? 12 : 130)));
+
+        const targetGlow = Math.min(
+          1,
+          0.05 +
+            smoothSustain * 0.48 +
+            smoothImpact * 0.36 +
+            smoothPerc * 0.24 +
+            smoothTreble * 0.22,
+        );
+        smoothGlow +=
+          (targetGlow - smoothGlow) * (1 - Math.exp(-dt / (targetGlow > smoothGlow ? 44 : 260)));
+
+        const angularVel =
+          0.2 +
+          smoothSustain * 0.95 +
+          smoothImpact * 1.65 +
+          smoothSeqRate * 1.35 +
+          smoothPerc * 0.85 +
+          smoothTreble * 0.55;
+        phase = (phase + (dt / 1000) * angularVel) % (Math.PI * 200);
+
+        // Drain classified events to spawn distinct visual ripples
+        if (queuedEvents.length > 0) {
+          let spawnedBassThisTick = false;
+          for (let i = 0; i < queuedEvents.length; i++) {
+            const ev = queuedEvents[i]!;
+            if (ev.intensity < 0.16) continue;
+            switch (ev.type) {
+              case 'bass_one_shot':
+                if (prefs.bass && prefs.oneShot) {
+                  spawnedBassThisTick = true;
+                  spawnRipple(
+                    'bass_impact',
+                    0.5 + 0.3 * Math.sin(phase * 0.72 + 1.1),
+                    0.52 + 0.24 * Math.cos(phase * 0.58 + 0.4),
+                    620 + (1 - ev.intensity) * 160,
+                    ev.intensity,
+                  );
+                }
+                break;
+              case 'bass_sequence':
+                if (prefs.bass && prefs.sequentialBass) {
+                  spawnedBassThisTick = true;
+                  seqStepAngle += 1.35;
+                  spawnRipple(
+                    'bass_seq',
+                    0.5 + 0.28 * Math.cos(seqStepAngle),
+                    0.52 + 0.22 * Math.sin(seqStepAngle),
+                    390 + (1 - ev.intensity) * 110,
+                    ev.intensity,
+                  );
+                }
+                break;
+              case 'kick':
+                if (!spawnedBassThisTick && prefs.bass && prefs.oneShot) {
+                  spawnedBassThisTick = true;
+                  spawnRipple(
+                    'bass_impact',
+                    0.5 + 0.3 * Math.sin(phase * 0.72 + 1.1),
+                    0.52 + 0.24 * Math.cos(phase * 0.58 + 0.4),
+                    600 + (1 - ev.intensity) * 150,
+                    ev.intensity,
+                  );
+                }
+                break;
+              case 'snare':
+              case 'tom':
+              case 'percussion':
+                if (prefs.percussion) {
+                  spawnRipple(
+                    'snare',
+                    0.5 + 0.34 * Math.sin(phase * 0.88 + 2.7),
+                    0.48 + 0.26 * Math.cos(phase * 0.76 + 1.5),
+                    440 + (1 - ev.intensity) * 110,
+                    ev.intensity,
+                  );
+                }
+                break;
+              case 'hi_hat':
+                if (prefs.percussion) {
+                  spawnRipple(
+                    'hi_hat',
+                    0.5 + 0.38 * Math.cos(phase * 0.96 + 2.4),
+                    0.42 + 0.28 * Math.sin(phase * 1.18 + 0.8),
+                    300 + (1 - ev.intensity) * 90,
+                    ev.intensity,
+                  );
+                }
+                break;
+              case 'cymbal':
+                if (prefs.percussion) {
+                  spawnRipple(
+                    'cymbal',
+                    0.5 + 0.32 * Math.cos(phase * 0.64 + 0.9),
+                    0.4 + 0.24 * Math.sin(phase * 0.82 + 2.1),
+                    680 + (1 - ev.intensity) * 150,
+                    ev.intensity,
+                  );
+                }
+                break;
+              case 'bass_sustain':
+                // Driven continuously via smoothSustain aurora envelope without sharp ring flashes
+                break;
+            }
+          }
+          queuedEvents.length = 0;
+        }
       } else {
-        // Gentle continuous ambient drift even when paused / no bass
-        detector = {
-          ...detector,
-          bass: detector.bass * Math.exp(-dt / 260),
-          impulse: detector.impulse * Math.exp(-dt / 220),
-          flash: detector.flash * Math.exp(-dt / 240),
-          treble: detector.treble * Math.exp(-dt / 180),
-          trebleImpulse: detector.trebleImpulse * Math.exp(-dt / 150),
-          trebleFlash: detector.trebleFlash * Math.exp(-dt / 170),
-          glow: detector.glow + (0.14 - detector.glow) * (1 - Math.exp(-dt / 420)),
-          phase: (detector.phase + (dt / 1000) * 0.24) % (Math.PI * 200),
-          cooldownMs: Math.max(0, detector.cooldownMs - dt),
-          trebleCooldownMs: Math.max(0, detector.trebleCooldownMs - dt),
-          onsetTrigger: 0,
-          trebleOnsetTrigger: 0,
-        };
+        queuedEvents.length = 0;
+        smoothSustain *= Math.exp(-dt / 240);
+        smoothImpact *= Math.exp(-dt / 200);
+        smoothSeqRate *= Math.exp(-dt / 220);
+        smoothPerc *= Math.exp(-dt / 160);
+        smoothTreble *= Math.exp(-dt / 150);
+        smoothGlow += (0.06 - smoothGlow) * (1 - Math.exp(-dt / 420));
+        phase = (phase + (dt / 1000) * 0.18) % (Math.PI * 200);
       }
 
-      // Spawn wide bass ripple on kick/sub-bass impact
-      if (detector.onsetTrigger > 0.24) {
-        const slot = ripples[nextRipple % ripples.length]!;
-        nextRipple++;
-        slot.active = true;
-        slot.kind = 'bass';
-        slot.x = 0.5 + 0.32 * Math.sin(detector.phase * 0.72 + 1.2);
-        slot.y = 0.52 + 0.24 * Math.cos(detector.phase * 0.58 + 0.4);
-        slot.ageMs = 0;
-        slot.maxMs = 600 + (1 - detector.onsetTrigger) * 180;
-        slot.strength = detector.onsetTrigger;
-      }
-
-      // Spawn crisp treble shimmer ripple on sharp highs (hi-hats / bright notes)
-      if (detector.trebleOnsetTrigger > 0.24) {
-        const slot = ripples[nextRipple % ripples.length]!;
-        nextRipple++;
-        slot.active = true;
-        slot.kind = 'treble';
-        slot.x = 0.5 + 0.38 * Math.cos(detector.phase * 0.94 + 2.4);
-        slot.y = 0.44 + 0.28 * Math.sin(detector.phase * 1.18 + 0.8);
-        slot.ageMs = 0;
-        slot.maxMs = 390 + (1 - detector.trebleOnsetTrigger) * 120;
-        slot.strength = detector.trebleOnsetTrigger;
-      }
+      if (smoothSustain < 0.004) smoothSustain = 0;
+      if (smoothImpact < 0.004) smoothImpact = 0;
+      if (smoothSeqRate < 0.004) smoothSeqRate = 0;
+      if (smoothPerc < 0.004) smoothPerc = 0;
+      if (smoothTreble < 0.004) smoothTreble = 0;
 
       for (let i = 0; i < ripples.length; i++) {
         const r = ripples[i]!;
@@ -592,12 +775,13 @@ export function BeatPulseOverlay() {
           canvas.width,
           canvas.height,
           palette,
-          detector.phase,
-          detector.bass,
-          detector.flash,
-          detector.treble,
-          detector.trebleFlash,
-          detector.glow,
+          phase,
+          smoothSustain,
+          smoothImpact,
+          smoothSeqRate,
+          smoothPerc,
+          smoothTreble,
+          smoothGlow,
           ripples,
           isLight,
         );
@@ -610,6 +794,7 @@ export function BeatPulseOverlay() {
     lastTs = performance.now();
     scheduleTick();
     return () => {
+      unsubscribeAnalysis();
       cancelAnimationFrame(rafId);
       offVisualVisibility?.();
       document.removeEventListener('visibilitychange', syncVisibility);

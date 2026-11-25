@@ -173,10 +173,43 @@ export const trackSchema = z
     }
   });
 
+export const pulsePreferencesSchema = z
+  .object({
+    bass: z.boolean(),
+    oneShot: z.boolean(),
+    sequentialBass: z.boolean(),
+    percussion: z.boolean(),
+    vocalSuppression: z.boolean(),
+    sensitivity: z.number().finite().min(0.25).max(2.0),
+  })
+  .strict();
+
+export const backgroundVideoPreferencesSchema = z
+  .object({
+    enabled: z.boolean(),
+    beatSync: z.boolean(),
+    syncIntensity: z.number().finite().min(0).max(1),
+    minSpeed: z.number().finite().min(0.25).max(1.5),
+    maxSpeed: z.number().finite().min(1.0).max(3.0),
+    loop: z.boolean(),
+  })
+  .strict()
+  .superRefine((v, ctx) => {
+    if (v.minSpeed > v.maxSpeed) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Velocidade mínima deve ser menor ou igual à máxima',
+        path: ['minSpeed'],
+      });
+    }
+  });
+
 export const preferencesSchema = z
   .object({
     uiStyle: z.enum(['matte', 'glass', 'beat']).optional(),
     beatPulse: z.boolean().optional(),
+    pulseConfig: pulsePreferencesSchema.optional(),
+    backgroundVideo: backgroundVideoPreferencesSchema.optional(),
     transition: z.enum(['off', 'fade', 'crossfade']).optional(),
     transitionSeconds: z.number().min(0.5).max(10).optional(),
     volumeBoost: z.number().min(0).max(12).optional(),

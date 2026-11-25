@@ -49,7 +49,8 @@ const SETTINGS_CATEGORIES: readonly CategoryMeta[] = [
   {
     id: 'appearance',
     label: 'Aparência',
-    keywords: 'aparencia tema escuro claro liquid glass vidro fosco cor escala animacoes',
+    keywords:
+      'aparencia tema escuro claro liquid glass vidro fosco cor escala animacoes pulse graves bateria percussao voz video fundo sincronizacao batida',
     Icon: Palette,
   },
   {

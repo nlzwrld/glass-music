@@ -1376,6 +1376,105 @@ async fn call(
                 Err("Importação local via seletor de arquivos indisponível no Android Beta.".into())
             }
         }
+        "pickBackgroundVideo" => {
+            #[cfg(desktop)]
+            {
+                if let Some(file) = rfd::AsyncFileDialog::new()
+                    .set_title("Selecionar vídeo de fundo")
+                    .add_filter("Vídeo", &["mp4", "webm", "m4v", "mov", "mkv"])
+                    .pick_file()
+                    .await
+                {
+                    let path = file
+                        .path()
+                        .canonicalize()
+                        .map_err(|_| "Arquivo de vídeo não encontrado.")?;
+                    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+                    if !meta.is_file() {
+                        return Err("Selecione um arquivo de vídeo válido.".into());
+                    }
+                    let size = meta.len();
+                    if size == 0 {
+                        return Err("O arquivo de vídeo está vazio.".into());
+                    }
+                    if size > 2_000_000_000 {
+                        return Err("Vídeo maior que 2 GB.".into());
+                    }
+                    let path_str = path.to_string_lossy().to_string();
+                    let path_hash = media::hash(path_str.to_lowercase().as_bytes());
+                    let nonce = uuid::Uuid::new_v4().simple().to_string();
+                    let id = format!("{}-{}", &path_hash[..24], &nonce[..8]);
+                    let name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .filter(|n| !n.trim().is_empty())
+                        .unwrap_or("video")
+                        .to_string();
+                    let mime = media::video_mime(&path);
+                    let record = json!({
+                        "id": id,
+                        "path": path_str,
+                        "name": name,
+                        "size": size,
+                        "mime": mime
+                    });
+                    st.db.lock().unwrap().set_background_video(&record)?;
+                    Ok(json!({
+                        "id": id,
+                        "name": name,
+                        "size": size,
+                        "mime": mime,
+                        "url": format!("{}/bg-video/{id}", st.base),
+                        "exists": true
+                    }))
+                } else {
+                    Ok(Value::Null)
+                }
+            }
+            #[cfg(mobile)]
+            {
+                Err("Seleção de vídeo local indisponível no Android Beta.".into())
+            }
+        }
+        "clearBackgroundVideo" => {
+            st.db.lock().unwrap().clear_background_video()?;
+            Ok(json!(true))
+        }
+        "backgroundVideoInfo" => {
+            let meta = st.db.lock().unwrap().background_video();
+            let Some(meta) = meta else {
+                return Ok(Value::Null);
+            };
+            let id = s(&meta, "id");
+            let raw_path = s(&meta, "path");
+            let name = s(&meta, "name");
+            if id.is_empty() || raw_path.is_empty() || name.is_empty() {
+                return Ok(Value::Null);
+            }
+            let file_path = std::path::Path::new(raw_path);
+            let fs_meta = std::fs::metadata(file_path).ok();
+            let exists = fs_meta
+                .as_ref()
+                .is_some_and(|m| m.is_file() && m.len() > 0 && m.len() <= 2_000_000_000);
+            let size = fs_meta
+                .as_ref()
+                .map(|m| m.len())
+                .unwrap_or_else(|| meta["size"].as_u64().unwrap_or(0));
+            let mime_str = s(&meta, "mime");
+            let mime = if mime_str.is_empty() {
+                media::video_mime(file_path)
+            } else {
+                mime_str
+            };
+            Ok(json!({
+                "id": id,
+                "name": name,
+                "size": size,
+                "mime": mime,
+                "url": format!("{}/bg-video/{id}", st.base),
+                "exists": exists
+            }))
+        }
         "exportLibrary" => {
             #[cfg(desktop)]
             {

@@ -7,8 +7,6 @@ import {
   RotateCcw,
   Search,
   Trash2,
-  Wifi,
-  WifiOff,
   X,
 } from 'lucide-react';
 import { useApp, formatTime } from '../stores/app';
@@ -17,8 +15,6 @@ import type { OfflineSummary, OfflineTrackInfo } from '../../shared/types';
 import Cover from '../components/glass/Cover';
 import { IconButton, OfflineIndicator, SourceBadge } from '../components/glass/controls';
 import { CollectionPlaybackActions } from '../components/library/CollectionPlaybackActions';
-
-type SourceFilter = 'all' | 'youtube' | 'link';
 
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -32,7 +28,6 @@ export function formatBytes(bytes: number): string {
 
 export default function Downloads() {
   const allTracks = useApp(s => s.data.tracks);
-  const integrations = useApp(s => s.integrations);
   const downloadItems = useApp(s => s.downloadItems);
   const downloadingIds = useApp(s => s.downloadingIds);
   const downloadsPaused = useApp(s => s.downloadsPaused);
@@ -41,11 +36,7 @@ export default function Downloads() {
   const playing = useApp(s => s.playing);
 
   const [query, setQuery] = useState('');
-  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [summary, setSummary] = useState<OfflineSummary | null>(null);
-  const [online, setOnline] = useState(() =>
-    typeof navigator !== 'undefined' ? navigator.onLine : true,
-  );
 
   const offlineTracks = useMemo(() => allTracks.filter(t => t.offline), [allTracks]);
 
@@ -56,18 +47,6 @@ export default function Downloads() {
         .sort((a, b) => b.updatedAt - a.updatedAt),
     [downloadItems],
   );
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const onOnline = () => setOnline(true);
-    const onOffline = () => setOnline(false);
-    window.addEventListener('online', onOnline);
-    window.addEventListener('offline', onOffline);
-    return () => {
-      window.removeEventListener('online', onOnline);
-      window.removeEventListener('offline', onOffline);
-    };
-  }, []);
 
   useEffect(() => {
     let active = true;
@@ -95,15 +74,12 @@ export default function Downloads() {
 
   const filteredOffline = useMemo(() => {
     const q = query.trim().toLocaleLowerCase('pt-BR');
-    return offlineTracks.filter(t => {
-      if (sourceFilter !== 'all' && t.source !== sourceFilter) return false;
-      if (!q) return true;
-      return `${t.title} ${t.artist} ${t.album || ''}`.toLocaleLowerCase('pt-BR').includes(q);
-    });
-  }, [offlineTracks, sourceFilter, query]);
+    if (!q) return offlineTracks;
+    return offlineTracks.filter(t =>
+      `${t.title} ${t.artist} ${t.album || ''}`.toLocaleLowerCase('pt-BR').includes(q),
+    );
+  }, [offlineTracks, query]);
 
-  const totalBytes = summary?.totalBytes ?? integrations?.offlineBytes ?? 0;
-  const totalCount = summary?.totalTracks ?? offlineTracks.length;
   const activeHere =
     !!current && queueContext === 'downloads' && filteredOffline.some(t => t.id === current.id);
   const canPauseAny = inProgressItems.some(i => i.status === 'downloading' || i.status === 'queued');
@@ -118,31 +94,13 @@ export default function Downloads() {
       <div className="page-heading downloads-heading">
         <div className="heading-title-group">
           <h1>Downloads</h1>
-          <span className="heading-count">
-            {totalCount} {totalCount === 1 ? 'faixa offline' : 'faixas offline'} ·{' '}
-            {formatBytes(totalBytes)}
-          </span>
-        </div>
-        <div
-          className={`downloads-status-pill ${online ? 'is-online' : 'is-offline'}`}
-          role="status"
-          aria-label={online ? 'Conectado à internet' : 'Modo offline ativo'}
-        >
-          {online ? <Wifi size={14} /> : <WifiOff size={14} />}
-          <span>{online ? 'Online · Reprodução offline pronta' : 'Sem internet · Tocando cache local'}</span>
         </div>
       </div>
 
       <section className="downloads-summary-card" aria-label="Armazenamento offline">
         <div className="downloads-summary-info">
           <HardDrive size={18} />
-          <div>
-            <strong>Armazenamento local</strong>
-            <small>
-              {totalCount} música(s) salva(s) neste dispositivo ocupando {formatBytes(totalBytes)}.
-              Excluir arquivos locais não remove as faixas da sua biblioteca.
-            </small>
-          </div>
+          <strong>Armazenamento local</strong>
         </div>
         {offlineTracks.length > 0 && (
           <button
@@ -282,32 +240,12 @@ export default function Downloads() {
             playing={playing}
             contextId="downloads"
           />
-          <div className="pills" role="group" aria-label="Filtrar downloads por origem">
-            {(
-              [
-                ['all', 'Todas'],
-                ['youtube', 'YouTube'],
-                ['link', 'Links'],
-              ] as const
-            ).map(([id, label]) => (
-              <button
-                key={id}
-                type="button"
-                className={sourceFilter === id ? 'selected' : ''}
-                aria-pressed={sourceFilter === id}
-                onClick={() => setSourceFilter(id)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
         </div>
 
         <label className="library-search">
           <Search size={14} />
           <input
             aria-label="Filtrar downloads"
-            placeholder="Filtrar downloads"
             value={query}
             onChange={e => setQuery(e.target.value)}
           />
@@ -322,11 +260,7 @@ export default function Downloads() {
               ? 'Nenhum download offline ainda'
               : 'Nenhum resultado encontrado'}
           </h3>
-          <p>
-            {offlineTracks.length === 0
-              ? 'Use "Baixar para ouvir offline" no menu de qualquer faixa ou playlist.'
-              : 'Tente outro termo de busca ou filtro.'}
-          </p>
+          {offlineTracks.length > 0 && <p>Tente outro termo de busca.</p>}
         </div>
       ) : (
         <div className="downloads-list" role="list" aria-label="Músicas disponíveis offline">

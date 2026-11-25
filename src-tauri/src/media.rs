@@ -186,6 +186,41 @@ fn mime(path: &Path) -> &'static str {
         _ => "application/octet-stream",
     }
 }
+pub fn video_mime(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase()
+        .as_str()
+    {
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "mkv" => "video/x-matroska",
+        "ogv" | "ogg" => "video/ogg",
+        _ => "application/octet-stream",
+    }
+}
+pub fn resolve_background_video_path(db: &Library, id: &str) -> Option<PathBuf> {
+    if id.is_empty() {
+        return None;
+    }
+    let meta = db.background_video()?;
+    if db::s(&meta, "id") != id {
+        return None;
+    }
+    let raw_path = db::s(&meta, "path");
+    if raw_path.is_empty() || raw_path.contains('\0') {
+        return None;
+    }
+    let path = PathBuf::from(raw_path);
+    let fs_meta = fs::metadata(&path).ok()?;
+    if !fs_meta.is_file() || fs_meta.len() == 0 || fs_meta.len() > 2_000_000_000 {
+        return None;
+    }
+    Some(path)
+}
 pub fn clear_covers(data: &Path) {
     let path = data.join("cover-cache");
     if let Ok(entries) = fs::read_dir(path) {
@@ -354,6 +389,7 @@ fn handle(req: Request, db: &Arc<Mutex<Library>>, data: &Path, token: &str, host
         return;
     }
     let path_is_cover = path == "cover" || path.starts_with("covers/");
+    let path_is_bg_video = path.starts_with("bg-video/");
     let file = if let Some(id)=path.strip_prefix("offline/"){
       let decoded=url::form_urlencoded::parse(format!("id={id}").as_bytes()).next().map(|(_,v)|v.into_owned()).unwrap_or_default();
       db.lock().unwrap().offline_path(&decoded).filter(|(p,_)|crate::offline::owned_path(data,p)).map(|(p,_)|PathBuf::from(p))
@@ -448,6 +484,12 @@ fn handle(req: Request, db: &Arc<Mutex<Library>>, data: &Path, token: &str, host
                 None
             }
         }
+    } else if let Some(id) = path.strip_prefix("bg-video/") {
+        let decoded = url::form_urlencoded::parse(format!("id={id}").as_bytes())
+            .next()
+            .map(|(_, v)| v.into_owned())
+            .unwrap_or_default();
+        resolve_background_video_path(&db.lock().unwrap(), &decoded)
     } else {
         None
     };
@@ -473,6 +515,8 @@ fn handle(req: Request, db: &Arc<Mutex<Library>>, data: &Path, token: &str, host
     };
     let content_type = if path_is_cover {
         sniff_image_mime(&mut file, &path)
+    } else if path_is_bg_video {
+        video_mime(&path)
     } else {
         mime(&path)
     };
@@ -536,5 +580,87 @@ mod tests {
         // Advancing to a new track dispatches and updates slot
         gate.on_track_metadata("youtube:track2");
         assert!(gate.should_dispatch("background", false, "youtube:track2"));
+    }
+
+    #[test]
+    fn video_mime_maps_video_extensions_without_altering_audio_mime() {
+        assert_eq!(video_mime(Path::new("loop.mp4")), "video/mp4");
+        assert_eq!(video_mime(Path::new("loop.M4V")), "video/mp4");
+        assert_eq!(video_mime(Path::new("loop.webm")), "video/webm");
+        assert_eq!(video_mime(Path::new("loop.mov")), "video/quicktime");
+        assert_eq!(video_mime(Path::new("loop.mkv")), "video/x-matroska");
+        assert_eq!(video_mime(Path::new("loop.ogv")), "video/ogg");
+        assert_eq!(video_mime(Path::new("loop.ogg")), "video/ogg");
+        assert_eq!(video_mime(Path::new("loop.unknown")), "application/octet-stream");
+        assert_eq!(video_mime(Path::new("no_extension")), "application/octet-stream");
+
+        // Audio mime() must remain untouched
+        assert_eq!(mime(Path::new("track.mp4")), "audio/mp4");
+        assert_eq!(mime(Path::new("track.webm")), "audio/webm");
+        assert_eq!(mime(Path::new("track.ogg")), "audio/ogg");
+    }
+
+    #[test]
+    fn bg_video_resolution_checks_id_match_and_valid_file() {
+        let db = Library::open(Path::new(":memory:")).unwrap();
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "lh-bg-video-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&tmp_dir).unwrap();
+        let file_path = tmp_dir.join("backdrop.mp4");
+        fs::write(&file_path, b"ftypisom-mock-video-bytes").unwrap();
+
+        let id = "bgvid-1234abcd";
+        db.set_background_video(&json!({
+            "id": id,
+            "path": file_path.to_string_lossy(),
+            "name": "backdrop.mp4",
+            "size": 25,
+            "mime": "video/mp4"
+        }))
+        .unwrap();
+
+        assert_eq!(resolve_background_video_path(&db, id), Some(file_path.clone()));
+        assert_eq!(resolve_background_video_path(&db, "wrong-id"), None);
+        assert_eq!(resolve_background_video_path(&db, ""), None);
+
+        // Directory path must be rejected (not a regular file)
+        db.set_background_video(&json!({
+            "id": "dir-id",
+            "path": tmp_dir.to_string_lossy(),
+            "name": "dir",
+            "size": 0,
+            "mime": "application/octet-stream"
+        }))
+        .unwrap();
+        assert_eq!(resolve_background_video_path(&db, "dir-id"), None);
+
+        // Empty file must be rejected
+        let empty_path = tmp_dir.join("empty.mp4");
+        fs::write(&empty_path, b"").unwrap();
+        db.set_background_video(&json!({
+            "id": "empty-id",
+            "path": empty_path.to_string_lossy(),
+            "name": "empty.mp4",
+            "size": 0,
+            "mime": "video/mp4"
+        }))
+        .unwrap();
+        assert_eq!(resolve_background_video_path(&db, "empty-id"), None);
+
+        // Deleted file must be rejected
+        let _ = fs::remove_file(&file_path);
+        db.set_background_video(&json!({
+            "id": id,
+            "path": file_path.to_string_lossy(),
+            "name": "backdrop.mp4",
+            "size": 25,
+            "mime": "video/mp4"
+        }))
+        .unwrap();
+        assert_eq!(resolve_background_video_path(&db, id), None);
+
+        let _ = fs::remove_dir_all(&tmp_dir);
     }
 }

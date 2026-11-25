@@ -36,14 +36,8 @@
 .downloads-page{display:flex;flex-direction:column;gap:16px}
 .downloads-heading{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px}
 .downloads-heading .heading-title-group{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
-.downloads-heading .heading-count{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
-.downloads-status-pill{display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border-radius:999px;font-size:12px;border:1px solid var(--line);background:var(--surface);color:var(--text)}
-.downloads-status-pill.is-online{background:rgba(48,185,120,.14);border-color:rgba(68,205,140,.35)}
-.downloads-status-pill.is-offline{background:rgba(225,165,55,.15);border-color:rgba(235,178,72,.38)}
 .downloads-summary-card{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px;padding:14px 16px;border-radius:16px;background:var(--surface);border:1px solid var(--line)}
 .downloads-summary-info{display:flex;align-items:center;gap:12px;min-width:0;flex:1}
-.downloads-summary-info>div{display:flex;flex-direction:column;gap:3px;min-width:0}
-.downloads-summary-info small{font-size:12px;line-height:1.4;color:var(--muted)}
 .downloads-queue-section{display:flex;flex-direction:column;gap:10px;padding:14px 16px;border-radius:16px;background:var(--surface);border:1px solid var(--line)}
 .downloads-queue-section .section-heading{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px}
 .downloads-queue-bulk{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -71,8 +65,6 @@
 .download-row .track-subline>span:last-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .download-row-meta{display:inline-flex;align-items:center;gap:10px;color:var(--muted);font-size:12px;flex:none}
 .download-row-size{font-variant-numeric:tabular-nums}
-[data-theme=light] .downloads-status-pill.is-online{background:rgba(36,158,96,.12);border-color:rgba(36,158,96,.32);color:#144d2e}
-[data-theme=light] .downloads-status-pill.is-offline{background:rgba(196,132,24,.14);border-color:rgba(196,132,24,.36);color:#634105}
 [data-theme=light] .download-progress-fill.is-failed{background:#c53b4a}
 @media(max-width:900px){
   .download-row{grid-template-columns:minmax(0,1fr) auto;row-gap:8px}

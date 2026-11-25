@@ -153,6 +153,18 @@ export interface AudioReactiveFrame {
   energy: number;
 }
 
+export interface AudioSpectrumSnapshot {
+  readonly freqDb: Float32Array;
+  readonly timeDomain: Float32Array | null;
+  readonly leftFreqDb: Float32Array | null;
+  readonly rightFreqDb: Float32Array | null;
+  readonly sampleRate: number;
+  readonly fftSize: number;
+  readonly stereoFftSize: number;
+  readonly minDecibels: number;
+  readonly maxDecibels: number;
+}
+
 /**
  * Computes dual-band normalized bass (24–135 Hz) and treble/highs (3.5–16 kHz) energy (0..1)
  * from FFT byte bins (0..255), keeping midrange/vocals separated so Beat Pulse reacts crisply
@@ -269,6 +281,14 @@ export function getAudioReactiveFrame(): AudioReactiveFrame {
   return activeAudioGraph.sampleFrequencyEnergy();
 }
 
+export function sampleAudioSpectrum(): AudioSpectrumSnapshot | null {
+  if (!activeAudioGraph) return null;
+  return activeAudioGraph.sampleSpectrum();
+}
+
+const ANALYSER_MIN_DB = -92;
+const ANALYSER_MAX_DB = -10;
+
 export class AudioGraph {
   readonly context: OutputContext;
   readonly decks = new Map<HTMLAudioElement, GainNode>();
@@ -277,6 +297,24 @@ export class AudioGraph {
   private limiter: DynamicsCompressorNode;
   private analyser: AnalyserNode | null = null;
   private freqBins: Uint8Array<ArrayBuffer> | null = null;
+  private freqDbBins: Float32Array<ArrayBuffer> | null = null;
+  private timeDomainBins: Float32Array<ArrayBuffer> | null = null;
+  private splitter: ChannelSplitterNode | null = null;
+  private leftAnalyser: AnalyserNode | null = null;
+  private rightAnalyser: AnalyserNode | null = null;
+  private leftFreqDbBins: Float32Array<ArrayBuffer> | null = null;
+  private rightFreqDbBins: Float32Array<ArrayBuffer> | null = null;
+  private spectrumSnapshot: {
+    freqDb: Float32Array<ArrayBuffer>;
+    timeDomain: Float32Array<ArrayBuffer> | null;
+    leftFreqDb: Float32Array<ArrayBuffer> | null;
+    rightFreqDb: Float32Array<ArrayBuffer> | null;
+    sampleRate: number;
+    fftSize: number;
+    stereoFftSize: number;
+    minDecibels: number;
+    maxDecibels: number;
+  } | null = null;
   private limited = false;
   private silent = false;
   private sink = 'default';
@@ -303,18 +341,67 @@ export class AudioGraph {
     if (typeof this.context.createAnalyser === 'function') {
       try {
         const analyser = this.context.createAnalyser();
-        // 2048 FFT (~23.4 Hz/bin at 48 kHz) with -86 dB floor captures both deep 24–135 Hz kicks and 3.5–16 kHz highs cleanly
+        // 2048 FFT (~23.4 Hz/bin at 48 kHz), unsmoothed raw frames for Pulse 2.0 temporal HPSS & transient DSP
         analyser.fftSize = 2048;
-        analyser.smoothingTimeConstant = 0.28;
-        analyser.minDecibels = -86;
-        analyser.maxDecibels = -12;
-        // Tap PRE-volume (after EQ, before boost) so bass analysis works identically at any volume
-        const preVolumeNode = this.filters[this.filters.length - 1] || this.boost;
-        preVolumeNode.connect(analyser);
+        analyser.smoothingTimeConstant = 0;
+        analyser.minDecibels = ANALYSER_MIN_DB;
+        analyser.maxDecibels = ANALYSER_MAX_DB;
+        const binCount = Math.max(1, analyser.frequencyBinCount || (analyser.fftSize >> 1) || 1024);
+        const fftLen = Math.max(32, analyser.fftSize || 2048);
         this.analyser = analyser;
-        this.freqBins = new Uint8Array(analyser.frequencyBinCount);
+        this.freqBins = new Uint8Array(binCount);
+        this.freqDbBins = new Float32Array(binCount);
+        this.timeDomainBins = new Float32Array(fftLen);
+        this.spectrumSnapshot = {
+          freqDb: this.freqDbBins,
+          timeDomain: null,
+          leftFreqDb: null,
+          rightFreqDb: null,
+          sampleRate: this.context.sampleRate || 48000,
+          fftSize: fftLen,
+          stereoFftSize: 0,
+          minDecibels: ANALYSER_MIN_DB,
+          maxDecibels: ANALYSER_MAX_DB,
+        };
       } catch {
         this.analyser = null;
+        this.freqBins = null;
+        this.freqDbBins = null;
+        this.timeDomainBins = null;
+        this.spectrumSnapshot = null;
+      }
+
+      if (this.analyser && typeof this.context.createChannelSplitter === 'function') {
+        try {
+          const splitter = this.context.createChannelSplitter(2);
+          const left = this.context.createAnalyser();
+          const right = this.context.createAnalyser();
+          left.fftSize = 512;
+          left.smoothingTimeConstant = 0;
+          left.minDecibels = ANALYSER_MIN_DB;
+          left.maxDecibels = ANALYSER_MAX_DB;
+          right.fftSize = 512;
+          right.smoothingTimeConstant = 0;
+          right.minDecibels = ANALYSER_MIN_DB;
+          right.maxDecibels = ANALYSER_MAX_DB;
+          splitter.connect(left, 0);
+          splitter.connect(right, 1);
+          const stereoBins = Math.max(1, left.frequencyBinCount || 256);
+          this.splitter = splitter;
+          this.leftAnalyser = left;
+          this.rightAnalyser = right;
+          this.leftFreqDbBins = new Float32Array(stereoBins);
+          this.rightFreqDbBins = new Float32Array(stereoBins);
+          if (this.spectrumSnapshot) {
+            this.spectrumSnapshot.stereoFftSize = left.fftSize || 512;
+          }
+        } catch {
+          this.splitter = null;
+          this.leftAnalyser = null;
+          this.rightAnalyser = null;
+          this.leftFreqDbBins = null;
+          this.rightFreqDbBins = null;
+        }
       }
     }
     activeAudioGraph = this;
@@ -328,11 +415,74 @@ export class AudioGraph {
     return computeBassModulation(this.freqBins, this.context.sampleRate, this.analyser.fftSize);
   }
 
+  sampleSpectrum(): AudioSpectrumSnapshot | null {
+    if (
+      !this.analyser ||
+      !this.freqDbBins ||
+      !this.spectrumSnapshot ||
+      this.silent ||
+      this.context.state !== 'running'
+    ) {
+      return null;
+    }
+
+    if (typeof this.analyser.getFloatFrequencyData === 'function') {
+      this.analyser.getFloatFrequencyData(this.freqDbBins);
+    } else if (typeof this.analyser.getByteFrequencyData === 'function' && this.freqBins) {
+      this.analyser.getByteFrequencyData(this.freqBins);
+      const span = ANALYSER_MAX_DB - ANALYSER_MIN_DB;
+      for (let i = 0; i < this.freqDbBins.length; i++) {
+        this.freqDbBins[i] = ANALYSER_MIN_DB + ((this.freqBins[i] || 0) / 255) * span;
+      }
+    } else {
+      return null;
+    }
+
+    if (this.timeDomainBins && typeof this.analyser.getFloatTimeDomainData === 'function') {
+      this.analyser.getFloatTimeDomainData(this.timeDomainBins);
+      this.spectrumSnapshot.timeDomain = this.timeDomainBins;
+    } else {
+      this.spectrumSnapshot.timeDomain = null;
+    }
+
+    if (
+      this.leftAnalyser &&
+      this.rightAnalyser &&
+      this.leftFreqDbBins &&
+      this.rightFreqDbBins &&
+      typeof this.leftAnalyser.getFloatFrequencyData === 'function' &&
+      typeof this.rightAnalyser.getFloatFrequencyData === 'function'
+    ) {
+      this.leftAnalyser.getFloatFrequencyData(this.leftFreqDbBins);
+      this.rightAnalyser.getFloatFrequencyData(this.rightFreqDbBins);
+      this.spectrumSnapshot.leftFreqDb = this.leftFreqDbBins;
+      this.spectrumSnapshot.rightFreqDb = this.rightFreqDbBins;
+    } else {
+      this.spectrumSnapshot.leftFreqDb = null;
+      this.spectrumSnapshot.rightFreqDb = null;
+    }
+
+    this.spectrumSnapshot.sampleRate = this.context.sampleRate || 48000;
+    this.spectrumSnapshot.fftSize = this.analyser.fftSize || 2048;
+    return this.spectrumSnapshot;
+  }
+
   attach(element: HTMLAudioElement) {
     if (this.decks.has(element)) return;
     const gain = this.context.createGain();
     this.context.createMediaElementSource(element).connect(gain);
     gain.connect(this.filters[0]);
+    // Tap pre-EQ & pre-volume directly from deck gain so user EQ/volume never distort or starve DSP
+    if (this.analyser) {
+      try {
+        gain.connect(this.analyser);
+      } catch {}
+    }
+    if (this.splitter) {
+      try {
+        gain.connect(this.splitter);
+      } catch {}
+    }
     this.decks.set(element, gain);
   }
 

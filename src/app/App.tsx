@@ -30,6 +30,7 @@ import { parseLiquidHubLink } from '../lib/playlist';
 import { getCurrent, onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import Lyrics from '../components/player/Lyrics';
 import Welcome from '../components/glass/Welcome';
+import { BackgroundVideoLayer } from '../components/glass/BackgroundVideoLayer';
 import { BeatPulseOverlay } from '../components/glass/BeatPulseOverlay';
 import { OpticalEngine } from '../components/glass/v3/OpticalEngine';
 import GlassLaboratory from '../components/glass/v3/GlassLaboratory';
@@ -318,6 +319,7 @@ export default function App() {
       <GlassWindow
         className={`${mini ? 'mini' : ''} ${external ? 'has-external' : ''} ${expanded ? 'is-expanded' : ''} ${collapsed ? 'sidebar-collapsed' : ''} ${sideOpen ? 'side-open' : ''}`}
       >
+        <BackgroundVideoLayer />
         <BeatPulseOverlay />
         <OpticalEngine>
           {!isAndroid && (

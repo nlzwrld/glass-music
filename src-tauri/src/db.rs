@@ -344,6 +344,79 @@ pub fn validate_prefs(p: &Value) -> Result<()> {
         let img=s(a,"customImage");
         if img.len()>2_800_000 || (!img.is_empty() && !["data:image/jpeg;base64,","data:image/png;base64,","data:image/webp;base64,"].iter().any(|prefix|img.strip_prefix(prefix).is_some_and(|data|data.bytes().all(|c|c.is_ascii_alphanumeric()||b"+/=".contains(&c))))) {return Err("Imagem de fundo inválida.".into());}
     }
+    if let Some(pc) = p.get("pulseConfig") {
+        let Some(obj) = pc.as_object() else {
+            return Err("Configuração de Pulse inválida.".into());
+        };
+        const ALLOWED_PC: &[&str] = &[
+            "bass",
+            "oneShot",
+            "sequentialBass",
+            "percussion",
+            "vocalSuppression",
+            "sensitivity",
+        ];
+        if obj.keys().any(|k| !ALLOWED_PC.contains(&k.as_str())) {
+            return Err("Configuração de Pulse inválida.".into());
+        }
+        for key in [
+            "bass",
+            "oneShot",
+            "sequentialBass",
+            "percussion",
+            "vocalSuppression",
+        ] {
+            if !pc[key].is_boolean() {
+                return Err("Configuração de Pulse inválida.".into());
+            }
+        }
+        if !pc["sensitivity"]
+            .as_f64()
+            .is_some_and(|n| n.is_finite() && (0.25..=2.0).contains(&n))
+        {
+            return Err("Sensibilidade do Pulse fora dos limites.".into());
+        }
+    }
+    if let Some(bv) = p.get("backgroundVideo") {
+        let Some(obj) = bv.as_object() else {
+            return Err("Configuração de vídeo de fundo inválida.".into());
+        };
+        const ALLOWED_BV: &[&str] = &[
+            "enabled",
+            "beatSync",
+            "syncIntensity",
+            "minSpeed",
+            "maxSpeed",
+            "loop",
+        ];
+        if obj.keys().any(|k| !ALLOWED_BV.contains(&k.as_str())) {
+            return Err("Configuração de vídeo de fundo inválida.".into());
+        }
+        for key in ["enabled", "beatSync", "loop"] {
+            if !bv[key].is_boolean() {
+                return Err("Configuração de vídeo de fundo inválida.".into());
+            }
+        }
+        let Some(sync_intensity) = bv["syncIntensity"].as_f64() else {
+            return Err("Intensidade de sincronização inválida.".into());
+        };
+        let Some(min_speed) = bv["minSpeed"].as_f64() else {
+            return Err("Velocidade mínima inválida.".into());
+        };
+        let Some(max_speed) = bv["maxSpeed"].as_f64() else {
+            return Err("Velocidade máxima inválida.".into());
+        };
+        if !sync_intensity.is_finite()
+            || !(0.0..=1.0).contains(&sync_intensity)
+            || !min_speed.is_finite()
+            || !(0.25..=1.5).contains(&min_speed)
+            || !max_speed.is_finite()
+            || !(1.0..=3.0).contains(&max_speed)
+            || min_speed > max_speed
+        {
+            return Err("Limites de velocidade do vídeo inválidos.".into());
+        }
+    }
     Ok(())
 }
 pub struct Library {
@@ -528,6 +601,39 @@ impl Library {
     pub fn set_pref(&self, p: &Value) -> Result<()> {
         validate_prefs(p)?;
         self.db.execute("INSERT INTO settings VALUES('preferences',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[p.to_string()]).map_err(|e|e.to_string())?;
+        Ok(())
+    }
+    pub fn background_video(&self) -> Option<Value> {
+        self.db
+            .query_row(
+                "SELECT value FROM settings WHERE key='background-video-meta'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .filter(|v| v.is_object())
+    }
+    pub fn set_background_video(&self, meta: &Value) -> Result<()> {
+        if !meta.is_object()
+            || s(meta, "id").is_empty()
+            || s(meta, "path").is_empty()
+            || s(meta, "name").is_empty()
+        {
+            return Err("Metadados de vídeo de fundo inválidos.".into());
+        }
+        self.db
+            .execute(
+                "INSERT OR REPLACE INTO settings VALUES('background-video-meta', ?)",
+                [meta.to_string()],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    pub fn clear_background_video(&self) -> Result<()> {
+        self.db
+            .execute("DELETE FROM settings WHERE key='background-video-meta'", [])
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
     pub fn jam_client_id(&self) -> String {
@@ -1551,5 +1657,52 @@ mod tests {
         assert!(sp_refreshed > stale_ts);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validates_pulse_and_background_video_prefs_and_persists_video_meta() {
+        let db = Library::open(Path::new(":memory:")).unwrap();
+        let mut prefs = defaults();
+        prefs["pulseConfig"] = json!({
+            "bass": true,
+            "oneShot": true,
+            "sequentialBass": true,
+            "percussion": false,
+            "vocalSuppression": true,
+            "sensitivity": 1.25
+        });
+        prefs["backgroundVideo"] = json!({
+            "enabled": true,
+            "beatSync": true,
+            "syncIntensity": 0.75,
+            "minSpeed": 0.8,
+            "maxSpeed": 1.85,
+            "loop": true
+        });
+        validate_prefs(&prefs).unwrap();
+        db.set_pref(&prefs).unwrap();
+        assert_eq!(db.pref()["backgroundVideo"]["maxSpeed"], 1.85);
+
+        let mut bad_range = prefs.clone();
+        bad_range["backgroundVideo"]["minSpeed"] = json!(1.4);
+        bad_range["backgroundVideo"]["maxSpeed"] = json!(1.2);
+        assert!(validate_prefs(&bad_range).is_err());
+
+        let mut bad_extra = prefs.clone();
+        bad_extra["pulseConfig"]["unknown"] = json!(true);
+        assert!(validate_prefs(&bad_extra).is_err());
+
+        assert!(db.background_video().is_none());
+        let meta = json!({
+            "id": "vid_abc123",
+            "path": "C:/Videos/loop.mp4",
+            "name": "loop.mp4",
+            "size": 1048576,
+            "mime": "video/mp4"
+        });
+        db.set_background_video(&meta).unwrap();
+        assert_eq!(db.background_video().unwrap()["id"], "vid_abc123");
+        db.clear_background_video().unwrap();
+        assert!(db.background_video().is_none());
     }
 }
