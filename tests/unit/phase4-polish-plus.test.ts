@@ -497,6 +497,7 @@ describe('Phase 4 — Transições Spotify, Liquid Glass, Reorganização das Co
     const trackListSrc = readFileSync(join(ROOT, 'src/components/library/TrackList.tsx'), 'utf8');
     expect(trackListSrc).toContain('displayAlbumTitle');
     expect(trackListSrc).not.toContain('compact={!!track.album}');
+    expect(trackListSrc).not.toContain('Ir para a música tocando agora');
 
     const accountSrc = readFileSync(
       join(ROOT, 'src/components/library/AccountConnections.tsx'),

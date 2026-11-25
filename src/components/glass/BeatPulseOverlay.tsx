@@ -13,12 +13,19 @@ export interface BeatDetectorState {
   phase: number;
   cooldownMs: number;
   onsetTrigger: number;
+  trebleBaseline: number;
+  treblePeak: number;
+  treble: number;
+  trebleImpulse: number;
+  trebleFlash: number;
+  trebleCooldownMs: number;
+  trebleOnsetTrigger: number;
 }
 
 export function createBeatDetectorState(): BeatDetectorState {
   return {
     baseline: 0.08,
-    peakEnvelope: 0.45,
+    peakEnvelope: 0.44,
     bass: 0,
     impulse: 0,
     flash: 0,
@@ -26,86 +33,135 @@ export function createBeatDetectorState(): BeatDetectorState {
     phase: 0,
     cooldownMs: 0,
     onsetTrigger: 0,
+    trebleBaseline: 0.08,
+    treblePeak: 0.4,
+    treble: 0,
+    trebleImpulse: 0,
+    trebleFlash: 0,
+    trebleCooldownMs: 0,
+    trebleOnsetTrigger: 0,
   };
 }
 
 /**
- * Strict bass-only onset & sub-bass envelope detector (pure & unit-testable).
- * - Triggers exclusively on genuine sub-bass / kick transients (~26–112 Hz).
- * - Ignores midrange/vocal energy so singing, guitars, snares and hi-hats never false-pulse.
- * - Fast attack (~14ms) and clean release (~185ms) return calmly to rest between kicks.
+ * Dual-band bass (24–135 Hz) + treble/highs (3.5–16 kHz) onset & fluid motion detector.
+ * - Triggers deep pulses on bass kicks / 808 sub-bass without being suppressed by dense mixes.
+ * - Triggers crisp luminous pulses on sharp highs (hi-hats, cymbals, bright notes, claps).
+ * - Ignores flat midrange/vocal energy while keeping smooth ambient motion flowing in the backdrop.
  */
 export function stepBeatDetector(
   state: BeatDetectorState,
-  sample: Pick<AudioReactiveFrame, 'bass' | 'mid' | 'energy'> & { subBass?: number },
+  sample: Pick<AudioReactiveFrame, 'bass' | 'mid' | 'energy'> & {
+    subBass?: number;
+    treble?: number;
+  },
   dtMs: number,
 ): BeatDetectorState {
   const dt = Math.max(1, Math.min(100, Number.isFinite(dtMs) ? dtMs : 16.6));
   const rawBass = Math.max(0, Math.min(1, sample.bass || 0));
   const rawSub = Math.max(0, Math.min(1, sample.subBass ?? rawBass));
-  const lowDrive = rawSub * 0.62 + rawBass * 0.38;
+  const rawTreble = Math.max(0, Math.min(1, sample.treble ?? 0));
+  const lowDrive = rawSub * 0.56 + rawBass * 0.44;
 
-  // Bounded peak tracker (never over-amplifies quiet midrange leakage)
-  const peakTau = lowDrive > state.peakEnvelope ? 80 : 2200;
+  // --- BAND 1: BASS / SUB-BASS (24–135 Hz) ---
+  const peakTau = lowDrive > state.peakEnvelope ? 85 : 2200;
   const nextPeak = Math.max(
-    0.58,
+    0.42,
     state.peakEnvelope + (lowDrive - state.peakEnvelope) * (1 - Math.exp(-dt / peakTau)),
   );
   const normBass = Math.min(1, rawBass / nextPeak);
   const normSub = Math.min(1, rawSub / nextPeak);
 
-  // Rolling low-end baseline for transient kick flux detection
-  const baseTau = lowDrive > state.baseline ? 210 : 420;
+  const baseTau = lowDrive > state.baseline ? 220 : 440;
   const nextBaseline = Math.max(
-    0.06,
+    0.04,
     state.baseline + (lowDrive - state.baseline) * (1 - Math.exp(-dt / baseTau)),
   );
 
-  // Sub-bass envelope (active only above strict 0.22 threshold)
-  const bassTarget = rawSub > 0.22 ? normSub : 0;
-  const bassTau = bassTarget > state.bass ? 24 : 165;
+  const bassTarget = rawSub > 0.14 ? normSub : 0;
+  const bassTau = bassTarget > state.bass ? 24 : 185;
   let nextBass = state.bass + (bassTarget - state.bass) * (1 - Math.exp(-dt / bassTau));
   if (nextBass < 0.004) nextBass = 0;
 
-  // Crisp decay for kick impulse
-  let nextImpulse = state.impulse * Math.exp(-dt / 170);
+  let nextImpulse = state.impulse * Math.exp(-dt / 210);
   let cooldownOut = Math.max(0, state.cooldownMs - dt);
   let onsetTrigger = 0;
 
-  const flux = lowDrive - state.baseline * 1.18 - 0.06;
-  if (rawBass > 0.28 && flux > 0.065 && cooldownOut <= 0) {
-    const hit = Math.min(1, 0.46 + flux * 1.35 + normBass * 0.28);
-    if (hit > nextImpulse) {
-      nextImpulse = hit;
-    }
+  const bassFlux = lowDrive - state.baseline * 1.12 - 0.028;
+  if (rawBass > 0.18 && bassFlux > 0.032 && cooldownOut <= 0) {
+    const hit = Math.min(1, 0.48 + bassFlux * 1.65 + normBass * 0.34);
+    if (hit > nextImpulse) nextImpulse = hit;
     onsetTrigger = hit;
-    cooldownOut = 125;
-  } else if (rawSub > 0.72 && state.bass < 0.42 && cooldownOut <= 0) {
-    const hit = Math.min(1, normSub * 0.88);
-    if (hit > nextImpulse) {
-      nextImpulse = hit;
-    }
-    onsetTrigger = hit * 0.82;
-    cooldownOut = 140;
+    cooldownOut = 92;
+  } else if (rawBass > 0.56 && normBass > 0.78 && cooldownOut <= 0) {
+    const hit = Math.min(1, normBass * 0.92);
+    if (hit > nextImpulse) nextImpulse = hit;
+    onsetTrigger = hit * 0.85;
+    cooldownOut = 108;
   }
-
   if (nextImpulse < 0.004) nextImpulse = 0;
 
-  // Punchy attack (~14ms) and clean decay (~185ms) driven strictly by bass kicks
-  const sustainFloor = nextBass > 0.42 ? (nextBass - 0.42) * 0.34 : 0;
+  const sustainFloor = nextBass > 0.22 ? (nextBass - 0.22) * 0.45 : 0;
   const flashTarget = Math.max(nextImpulse, sustainFloor);
-  const flashTau = flashTarget > state.flash ? 14 : 185;
+  const flashTau = flashTarget > state.flash ? 14 : 215;
   let nextFlash = state.flash + (flashTarget - state.flash) * (1 - Math.exp(-dt / flashTau));
   if (nextFlash < 0.004) nextFlash = 0;
 
-  // Atmospheric glow tracks ONLY bass & kick flash (never midrange energy)
-  const targetGlow = Math.min(1, nextBass * 0.52 + nextFlash * 0.48);
-  const glowTau = targetGlow > state.glow ? 42 : 210;
+  // --- BAND 2: TREBLE / HIGHS (3.5–16 kHz) ---
+  const tPeakTau = rawTreble > state.treblePeak ? 75 : 2000;
+  const nextTreblePeak = Math.max(
+    0.38,
+    state.treblePeak + (rawTreble - state.treblePeak) * (1 - Math.exp(-dt / tPeakTau)),
+  );
+  const normTreble = Math.min(1, rawTreble / nextTreblePeak);
+
+  const tBaseTau = rawTreble > state.trebleBaseline ? 180 : 380;
+  const nextTrebleBaseline = Math.max(
+    0.04,
+    state.trebleBaseline + (rawTreble - state.trebleBaseline) * (1 - Math.exp(-dt / tBaseTau)),
+  );
+
+  const trebleTarget = rawTreble > 0.14 ? normTreble : 0;
+  const trebleTau = trebleTarget > state.treble ? 16 : 120;
+  let nextTreble = state.treble + (trebleTarget - state.treble) * (1 - Math.exp(-dt / trebleTau));
+  if (nextTreble < 0.004) nextTreble = 0;
+
+  let nextTrebleImpulse = state.trebleImpulse * Math.exp(-dt / 135);
+  let trebleCooldownOut = Math.max(0, state.trebleCooldownMs - dt);
+  let trebleOnsetTrigger = 0;
+
+  const trebleFlux = rawTreble - state.trebleBaseline * 1.14 - 0.03;
+  if (rawTreble > 0.16 && trebleFlux > 0.036 && trebleCooldownOut <= 0) {
+    const hit = Math.min(1, 0.44 + trebleFlux * 1.7 + normTreble * 0.3);
+    if (hit > nextTrebleImpulse) nextTrebleImpulse = hit;
+    trebleOnsetTrigger = hit;
+    trebleCooldownOut = 80;
+  } else if (rawTreble > 0.54 && normTreble > 0.78 && trebleCooldownOut <= 0) {
+    const hit = Math.min(1, normTreble * 0.85);
+    if (hit > nextTrebleImpulse) nextTrebleImpulse = hit;
+    trebleOnsetTrigger = hit * 0.8;
+    trebleCooldownOut = 96;
+  }
+  if (nextTrebleImpulse < 0.004) nextTrebleImpulse = 0;
+
+  const trebleSustain = nextTreble > 0.24 ? (nextTreble - 0.24) * 0.4 : 0;
+  const trebleFlashTarget = Math.max(nextTrebleImpulse, trebleSustain);
+  const trebleFlashTau = trebleFlashTarget > state.trebleFlash ? 10 : 135;
+  let nextTrebleFlash =
+    state.trebleFlash + (trebleFlashTarget - state.trebleFlash) * (1 - Math.exp(-dt / trebleFlashTau));
+  if (nextTrebleFlash < 0.004) nextTrebleFlash = 0;
+
+  // Atmospheric glow tracks bass + treble combined (never muddy midrange vocals)
+  const targetGlow = Math.min(
+    1,
+    nextBass * 0.5 + nextFlash * 0.38 + nextTreble * 0.24 + nextTrebleFlash * 0.28,
+  );
+  const glowTau = targetGlow > state.glow ? 48 : 260;
   let nextGlow = state.glow + (targetGlow - state.glow) * (1 - Math.exp(-dt / glowTau));
   if (nextGlow < 0.004) nextGlow = 0;
 
-  // Calm phase when no bass is present; accelerates smoothly on real bass hits
-  const angularVelocity = 0.06 + nextBass * 1.05 + nextFlash * 1.75;
+  // Continuous fluid motion even between bass/treble hits, accelerating dynamically on drops & highs
+  const angularVelocity = 0.36 + nextBass * 1.3 + nextFlash * 1.9 + nextTrebleFlash * 0.95;
   const nextPhase = (state.phase + (dt / 1000) * angularVelocity) % (Math.PI * 200);
 
   return {
@@ -118,6 +174,13 @@ export function stepBeatDetector(
     phase: nextPhase,
     cooldownMs: cooldownOut,
     onsetTrigger,
+    trebleBaseline: nextTrebleBaseline,
+    treblePeak: nextTreblePeak,
+    treble: nextTreble,
+    trebleImpulse: nextTrebleImpulse,
+    trebleFlash: nextTrebleFlash,
+    trebleCooldownMs: trebleCooldownOut,
+    trebleOnsetTrigger,
   };
 }
 
@@ -136,6 +199,7 @@ interface PulsePalette {
 
 interface RippleSlot {
   active: boolean;
+  kind: 'bass' | 'treble';
   x: number;
   y: number;
   ageMs: number;
@@ -218,12 +282,12 @@ function hslToRgb(hDeg: number, s: number, l: number): RGB {
 
 function buildPulsePalette(accent: RGB): PulsePalette {
   const [h, s, l] = rgbToHsl(accent);
-  const richSat = Math.max(0.45, Math.min(0.95, s * 1.12));
+  const richSat = Math.max(0.48, Math.min(0.96, s * 1.15));
   return {
-    core: hslToRgb(h, richSat, Math.max(0.44, Math.min(0.62, l))),
-    bright: hslToRgb(h + 6, Math.min(1, richSat * 1.08), Math.min(0.76, l + 0.16)),
-    warmShift: hslToRgb(h + 20, Math.max(0.4, richSat * 0.94), Math.max(0.38, Math.min(0.56, l))),
-    coolShift: hslToRgb(h - 20, Math.max(0.4, richSat * 0.92), Math.max(0.36, Math.min(0.54, l - 0.04))),
+    core: hslToRgb(h, richSat, Math.max(0.45, Math.min(0.62, l))),
+    bright: hslToRgb(h + 8, Math.min(1, richSat * 1.08), Math.min(0.82, l + 0.22)),
+    warmShift: hslToRgb(h + 24, Math.max(0.44, richSat * 0.96), Math.max(0.4, Math.min(0.58, l))),
+    coolShift: hslToRgb(h - 24, Math.max(0.44, richSat * 0.95), Math.max(0.44, Math.min(0.66, l + 0.06))),
   };
 }
 
@@ -249,6 +313,8 @@ function drawFluidBeatFrame(
   phase: number,
   bass: number,
   flash: number,
+  treble: number,
+  trebleFlash: number,
   glow: number,
   ripples: RippleSlot[],
   isLight: boolean,
@@ -257,13 +323,9 @@ function drawFluidBeatFrame(
   ctx.globalCompositeOperation = isLight ? 'source-over' : 'lighter';
 
   const dim = Math.max(w, h);
-  const alphaScale = isLight ? 0.42 : 1.0;
-  const activity = Math.min(1, bass * 0.65 + flash * 0.95 + glow * 0.4);
-  if (activity <= 0.006 && !ripples.some(r => r.active)) {
-    return;
-  }
+  const alphaScale = isLight ? 0.48 : 1.0;
 
-  // Orbs stay subtle at rest and bloom crisply ONLY on genuine bass/kick energy
+  // Living orbiting orbs: always moving softly in the background, surging deeply on BASS and shimmering crisply on TREBLE
   const orbs: Array<{
     x: number;
     y: number;
@@ -272,34 +334,44 @@ function drawFluidBeatFrame(
     alpha: number;
   }> = [
     {
-      x: w * (0.5 + 0.34 * Math.sin(phase * 0.58 + 0.3)),
-      y: h * (0.48 + 0.32 * Math.cos(phase * 0.43 + 0.1)),
-      radius: dim * (0.34 + bass * 0.16 + flash * 0.14),
+      // Primary deep sub-bass orb gliding wide across the backdrop
+      x: w * (0.5 + 0.34 * Math.sin(phase * 0.56 + 0.3)),
+      y: h * (0.5 + 0.31 * Math.cos(phase * 0.42 + 0.1)),
+      radius: dim * (0.37 + bass * 0.17 + flash * 0.15),
       color: palette.core,
-      alpha: (0.02 + glow * 0.16 + bass * 0.2 + flash * 0.24) * alphaScale,
+      alpha: (0.16 + glow * 0.18 + bass * 0.24 + flash * 0.28) * alphaScale,
     },
     {
-      x: w * (0.5 + 0.37 * Math.cos(phase * 0.49 + 2.1)),
-      y: h * (0.52 + 0.3 * Math.sin(phase * 0.64 + 1.0)),
-      radius: dim * (0.31 + bass * 0.13 + flash * 0.12),
+      // Warm deep kick undertow orb
+      x: w * (0.5 + 0.32 * Math.cos(phase * 0.37 + 4.4)),
+      y: h * (0.56 + 0.29 * Math.cos(phase * 0.54 + 2.3)),
+      radius: dim * (0.34 + bass * 0.16 + flash * 0.12),
+      color: palette.warmShift,
+      alpha: (0.13 + glow * 0.15 + bass * 0.22 + flash * 0.22) * alphaScale,
+    },
+    {
+      // Crisp treble / high-frequency shimmer orb orbiting upper-diagonal field
+      x: w * (0.5 + 0.38 * Math.cos(phase * 0.62 + 2.0)),
+      y: h * (0.44 + 0.3 * Math.sin(phase * 0.74 + 1.1)),
+      radius: dim * (0.28 + treble * 0.12 + trebleFlash * 0.16),
       color: palette.coolShift,
-      alpha: (0.015 + glow * 0.14 + bass * 0.16 + flash * 0.2) * alphaScale,
+      alpha: (0.12 + glow * 0.12 + treble * 0.2 + trebleFlash * 0.34) * alphaScale,
     },
     {
-      x: w * (0.5 + 0.39 * Math.sin(phase * 0.84 + 3.4)),
-      y: h * (0.5 + 0.28 * Math.sin(phase * 1.12 + 0.6)),
-      radius: dim * (0.24 + bass * 0.12 + flash * 0.2),
+      // Expressive kick + high-note highlight orb weaving in a dynamic figure-8
+      x: w * (0.5 + 0.4 * Math.sin(phase * 0.86 + 3.4)),
+      y: h * (0.48 + 0.28 * Math.sin(phase * 1.14 + 0.6)),
+      radius: dim * (0.23 + flash * 0.18 + trebleFlash * 0.14),
       color: palette.bright,
-      alpha: (bass * 0.1 + flash * 0.38) * alphaScale,
+      alpha: (0.09 + flash * 0.38 + trebleFlash * 0.36) * alphaScale,
     },
   ];
 
   for (let i = 0; i < orbs.length; i++) {
     const o = orbs[i]!;
-    if (o.alpha <= 0.004) continue;
     const grad = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, o.radius);
     grad.addColorStop(0, rgba(o.color, o.alpha));
-    grad.addColorStop(0.45, rgba(o.color, o.alpha * 0.4));
+    grad.addColorStop(0.45, rgba(o.color, o.alpha * 0.44));
     grad.addColorStop(1, rgba(o.color, 0));
     ctx.fillStyle = grad;
     ctx.beginPath();
@@ -307,23 +379,48 @@ function drawFluidBeatFrame(
     ctx.fill();
   }
 
-  // Soft expanding radial bass ripples spawned on genuine kick onsets
+  // Sweeping diagonal aurora ribbon that continuously flows and reacts to both bass & highs
+  ctx.save();
+  const ribbonX = w * (0.5 + 0.22 * Math.sin(phase * 0.31));
+  const ribbonY = h * (0.5 + 0.18 * Math.cos(phase * 0.27));
+  ctx.translate(ribbonX, ribbonY);
+  ctx.rotate(phase * 0.18 + bass * 0.2 + trebleFlash * 0.12);
+  ctx.scale(1.65, 0.4 + bass * 0.16 + flash * 0.14 + trebleFlash * 0.1);
+  const ribRadius = dim * (0.34 + glow * 0.12);
+  const ribGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, ribRadius);
+  const ribAlpha = (0.1 + bass * 0.18 + flash * 0.2 + trebleFlash * 0.22) * alphaScale;
+  ribGrad.addColorStop(0, rgba(palette.bright, ribAlpha));
+  ribGrad.addColorStop(0.55, rgba(palette.core, ribAlpha * 0.38));
+  ribGrad.addColorStop(1, rgba(palette.core, 0));
+  ctx.fillStyle = ribGrad;
+  ctx.beginPath();
+  ctx.arc(0, 0, ribRadius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // Expanding shockwave ripples: wide deep rings for BASS, tighter bright shimmer rings for TREBLE
   for (let i = 0; i < ripples.length; i++) {
     const r = ripples[i]!;
     if (!r.active) continue;
     const t = Math.min(1, r.ageMs / r.maxMs);
-    const eased = 1 - Math.pow(1 - t, 2.6);
-    const outerR = dim * (0.08 + eased * 0.56);
-    const bandWidth = Math.max(18, dim * (0.14 * (1 - t * 0.4)));
+    const isTreble = r.kind === 'treble';
+    const eased = 1 - Math.pow(1 - t, isTreble ? 2.2 : 2.6);
+    const outerR = dim * (isTreble ? 0.05 + eased * 0.38 : 0.08 + eased * 0.62);
+    const bandWidth = Math.max(
+      isTreble ? 12 : 20,
+      dim * ((isTreble ? 0.085 : 0.16) * (1 - t * 0.4)),
+    );
     const innerR = Math.max(0, outerR - bandWidth);
-    const fade = Math.sin(Math.min(1, t * 4) * (Math.PI / 2)) * Math.pow(1 - t, 1.85);
-    const alpha = r.strength * fade * 0.28 * alphaScale;
+    const fade = Math.sin(Math.min(1, t * 4.2) * (Math.PI / 2)) * Math.pow(1 - t, 1.75);
+    const alpha = r.strength * fade * (isTreble ? 0.36 : 0.38) * alphaScale;
     if (alpha <= 0.003) continue;
 
+    const ringColor = isTreble ? palette.bright : palette.core;
+    const edgeColor = isTreble ? palette.coolShift : palette.warmShift;
     const ringGrad = ctx.createRadialGradient(r.x * w, r.y * h, innerR, r.x * w, r.y * h, outerR);
-    ringGrad.addColorStop(0, rgba(palette.bright, 0));
-    ringGrad.addColorStop(0.55, rgba(palette.bright, alpha));
-    ringGrad.addColorStop(1, rgba(palette.core, 0));
+    ringGrad.addColorStop(0, rgba(ringColor, 0));
+    ringGrad.addColorStop(0.55, rgba(ringColor, alpha));
+    ringGrad.addColorStop(1, rgba(edgeColor, 0));
     ctx.fillStyle = ringGrad;
     ctx.beginPath();
     ctx.arc(r.x * w, r.y * h, outerR, 0, Math.PI * 2);
@@ -342,19 +439,11 @@ export function BeatPulseOverlay() {
   const active = Boolean((beatPulse ?? uiStyle === 'beat') && !performanceMode && !reduced);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const playingRef = useRef(playing);
-  const wakeRef = useRef<(() => void) | null>(null);
   playingRef.current = playing;
 
   useEffect(() => {
-    if (playing) wakeRef.current?.();
-  }, [playing]);
-
-  useEffect(() => {
     const root = document.documentElement;
-    if (!active) {
-      wakeRef.current = null;
-      return;
-    }
+    if (!active) return;
 
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d', { alpha: true });
@@ -365,9 +454,9 @@ export function BeatPulseOverlay() {
     const syncSize = () => {
       if (!canvas) return { w: 320, h: 200 };
       const rect = canvas.getBoundingClientRect();
-      // Compact internal buffer scaled smoothly by GPU -> zero main-thread lag
-      const targetW = Math.max(160, Math.min(480, Math.round((rect.width || window.innerWidth) * 0.36)));
-      const targetH = Math.max(120, Math.min(320, Math.round((rect.height || window.innerHeight) * 0.36)));
+      // Compact internal buffer upscaled smoothly by GPU -> crisp aurora with zero lag
+      const targetW = Math.max(160, Math.min(520, Math.round((rect.width || window.innerWidth) * 0.38)));
+      const targetH = Math.max(120, Math.min(340, Math.round((rect.height || window.innerHeight) * 0.38)));
       if (canvas.width !== targetW || canvas.height !== targetH) {
         canvas.width = targetW;
         canvas.height = targetH;
@@ -384,24 +473,24 @@ export function BeatPulseOverlay() {
     let rafId = 0;
     let windowVisible = true;
     let lastTs = performance.now();
+    let lastDrawTs = 0;
     let detector = createBeatDetectorState();
     let nextRipple = 0;
-    const ripples: RippleSlot[] = Array.from({ length: 4 }, () => ({
+    const ripples: RippleSlot[] = Array.from({ length: 6 }, () => ({
       active: false,
+      kind: 'bass',
       x: 0.5,
       y: 0.5,
       ageMs: 0,
-      maxMs: 680,
+      maxMs: 650,
       strength: 0,
     }));
 
     const scheduleTick = () => {
       if (!rafId && !document.hidden && windowVisible) {
-        lastTs = performance.now();
         rafId = requestAnimationFrame(tick);
       }
     };
-    wakeRef.current = scheduleTick;
 
     const syncVisibility = () => {
       if (document.hidden || !windowVisible) {
@@ -409,7 +498,8 @@ export function BeatPulseOverlay() {
           cancelAnimationFrame(rafId);
           rafId = 0;
         }
-      } else if (playingRef.current) {
+      } else {
+        lastTs = performance.now();
         scheduleTick();
       }
     };
@@ -423,42 +513,71 @@ export function BeatPulseOverlay() {
     const tick = (now: number) => {
       rafId = 0;
       if (document.hidden || !windowVisible) return;
+      const isPlaying = playingRef.current;
+
+      // Throttle calm/paused background drift to ~30fps to save CPU/GPU while keeping motion silky smooth
+      if (!isPlaying && now - lastDrawTs < 32) {
+        scheduleTick();
+        return;
+      }
+
       const dt = Math.max(1, Math.min(64, now - lastTs));
       lastTs = now;
+      lastDrawTs = now;
 
-      if (playingRef.current) {
+      if (isPlaying) {
         const frame = getAudioReactiveFrame();
         detector = stepBeatDetector(detector, frame, dt);
       } else {
+        // Gentle continuous ambient drift even when paused / no bass
         detector = {
           ...detector,
-          bass: detector.bass * Math.exp(-dt / 180),
-          impulse: detector.impulse * Math.exp(-dt / 150),
-          flash: detector.flash * Math.exp(-dt / 160),
-          glow: detector.glow * Math.exp(-dt / 190),
+          bass: detector.bass * Math.exp(-dt / 260),
+          impulse: detector.impulse * Math.exp(-dt / 220),
+          flash: detector.flash * Math.exp(-dt / 240),
+          treble: detector.treble * Math.exp(-dt / 180),
+          trebleImpulse: detector.trebleImpulse * Math.exp(-dt / 150),
+          trebleFlash: detector.trebleFlash * Math.exp(-dt / 170),
+          glow: detector.glow + (0.14 - detector.glow) * (1 - Math.exp(-dt / 420)),
+          phase: (detector.phase + (dt / 1000) * 0.24) % (Math.PI * 200),
           cooldownMs: Math.max(0, detector.cooldownMs - dt),
+          trebleCooldownMs: Math.max(0, detector.trebleCooldownMs - dt),
           onsetTrigger: 0,
+          trebleOnsetTrigger: 0,
         };
       }
 
-      if (detector.onsetTrigger > 0.34) {
+      // Spawn wide bass ripple on kick/sub-bass impact
+      if (detector.onsetTrigger > 0.24) {
         const slot = ripples[nextRipple % ripples.length]!;
         nextRipple++;
         slot.active = true;
-        slot.x = 0.5 + 0.34 * Math.sin(detector.phase * 0.84 + 3.4);
-        slot.y = 0.5 + 0.24 * Math.sin(detector.phase * 1.12 + 0.6);
+        slot.kind = 'bass';
+        slot.x = 0.5 + 0.32 * Math.sin(detector.phase * 0.72 + 1.2);
+        slot.y = 0.52 + 0.24 * Math.cos(detector.phase * 0.58 + 0.4);
         slot.ageMs = 0;
-        slot.maxMs = 560 + (1 - detector.onsetTrigger) * 160;
+        slot.maxMs = 600 + (1 - detector.onsetTrigger) * 180;
         slot.strength = detector.onsetTrigger;
       }
 
-      let hasActiveRipple = false;
+      // Spawn crisp treble shimmer ripple on sharp highs (hi-hats / bright notes)
+      if (detector.trebleOnsetTrigger > 0.24) {
+        const slot = ripples[nextRipple % ripples.length]!;
+        nextRipple++;
+        slot.active = true;
+        slot.kind = 'treble';
+        slot.x = 0.5 + 0.38 * Math.cos(detector.phase * 0.94 + 2.4);
+        slot.y = 0.44 + 0.28 * Math.sin(detector.phase * 1.18 + 0.8);
+        slot.ageMs = 0;
+        slot.maxMs = 390 + (1 - detector.trebleOnsetTrigger) * 120;
+        slot.strength = detector.trebleOnsetTrigger;
+      }
+
       for (let i = 0; i < ripples.length; i++) {
         const r = ripples[i]!;
         if (!r.active) continue;
         r.ageMs += dt;
         if (r.ageMs >= r.maxMs) r.active = false;
-        else hasActiveRipple = true;
       }
 
       if (ctx && canvas) {
@@ -476,32 +595,21 @@ export function BeatPulseOverlay() {
           detector.phase,
           detector.bass,
           detector.flash,
+          detector.treble,
+          detector.trebleFlash,
           detector.glow,
           ripples,
           isLight,
         );
       }
 
-      // Sleep rAF completely when paused and settled -> 0% idle CPU/GPU
-      const settled =
-        !playingRef.current &&
-        !hasActiveRipple &&
-        detector.bass < 0.004 &&
-        detector.flash < 0.004 &&
-        detector.glow < 0.004;
-      if (!settled) {
-        scheduleTick();
-      }
+      scheduleTick();
     };
 
     palette = readAccentPalette(accentColor);
-    if (playingRef.current) {
-      scheduleTick();
-    } else if (ctx && canvas) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
+    lastTs = performance.now();
+    scheduleTick();
     return () => {
-      wakeRef.current = null;
       cancelAnimationFrame(rafId);
       offVisualVisibility?.();
       document.removeEventListener('visibilitychange', syncVisibility);

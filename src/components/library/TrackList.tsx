@@ -17,7 +17,6 @@ import {
   ChevronUp,
   ChevronDown,
   Trash2,
-  LocateFixed,
 } from 'lucide-react';
 import { canPlay, type Track } from '../../../shared/types';
 import { useApp, formatTime } from '../../stores/app';
@@ -114,10 +113,6 @@ export default function TrackList({
   );
   const likedSet = useMemo(() => new Set(likes), [likes]);
   const downloadingSet = useMemo(() => new Set(downloadingIds), [downloadingIds]);
-  const activeIndexInList = useMemo(
-    () => (current ? tracks.findIndex(t => t.id === current.id) : -1),
-    [tracks, current?.id],
-  );
 
   const virtual = useVirtualizer({
     count: tracks.length,
@@ -148,17 +143,6 @@ export default function TrackList({
         <span>Título</span>
         <span>Álbum / Origem</span>
         <span className="col-quick-shuffle">
-          {activeIndexInList >= 0 && tracks.length > 8 && (
-            <button
-              type="button"
-              className="tracklist-shuffle-btn tracklist-locate-btn"
-              aria-label="Localizar faixa atual na lista"
-              title="Ir para a música tocando agora"
-              onClick={() => virtual.scrollToIndex(activeIndexInList, { align: 'center' })}
-            >
-              <LocateFixed size={12} />
-            </button>
-          )}
           {showHeaderShuffle && playableCount > 1 && (
             <button
               type="button"

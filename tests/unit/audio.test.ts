@@ -29,10 +29,12 @@ it('modulates audio-reactive WebGL bass uniform from sub-bass/bass FFT bins whil
   const silent = new Uint8Array(128).fill(10);
   expect(computeBassModulation(silent, 48000, 256).bass).toBe(0);
 
-  // High-hat / treble-only energy does not falsely trigger bass refraction
+  // High-hat / treble-only energy does not falsely trigger bass, while driving the treble band crisply
   const trebleOnly = new Uint8Array(128).fill(0);
   for (let i = 40; i < 128; i++) trebleOnly[i] = 240;
-  expect(computeBassModulation(trebleOnly, 48000, 256).bass).toBe(0);
+  const trebleOnlyFrame = computeBassModulation(trebleOnly, 48000, 256);
+  expect(trebleOnlyFrame.bass).toBe(0);
+  expect(trebleOnlyFrame.treble).toBeGreaterThan(0.75);
 
   // Strong kick/sub-bass bins (~20-185 Hz -> bins 1..2 at 48kHz/256) produce smooth bounded (0, 1] modulation
   const bassHit = new Uint8Array(128).fill(0);
@@ -51,13 +53,21 @@ it('modulates audio-reactive WebGL bass uniform from sub-bass/bass FFT bins whil
   expect(hiRes.subBass).toBeGreaterThan(0.5);
   expect(hiRes.bass).toBeGreaterThan(0.45);
 
-  // Loud vocals / guitars / snares (160–2500 Hz) with spectral leakage below 110 Hz do NOT falsely pulse
-  const vocalsAndGuitars = new Uint8Array(2048).fill(0);
-  for (let i = 2; i <= 9; i++) vocalsAndGuitars[i] = 95; // low-level spectral bleed
-  for (let i = 14; i <= 180; i++) vocalsAndGuitars[i] = 235; // loud vocals & guitars
-  const vocalFrame = computeBassModulation(vocalsAndGuitars, 48000, 4096);
+  // Real kicks inside dense mixes (loud vocals + kick simultaneously) STILL punch strongly
+  const fullMixKick = new Uint8Array(1024).fill(0);
+  fullMixKick[2] = 195; // ~47 Hz kick
+  fullMixKick[3] = 180; // ~70 Hz kick body
+  for (let i = 10; i <= 110; i++) fullMixKick[i] = 210; // loud vocals & synths in mix
+  const mixFrame = computeBassModulation(fullMixKick, 48000, 2048);
+  expect(mixFrame.bass).toBeGreaterThan(0.5);
+
+  // Weak spectral bleed under loud vocals without a real kick stays suppressed
+  const vocalsOnly = new Uint8Array(1024).fill(0);
+  for (let i = 1; i <= 5; i++) vocalsOnly[i] = 68; // weak low-end bleed
+  for (let i = 10; i <= 110; i++) vocalsOnly[i] = 225; // loud midrange vocals only
+  const vocalFrame = computeBassModulation(vocalsOnly, 48000, 2048);
   expect(vocalFrame.bass).toBe(0);
-  expect(vocalFrame.subBass).toBe(0);
+  expect(vocalFrame.treble).toBe(0);
 });
 
 it('detects Spotify, Deezer, Apple Music, YT Music, Bandcamp and Tidal badges from track URLs', () => {

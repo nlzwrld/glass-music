@@ -149,28 +149,31 @@ export interface AudioReactiveFrame {
   bass: number;
   subBass: number;
   mid: number;
+  treble: number;
   energy: number;
 }
 
 /**
- * Computes normalized sub-bass & kick-bass energy (0..1) from FFT byte bins (0..255).
- * Strictly isolates ~26 Hz – 112 Hz low-end weight and suppresses midrange/vocal spectral leakage
- * so Beat Pulse triggers exclusively on real bass kicks and 808 sub-bass.
+ * Computes dual-band normalized bass (24–135 Hz) and treble/highs (3.5–16 kHz) energy (0..1)
+ * from FFT byte bins (0..255), keeping midrange/vocals separated so Beat Pulse reacts crisply
+ * to kicks, 808 sub-bass, hi-hats, cymbals, and bright high notes across full mixes.
  */
 export function computeBassModulation(
   bins: ArrayLike<number>,
   sampleRate = 48000,
-  fftSize = 4096,
+  fftSize = 2048,
 ): AudioReactiveFrame {
   const count = bins.length;
-  if (!count) return { bass: 0, subBass: 0, mid: 0, energy: 0 };
+  if (!count) return { bass: 0, subBass: 0, mid: 0, treble: 0, energy: 0 };
   const hzPerBin = sampleRate / Math.max(32, fftSize);
-  const maxKickHz = hzPerBin > 100 ? 380 : 112;
-  const bassStart = Math.max(1, Math.floor(26 / hzPerBin));
-  const subEnd = Math.min(count - 1, Math.max(bassStart, Math.ceil(80 / hzPerBin)));
+  const maxKickHz = hzPerBin > 100 ? 380 : 135;
+  const bassStart = Math.max(1, Math.floor(24 / hzPerBin));
+  const subEnd = Math.min(count - 1, Math.max(bassStart, Math.ceil(90 / hzPerBin)));
   const bassEnd = Math.min(count - 1, Math.max(subEnd, Math.ceil(maxKickHz / hzPerBin)));
-  const midStart = Math.min(count - 1, Math.max(bassEnd + 1, Math.floor(150 / hzPerBin)));
-  const midEnd = Math.min(count - 1, Math.max(midStart, Math.ceil(3200 / hzPerBin)));
+  const midStart = Math.min(count - 1, Math.max(bassEnd + 1, Math.floor(180 / hzPerBin)));
+  const midEnd = Math.min(count - 1, Math.max(midStart, Math.ceil(3000 / hzPerBin)));
+  const trebleStart = Math.min(count - 1, Math.max(midEnd + 1, Math.floor(3500 / hzPerBin)));
+  const trebleEnd = Math.min(count - 1, Math.max(trebleStart, Math.ceil(16000 / hzPerBin)));
 
   let subSum = 0;
   let subPeak = 0;
@@ -187,7 +190,7 @@ export function computeBassModulation(
   let top2 = 0;
   for (let i = bassStart; i <= bassEnd; i++) {
     const v = Math.max(0, Math.min(255, bins[i] || 0));
-    const w = i <= subEnd ? 1.85 : 1.0;
+    const w = i <= subEnd ? 1.7 : 1.05;
     bassSum += v * w;
     bassWeight += 255 * w;
     if (v >= top1) {
@@ -207,39 +210,62 @@ export function computeBassModulation(
     if (v > midPeak) midPeak = v;
   }
 
+  let trebleSum = 0;
+  let high1 = 0;
+  let high2 = 0;
+  const trebleCount = Math.max(1, trebleEnd - trebleStart + 1);
+  for (let i = trebleStart; i <= trebleEnd; i++) {
+    const v = Math.max(0, Math.min(255, bins[i] || 0));
+    trebleSum += v;
+    if (v >= high1) {
+      high2 = high1;
+      high1 = v;
+    } else if (v > high2) {
+      high2 = v;
+    }
+  }
+
   const weightedBass = bassWeight > 0 ? bassSum / bassWeight : 0;
   const peakBass = (top1 + (bassEnd > bassStart ? top2 : top1)) / (2 * 255);
-  const rawSub = (subSum / (subCount * 255)) * 0.34 + (subPeak / 255) * 0.66;
-  const rawKick = weightedBass * 0.42 + peakBass * 0.58;
-  const lowRaw = rawSub * 0.65 + rawKick * 0.35;
+  const rawSub = (subSum / (subCount * 255)) * 0.25 + (subPeak / 255) * 0.75;
+  const rawKick = weightedBass * 0.28 + peakBass * 0.72;
+  const lowRaw = Math.max(rawSub, rawSub * 0.55 + rawKick * 0.45);
 
   const midMean = midSum / (midCount * 255);
-  const rawMid = midMean * 0.6 + (midPeak / 255) * 0.4;
+  const rawMid = midMean * 0.65 + (midPeak / 255) * 0.35;
 
-  // Suppress false triggers when vocals/guitars/snares (150-3200 Hz) dominate without genuine sub-bass
-  const dominance =
-    rawMid <= 0.18
-      ? 1
-      : Math.max(0, Math.min(1, (rawSub - rawMid * 0.68 + 0.14) / 0.32));
+  // Attenuate ONLY weak vocal/mid spectral bleed (<0.42) when mids strongly dominate;
+  // never penalize genuine kicks/808s inside dense mixes.
+  const bleedAttenuation =
+    lowRaw < 0.42 && rawMid > lowRaw * 1.55
+      ? Math.max(0, Math.min(1, (lowRaw - 0.32) / 0.1))
+      : 1;
 
-  // Elevated noise-floor gate (0.36) + deadzone so whispers, vocals, hi-hats and room tone stay strictly at 0
-  const gatedBass = Math.max(0, (lowRaw - 0.36) / 0.64) * dominance;
-  const rawBassOut = Math.min(1, Math.pow(gatedBass, 1.32));
+  // Clean noise-floor gate (0.16) so silence stays at 0 while real kicks hit strongly
+  const gatedBass = Math.max(0, (lowRaw - 0.16) / 0.84) * bleedAttenuation;
+  const rawBassOut = Math.min(1, Math.pow(gatedBass, 1.12));
   const bass = rawBassOut < 0.015 ? 0 : rawBassOut;
 
-  const gatedSub = Math.max(0, (rawSub - 0.36) / 0.64) * dominance;
-  const rawSubOut = Math.min(1, Math.pow(gatedSub, 1.24));
+  const gatedSub = Math.max(0, (rawSub - 0.16) / 0.84) * bleedAttenuation;
+  const rawSubOut = Math.min(1, Math.pow(gatedSub, 1.12));
   const subBass = rawSubOut < 0.015 ? 0 : rawSubOut;
 
+  const trebleMean = trebleSum / (trebleCount * 255);
+  const peakTreble = (high1 + (trebleEnd > trebleStart ? high2 : high1)) / (2 * 255);
+  const rawTreble = trebleMean * 0.35 + peakTreble * 0.65;
+  const gatedTreble = Math.max(0, (rawTreble - 0.15) / 0.85);
+  const rawTrebleOut = Math.min(1, Math.pow(gatedTreble, 1.15));
+  const treble = rawTrebleOut < 0.015 ? 0 : rawTrebleOut;
+
   const mid = Math.min(1, midMean);
-  const energy = Math.min(1, bass * 0.8 + subBass * 0.2);
-  return { bass, subBass, mid, energy };
+  const energy = Math.min(1, bass * 0.6 + subBass * 0.15 + treble * 0.25);
+  return { bass, subBass, mid, treble, energy };
 }
 
 let activeAudioGraph: AudioGraph | null = null;
 
 export function getAudioReactiveFrame(): AudioReactiveFrame {
-  if (!activeAudioGraph) return { bass: 0, subBass: 0, mid: 0, energy: 0 };
+  if (!activeAudioGraph) return { bass: 0, subBass: 0, mid: 0, treble: 0, energy: 0 };
   return activeAudioGraph.sampleFrequencyEnergy();
 }
 
@@ -277,10 +303,10 @@ export class AudioGraph {
     if (typeof this.context.createAnalyser === 'function') {
       try {
         const analyser = this.context.createAnalyser();
-        // 4096 FFT gives ~11.7 Hz/bin at 48 kHz with crisp 0.22 smoothing so 28–110 Hz kicks isolate cleanly from vocals
-        analyser.fftSize = 4096;
-        analyser.smoothingTimeConstant = 0.22;
-        analyser.minDecibels = -76;
+        // 2048 FFT (~23.4 Hz/bin at 48 kHz) with -86 dB floor captures both deep 24–135 Hz kicks and 3.5–16 kHz highs cleanly
+        analyser.fftSize = 2048;
+        analyser.smoothingTimeConstant = 0.28;
+        analyser.minDecibels = -86;
         analyser.maxDecibels = -12;
         // Tap PRE-volume (after EQ, before boost) so bass analysis works identically at any volume
         const preVolumeNode = this.filters[this.filters.length - 1] || this.boost;
@@ -296,7 +322,7 @@ export class AudioGraph {
 
   sampleFrequencyEnergy(): AudioReactiveFrame {
     if (!this.analyser || !this.freqBins || this.silent || this.context.state !== 'running') {
-      return { bass: 0, subBass: 0, mid: 0, energy: 0 };
+      return { bass: 0, subBass: 0, mid: 0, treble: 0, energy: 0 };
     }
     this.analyser.getByteFrequencyData(this.freqBins);
     return computeBassModulation(this.freqBins, this.context.sampleRate, this.analyser.fftSize);

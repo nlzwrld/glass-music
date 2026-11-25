@@ -169,7 +169,7 @@ export default function Appearance() {
       />
       <Toggle
         label="Efeito Pulse"
-        description="Pulsa apenas na batida dos graves."
+        description="Pulsa nos graves e agudos com movimento fluido no fundo."
         checked={Boolean(p.beatPulse ?? uiStyle === 'beat')}
         onChange={beatPulse => pref({ beatPulse, ...(uiStyle === 'beat' ? { uiStyle: 'matte' } : {}) })}
       />

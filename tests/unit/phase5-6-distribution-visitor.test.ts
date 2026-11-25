@@ -155,15 +155,25 @@ describe('Phase 5 & 6 — Distribution, Mandatory Updates, Installer Hooks, Andr
 
   it('triggers musical beat flashes on bass onsets, moves History/Settings to topbar profile menu, and ships minimalist download site', () => {
     let state = createBeatDetectorState();
-    // Calm passage & midrange/vocal energy keep flash strictly at 0
-    state = stepBeatDetector(state, { bass: 0.05, mid: 0.05, energy: 0.05 }, 16.6);
+    // Calm passage keeps flash at 0 while still advancing continuous background motion phase
+    state = stepBeatDetector(state, { bass: 0.05, mid: 0.05, treble: 0.05, energy: 0.05 }, 16.6);
     expect(state.flash).toBe(0);
-    state = stepBeatDetector(state, { bass: 0.14, subBass: 0.1, mid: 0.88, energy: 0.78 }, 16.6);
+    expect(state.trebleFlash).toBe(0);
+    expect(state.phase).toBeGreaterThan(0);
+
+    // Midrange-only vocals do NOT trigger bass or treble flash
+    state = stepBeatDetector(state, { bass: 0.08, subBass: 0.06, mid: 0.88, treble: 0.05, energy: 0.1 }, 16.6);
     expect(state.flash).toBe(0);
+    expect(state.trebleFlash).toBe(0);
+
+    // Sharp treble / high-frequency transient spikes trebleFlash cleanly
+    state = stepBeatDetector(state, { bass: 0.05, subBass: 0.04, mid: 0.2, treble: 0.78, energy: 0.35 }, 16.6);
+    expect(state.trebleFlash).toBeGreaterThan(0.45);
+    expect(state.trebleOnsetTrigger).toBeGreaterThan(0.4);
 
     // Kick drum transient spikes flash cleanly and advances fluid orbital phase
     const phaseBefore = state.phase;
-    state = stepBeatDetector(state, { bass: 0.82, subBass: 0.88, mid: 0.4, energy: 0.7 }, 16.6);
+    state = stepBeatDetector(state, { bass: 0.82, subBass: 0.88, mid: 0.4, treble: 0.2, energy: 0.7 }, 16.6);
     expect(state.flash).toBeGreaterThan(0.5);
     expect(state.bass).toBeGreaterThan(0.3);
     expect(state.phase).toBeGreaterThan(phaseBefore);

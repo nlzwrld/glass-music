@@ -22,27 +22,27 @@
   pointer-events: none;
 }
 
-/* Matte + Beat Pulse: semi-translucent dark/light surfaces over GPU canvas (no expensive blur) */
+/* Matte + Beat Pulse: clear translucent surfaces so the living bass/treble aurora shines vividly with zero blur lag */
 html[data-beat-pulse='true']:not([data-ui-style='glass']),
 html[data-ui-style='beat'] {
-  --m-frame: rgba(11, 12, 16, 0.88);
-  --m-bg: rgba(12, 13, 18, 0.62);
-  --m-sidebar: rgba(14, 16, 21, 0.84);
-  --m-surface: rgba(20, 23, 30, 0.86);
-  --m-card: rgba(19, 22, 29, 0.88);
-  --m-elevated: rgba(25, 29, 38, 0.94);
-  --m-hover: rgba(34, 39, 50, 0.9);
-  --m-active: rgba(44, 51, 64, 0.94);
+  --m-frame: rgba(9, 11, 16, 0.78);
+  --m-bg: rgba(9, 11, 16, 0.44);
+  --m-sidebar: rgba(11, 13, 19, 0.72);
+  --m-surface: rgba(18, 21, 28, 0.8);
+  --m-card: rgba(16, 19, 26, 0.8);
+  --m-elevated: rgba(23, 27, 36, 0.9);
+  --m-hover: rgba(34, 40, 52, 0.86);
+  --m-active: rgba(44, 52, 66, 0.92);
 }
 
 html[data-beat-pulse='true'][data-theme='light']:not([data-ui-style='glass']),
 html[data-ui-style='beat'][data-theme='light'] {
-  --m-frame: rgba(238, 241, 247, 0.9);
-  --m-bg: rgba(246, 248, 252, 0.72);
-  --m-sidebar: rgba(240, 243, 249, 0.86);
-  --m-surface: rgba(255, 255, 255, 0.88);
-  --m-card: rgba(255, 255, 255, 0.9);
-  --m-elevated: rgba(255, 255, 255, 0.95);
+  --m-frame: rgba(236, 240, 246, 0.82);
+  --m-bg: rgba(246, 248, 252, 0.58);
+  --m-sidebar: rgba(238, 242, 248, 0.76);
+  --m-surface: rgba(255, 255, 255, 0.84);
+  --m-card: rgba(255, 255, 255, 0.84);
+  --m-elevated: rgba(255, 255, 255, 0.94);
 }
 
 html[data-beat-pulse='true']:not([data-ui-style='glass']) body,
