@@ -17,14 +17,14 @@ jobs:
     env:
       CI: 'true'
       LIQUID_SKIP_YTDLP_DOWNLOAD: '1'
-      LIQUID_ANDROID_VERSION_NAME: 2.2.0-beta.${{ github.run_number }}
+      LIQUID_ANDROID_VERSION_NAME: 2.3.0-beta.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Compute Android Beta versionCode
         shell: bash
         run: |
-          echo "LIQUID_ANDROID_VERSION_CODE=$((20200 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+          echo "LIQUID_ANDROID_VERSION_CODE=$((20300 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@v4
         with:

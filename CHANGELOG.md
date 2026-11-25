@@ -4,7 +4,12 @@ Registro objetivo de alterações técnicas, arquiteturais e funcionais do **Liq
 
 ---
 
-## [2.2.x] — Liquid Hub (Arquitetura Unificada, Stream Resolver & Anti-Spam)
+## [2.3.x] — Liquid Hub (Pulse 2.0, Vídeo de Fundo, Stream Resolver & Anti-Spam)
+
+### Pulse 2.0, Vídeo de Fundo & Downloads
+- **Pulse 2.0 (Análise Musical DSP)**: separação temporal harmônico/percussiva (HPSS) com classificação de graves em 3 modos (`bass_sustain`, `bass_one_shot`, `bass_sequence`), detecção de bateria/percussão (`kick`, `snare`, `hi_hat`, `cymbal`, `tom`, `percussion`) e supressão vocal multi-sinal, compartilhada via `src/lib/musicEvents.ts`.
+- **Vídeo de Fundo Sincronizado à Batida**: seleção segura de vídeo local com streaming HTTP `206 Partial Content` (`/bg-video/<id>`), áudio silenciado automaticamente, modulação suave de `playbackRate` orientada pelos eventos musicais e controles dedicados em Aparência.
+- **Interface de Downloads Simplificada**: remoção de filtros redundantes, badges de status/contagem e descrições textuais excessivas para uma visualização mais limpa.
 
 ### Rebranding & Arquitetura Desktop
 - **Identidade Liquid Hub (`com.nlzwrld.liquidhub`)**: renomeação completa de metadados, empacotamento Tauri/NSIS, crate Rust (`liquid-hub`), títulos de janela, bandeja do sistema, cabeçalhos de serviços (`server/`) e plugins de catálogo (`assets/catalog/plugins/liquid_hub/`).

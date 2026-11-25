@@ -1,6 +1,6 @@
 [package]
 name = "liquid-hub"
-version = "2.2.0"
+version = "2.3.0"
 description = "Liquid Hub — Hub centralizado de músicas, catálogos e sessões ao vivo"
 authors = ["Liquid Hub"]
 edition = "2021"
